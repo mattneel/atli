@@ -38,12 +38,12 @@ impl BoundExpr {
     }
 
     #[must_use]
-    pub fn eval(&self, values: &BTreeMap<UnknownId, Bound>) -> Bound {
+    fn eval_with(&self, values: &BTreeMap<UnknownId, Bound>) -> Bound {
         match self {
             Self::Const(bound) => *bound,
             Self::Unknown(id) => values.get(id).copied().unwrap_or(Bound::ZERO),
-            Self::Add(lhs, rhs) => lhs.eval(values).sequential(rhs.eval(values)),
-            Self::Join(lhs, rhs) => lhs.eval(values).join(rhs.eval(values)),
+            Self::Add(lhs, rhs) => lhs.eval_with(values).sequential(rhs.eval_with(values)),
+            Self::Join(lhs, rhs) => lhs.eval_with(values).join(rhs.eval_with(values)),
         }
     }
 
@@ -114,9 +114,29 @@ pub struct SolverStats {
     pub widening_fires: usize,
 }
 
+/// Sealed certificate produced only by a completed solver run. Per `docs/calculus.md §7.3`
+/// and §2.3, a certified grade is readable only downstream of a completed SCC fixpoint;
+/// partial iterates are unrepresentable to consumers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SolverCertificate {
+    values: BTreeMap<UnknownId, Bound>,
+}
+
+impl SolverCertificate {
+    #[must_use]
+    pub fn value(&self, id: UnknownId) -> Bound {
+        self.values.get(&id).copied().unwrap_or(Bound::ZERO)
+    }
+
+    #[must_use]
+    fn eval(&self, expr: &BoundExpr) -> Bound {
+        expr.eval_with(&self.values)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SolverOutput {
-    pub values: BTreeMap<UnknownId, Bound>,
+    pub certificate: SolverCertificate,
     pub stats: SolverStats,
 }
 
@@ -143,8 +163,8 @@ impl<T> PendingGrade<T> {
     }
 
     #[must_use]
-    pub fn certify(self, values: &BTreeMap<UnknownId, Bound>) -> CertifiedGrade {
-        CertifiedGrade(self.expr.eval(values))
+    pub fn certify(self, certificate: &SolverCertificate) -> CertifiedGrade {
+        CertifiedGrade(certificate.eval(&self.expr))
     }
 }
 
@@ -192,7 +212,10 @@ pub fn solve(system: &ConstraintSystem) -> SolverOutput {
         }
     }
 
-    SolverOutput { values, stats }
+    SolverOutput {
+        certificate: SolverCertificate { values },
+        stats,
+    }
 }
 
 fn apply_scc(
@@ -205,7 +228,7 @@ fn apply_scc(
     for id in scc {
         let mut rhs = Bound::ZERO;
         for constraint in system.constraints.iter().filter(|c| c.target == *id) {
-            rhs = rhs.join(constraint.expr.eval(values));
+            rhs = rhs.join(constraint.expr.eval_with(values));
         }
         let current = values[id];
         let candidate = current.join(rhs);
@@ -313,8 +336,8 @@ mod tests {
         );
         system.constrain(b, BoundExpr::unknown(a));
         let solved = solve(&system);
-        assert_eq!(solved.values[&a], Bound::finite(1));
-        assert_eq!(solved.values[&b], Bound::finite(1));
+        assert_eq!(solved.certificate.value(a), Bound::finite(1));
+        assert_eq!(solved.certificate.value(b), Bound::finite(1));
         assert!(solved.stats.scc_sizes.contains(&2));
     }
 
@@ -327,7 +350,7 @@ mod tests {
             BoundExpr::unknown(a).seq(BoundExpr::constant(Bound::finite(1))),
         );
         let solved = solve(&system);
-        assert_eq!(solved.values[&a], Bound::Omega);
+        assert_eq!(solved.certificate.value(a), Bound::Omega);
         assert!(solved.stats.widening_fires > 0);
     }
 }

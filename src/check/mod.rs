@@ -6,7 +6,8 @@
 //!
 //! Phase gate (`docs/calculus.md §7.3`, with §2.3's under-allocation warning):
 //! `CheckedWitness` is constructible only from `CertifiedGrade`, never from
-//! `PendingGrade`.
+//! `PendingGrade`; `SolverCertificate` is sealed inside `check::solve`, so callers cannot
+//! mint certification maps outside a completed `solve()` run.
 //!
 //! ```compile_fail
 //! use atli::check::{CheckedWitness, PendingGrade};
@@ -15,6 +16,11 @@
 //! let pending: PendingGrade<()> = PendingGrade::new(BoundExpr::constant(Bound::ZERO));
 //! let _ = CheckedWitness::from_pending_for_doctest(pending);
 //! ```
+//!
+//! ```compile_fail
+//! use atli::check::solve::SolverCertificate;
+//! let _ = SolverCertificate { values: Default::default() };
+//! ```
 
 mod error;
 pub mod solve;
@@ -22,7 +28,7 @@ pub mod solve;
 use std::collections::BTreeSet;
 
 pub use error::{TypeError, TypeErrorKind};
-pub use solve::{CertifiedGrade, PendingGrade, SolverStats};
+pub use solve::{CertifiedGrade, PendingGrade, SolverCertificate, SolverStats};
 
 use crate::core::{
     ContinuationUseFacts, CoverageTag, Divergence, Handler, RecursionTag, Term, Type, Witness,
@@ -66,7 +72,7 @@ pub fn check(term: &Term) -> Result<CheckedWitness, TypeError> {
     let partial = checker.infer(term, &Env::default())?;
     let output = solve(&checker.system);
     let pending = PendingGrade::<CheckedWitness>::new(partial.bound.clone());
-    let certified = pending.certify(&output.values);
+    let certified = pending.certify(&output.certificate);
     Ok(CheckedWitness::new(partial, certified, output.stats))
 }
 

@@ -320,8 +320,8 @@ fn solver_golden_multi_node_scc_converges() {
     );
     system.constrain(b, BoundExpr::unknown(a));
     let solved = solve(&system);
-    assert_eq!(solved.values[&a], Bound::finite(2));
-    assert_eq!(solved.values[&b], Bound::finite(2));
+    assert_eq!(solved.certificate.value(a), Bound::finite(2));
+    assert_eq!(solved.certificate.value(b), Bound::finite(2));
     assert!(solved.stats.scc_sizes.contains(&2));
 }
 
@@ -335,7 +335,7 @@ fn solver_golden_widening_fires_for_growing_cycle() {
         BoundExpr::unknown(a).seq(BoundExpr::constant(Bound::finite(1))),
     );
     let solved = solve(&system);
-    assert_eq!(solved.values[&a], Bound::Omega);
+    assert_eq!(solved.certificate.value(a), Bound::Omega);
     assert!(solved.stats.widening_fires > 0);
 }
 
