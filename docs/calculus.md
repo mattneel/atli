@@ -80,9 +80,11 @@ contexts by pointwise `+` and `·` (QTT-style). Subtyping: `τ @ 1 <: τ @ ω`
 Eff = (𝒫(Label), ∪, ∅)          order: ε₁ ⊑ ε₂  ⟺  ε₁ ⊆ ε₂
 ```
 
-Join-semilattice. Sequential composition = `∪`. **Covariant** subsumption in the
-grade: `T ! ε` coerces to `T ! ε'` when `ε ⊑ ε'` (a less-effectful computation is
-usable as a more-effectful one). For principality, *minimize* `ε`.
+Join-semilattice. Sequential composition = `∪`. `Label` is now an open finite set of
+operation labels `ℓ₁ … ℓₙ`; Sprint 01's single `ℓ` was the reduced target, not a different
+algebra. **Covariant** subsumption in the grade: `T ! ε` coerces to `T ! ε'` when
+`ε ⊑ ε'` (a less-effectful computation is usable as a more-effectful one). For
+principality, *minimize* `ε`.
 
 ### 2.3 Boundedness `β ∈ Bound` — graded comonad, quantitative
 
@@ -166,21 +168,22 @@ e ::= x
     | e₁ e₂                           application
     | let x = e₁ in e₂                sequencing (monadic bind)
     | fix f:(T →[σ] T). λ x. e         recursion  (induces the β-constraint, §7)
+    | fix* { fᵢ:(Tᵢ →[σᵢ] Uᵢ) = λ xᵢ. eᵢ }ᵢ  mutual recursive binding group
     | ⟨ ℓ = e, … ⟩ | e.ℓ              record intro / proj
-    | perform ℓ e                     invoke effect operation ℓ
+    | perform ℓᵢ e                    invoke effect operation ℓᵢ
     | handle e with H                 effect handler (deep)
     | resume k e                      invoke a captured continuation (consumes k)
     | move e                          transfer unique ownership (consumes e)
     | inplace e                       destructive update (requires q=1)
 
-H ::= { return x → e_ret ; (ℓ p k → e_ℓ)* }
+H ::= { return x → e_ret ; (ℓᵢ pᵢ kᵢ → eᵢ)ᵢ∈I }
 ```
 
-Handler `H` has one return clause and zero-or-more operation clauses. In clause
-`ℓ p k → e_ℓ`, `p` binds the operation argument and `k : Cont[…] A R @ 1` names the
-**one-shot** delimited continuation up to the enclosing `handle`. The continuation is
-materialized lazily: a clause that does not use `k` does not allocate or carry the
-delimited frame.
+Handler `H` has one return clause and a finite clause set over handled labels
+`dom(H) = {ℓᵢ | i ∈ I}`. In clause `ℓᵢ pᵢ kᵢ → eᵢ`, `pᵢ` binds the operation argument and
+`kᵢ : Cont[…] Aᵢ R @ 1` names the **one-shot** delimited continuation up to the enclosing
+`handle` for that label. The continuation is materialized lazily: a clause that does not
+use its own `kᵢ` does not allocate or carry the delimited frame.
 
 ---
 
@@ -363,11 +366,17 @@ Key facts encoded above:
 ```
 
 The occurrences of `f` in `e` make `β` **recursive**: `β` must satisfy
-`β ⊒ Fix_β(f, e)`, whose least solution over `Bound` is computed in §7. For the
-structural/free rung, the concrete strict-descent condition is: a recursive call may use
-only a variable bound by a `succ x` pattern whose scrutinee is the current recursive
-parameter. That variable is a strict subterm of the scrutinee because the `case` rule has
-peeled one `succ`. If the resulting lfp is finite, the frame is statically sized
+`β ⊒ Fix_β(f, e)`, whose least solution over `Bound` is computed in §7. A mutual group
+checks every body with all `fᵢ` in scope and emits one unknown `βᵢ` per member. Tags are
+per member. The reduced structural rule is conservative: a `Structural` member may not
+participate in an inter-member cycle; cyclic groups use `measure` or `div`. Future
+precision may prove descent around an entire call cycle, but Sprint 08 chooses the
+minimal sound rule.
+
+For the structural/free rung, the concrete strict-descent condition is: a recursive call
+may use only a variable bound by a `succ x` pattern whose scrutinee is the current
+recursive parameter. That variable is a strict subterm of the scrutinee because the `case`
+rule has peeled one `succ`. If the resulting lfp is finite, the frame is statically sized
 (stackless codegen); if it widens to `ω`, the function is `div` and gets the stackful
 fallback.
 
@@ -431,14 +440,19 @@ Handler reductions (deep):
 handle v with H                →   e_r[x := v]                           (H-return)
 
 handle E[perform ℓ v] with H   →   e_ℓ[ p := v ]                         (H-op-drop)
-     when  ℓ ∈ H, E is handler-free for ℓ, and k ∉ FV(e_ℓ).
+     when  ℓ ∈ dom(H), E is handler-free for ℓ, and k ∉ FV(e_ℓ).
      No continuation is materialized; the captured frame is not allocated.
 
 handle E[perform ℓ v] with H   →   e_ℓ[ p := v ,
                                         k := κ ]                         (H-op-resume)
-     when  ℓ ∈ H, E is handler-free for ℓ, and k ∈ FV(e_ℓ), where
+     when  ℓ ∈ dom(H), E is handler-free for ℓ, and k ∈ FV(e_ℓ), where
      κ  =  λ y. handle E[y] with H          -- deep: H reinstalled
      and κ is marked ONE-SHOT.
+
+`E` is handler-free for `ℓ` when its hole is not underneath a nested handler whose
+`dom(H')` contains `ℓ`. A nested handler for a different label `ℓ' ≠ ℓ` is transparent to
+this search. Thus `perform ℓ` is captured by the innermost dynamically enclosing handler
+that has a clause for `ℓ`, not merely by the nearest syntactic handler of any label.
 
 resume κ v                      →   κ v            if κ not yet used      (resume)
 resume κ v                      →   ⊥ (stuck)      if κ already used      (one-shot violation)
@@ -505,10 +519,13 @@ noted here only as a known design point, not adopted.
 `Fix`, `App`, `Let`, and `case` generate a system of constraints over `Bound`-valued
 unknowns (one per definition, plus row variables). All constraints have the monotone
 shape `βₓ ⊒ Φₓ(β⃗)` where `Φ` is built from `⊕` (nesting), `⊔` (branching), and
-substitution at recursive occurrences. For structural recursion over `Nat`, a recursive
-occurrence is accepted at the free rung only when its argument is the predecessor variable
-introduced by a surrounding `succ x` branch for the current recursive parameter. The
-intended solution is the **least fixpoint** `lfp Φ` (tightest sound frame sizes).
+substitution at recursive occurrences. Binding groups generate mutually-referential
+constraints: a cyclic group naturally produces a multi-node SCC over the `βᵢ` unknowns of
+its members, giving §7.2's SCC solver its source in the core language rather than only in
+hand-built tests. For structural recursion over `Nat`, a recursive occurrence is accepted
+at the free rung only when its argument is the predecessor variable introduced by a
+surrounding `succ x` branch for the current recursive parameter. The intended solution is
+the **least fixpoint** `lfp Φ` (tightest sound frame sizes).
 
 ### 7.2 Solving
 
@@ -666,12 +683,13 @@ Mechanize in Rocq (Iris for the substructural/linearity reasoning). Prove soundn
 **radically shrunk core** containing exactly the novel interaction and nothing else:
 
 - Types: `Unit`, `Nat`, one arrow, `Cont`; `Nat` has unary `zero`/`succ` and `case`.
-- Effects: **one** operation `ℓ`.
-- **One** handler form (`Handle`), deep, affine/relevant `k`, with lazy continuation
-  capture for dropped clauses (`H-op-drop`), one-shot materialized continuations for
-  resuming clauses (`H-op-resume`), and the lemma that typed clauses satisfy
-  `k ∈ FV(e_ℓ) ⇔ e_ℓ` directly resumes `k` exactly once.
-- Boundedness: `Bound = ℕ ∪ {ω}`, `⊕`/`⊔`, `Fix` with the recursive `β`-constraint.
+- Effects: finitely many labels `ℓᵢ`; Sprint 04's one-label Rocq scaffold is the base
+  case. The L5 clause lemma is label-count independent because it is stated per clause.
+- **One** handler form (`Handle`), deep, affine/relevant per-clause `kᵢ`, with lazy
+  continuation capture for dropped clauses (`H-op-drop`), one-shot materialized
+  continuations for resuming clauses (`H-op-resume`), and the lemma that typed clauses
+  satisfy `kᵢ ∈ FV(eᵢ) ⇔ eᵢ` directly resumes `kᵢ` exactly once.
+- Boundedness: `Bound = ℕ ∪ {ω}`, `⊕`/`⊔`, `Fix`/`fix*` with recursive `β` constraints.
 - Drop for now: records/variants, regions beyond a single arena, `move`/`inplace`
   (add back as *known-sound extensions* once the core holds).
 
