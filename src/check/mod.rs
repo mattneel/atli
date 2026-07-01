@@ -54,6 +54,12 @@ impl CheckedWitness {
         &self.stats
     }
 
+    /// Certified allocation grade for downstream consumers (`docs/calculus.md §7.3`, §9.1).
+    #[must_use]
+    pub fn certified_bound(&self) -> CertifiedGrade {
+        self.certified_bound
+    }
+
     fn new(mut partial: PartialWitness, certified: CertifiedGrade, stats: SolverStats) -> Self {
         partial.bound = BoundExpr::constant(certified.get());
         let witness = partial.into_witness(certified.get());

@@ -189,3 +189,99 @@ fn cli_unhandled_eval_outcome_is_internal_exit_two() {
     assert!(stderr.contains("internal error"));
     assert!(stderr.contains("StuckUnhandledOperation"));
 }
+
+fn has_clang() -> bool {
+    Command::new("clang-22")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+        || Command::new("clang")
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+}
+
+#[test]
+fn codegen_emit_goldens_pin_certified_arena_literals() {
+    for (path, golden) in [
+        ("examples/fib.atli", "tests/goldens/codegen/fib.mlir"),
+        ("examples/arith.atli", "tests/goldens/codegen/arith.mlir"),
+    ] {
+        let (code, stdout, stderr) = run_cli(&["emit", path]);
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(stdout, fs::read_to_string(golden).unwrap(), "{path}");
+        assert!(stdout.contains("atli.certified_beta_slots"));
+    }
+}
+
+#[test]
+fn codegen_fragment_boundaries_are_diagnostics() {
+    let (code, _stdout, stderr) = run_cli(&["build", "examples/state_handler.atli"]);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("effects and handlers are Sprint 07 territory"));
+
+    let (code, _stdout, stderr) = run_cli(&["build", "examples/server_loop.atli"]);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("Div functions require the growable backend"));
+}
+
+#[test]
+fn compiled_native_outputs_match_oracle_for_effect_free_finite_programs() {
+    if !has_clang() {
+        eprintln!("skipping compiled differential: no clang-22/clang found");
+        return;
+    }
+    fs::create_dir_all("target/codegen_cases").unwrap();
+    let cases = [
+        ("fib", fs::read_to_string("examples/fib.atli").unwrap(), "55\n"),
+        ("arith", fs::read_to_string("examples/arith.atli").unwrap(), "14\n"),
+        ("log2", fs::read_to_string("examples/log2.atli").unwrap(), "0\n"),
+        ("const0", "fn main() -> Nat = 0\n".into(), "0\n"),
+        ("const7", "fn main() -> Nat = 7\n".into(), "7\n"),
+        ("add", "fn main() -> Nat = 8 + 5\n".into(), "13\n"),
+        ("sub1", "fn main() -> Nat = 8 - 5\n".into(), "3\n"),
+        ("sub_monus", "fn main() -> Nat = 3 - 9\n".into(), "0\n"),
+        ("mul", "fn main() -> Nat = 6 * 7\n".into(), "42\n"),
+        ("prec", "fn main() -> Nat = 2 + 3 * 4\n".into(), "14\n"),
+        ("block_case", "fn main() -> Nat = { n = 3; case n { 0 -> 9; p -> p + 4 } }\n".into(), "6\n"),
+        ("struct", "fn dec(n: Nat) -> Nat = case n { 0 -> 0; p -> dec(p) }\nfn main() -> Nat = dec(4)\n".into(), "0\n"),
+        ("measure", "fn down(n: Nat) -> Nat measure n = case n { 0 -> 0; p -> down(p) }\nfn main() -> Nat = down(5)\n".into(), "0\n"),
+    ];
+    for (name, src, expected) in cases {
+        let path = format!("target/codegen_cases/{name}.atli");
+        fs::write(&path, src).unwrap();
+        let (code, oracle_stdout, oracle_stderr) = run_cli(&["run", &path]);
+        assert_eq!(code, 0, "oracle {name}: {oracle_stderr}");
+        assert_eq!(oracle_stdout, expected, "oracle {name}");
+
+        let (code, compiled_stdout, compiled_stderr) = run_cli(&["run", "--compiled", &path]);
+        assert_eq!(code, 0, "compiled {name}: {compiled_stderr}");
+        assert_eq!(compiled_stdout, oracle_stdout, "compiled {name}");
+        assert!(
+            compiled_stderr.contains("ATLI_HIGH_WATER="),
+            "{name}: {compiled_stderr}"
+        );
+        let (high_water, beta) = parse_high_water(&compiled_stderr);
+        assert!(
+            high_water <= beta,
+            "{name}: high_water={high_water}, beta={beta}"
+        );
+        let _ = fs::remove_file(name);
+    }
+}
+
+fn parse_high_water(stderr: &str) -> (u64, u64) {
+    let mut high_water = None;
+    let mut beta = None;
+    for part in stderr.split_whitespace() {
+        if let Some(value) = part.strip_prefix("ATLI_HIGH_WATER=") {
+            high_water = Some(value.parse().unwrap());
+        }
+        if let Some(value) = part.strip_prefix("ATLI_BETA=") {
+            beta = Some(value.parse().unwrap());
+        }
+    }
+    (high_water.unwrap(), beta.unwrap())
+}

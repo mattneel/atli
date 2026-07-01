@@ -14,6 +14,12 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
+      - name: Install tier-1 codegen toolchain
+        run: |
+          sudo apt-get update
+          if ! sudo apt-get install -y clang-22 mlir-22-tools llvm-22-tools; then
+            echo "::warning::LLVM 22 toolchain unavailable; codegen tests will skip compiled execution"
+          fi
       - run: cargo test
 
 

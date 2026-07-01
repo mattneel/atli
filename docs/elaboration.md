@@ -47,3 +47,12 @@ argument, which matches the current strict-descent checker. `sub` uses an inject
 `__atli_pred` helper; `mul` depends on `add`. Backends may recognize these injected
 identities and lower them to native arithmetic as a performance decision, while the oracle
 continues to run their unary core definitions.
+
+## Tier-1 native recognition (Sprint 06)
+
+`atli emit` / `atli build` consume the same elaboration but lower only the effect-free,
+finite-β fragment. In that fragment, arithmetic prelude identities are treated as a
+backend performance boundary: the oracle still sees unary library recursion, while the
+tier-1 native harness lowers surface `+`, `-`, and `*` to native `i64` arithmetic. Monus
+is emitted as `max(a - b, 0)`. This is semantics-preserving for the reduced `Nat` subset
+and does not add primitive arithmetic to the core calculus.
