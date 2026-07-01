@@ -49,6 +49,9 @@ fn pretty_reparse_elaboration_is_stable_for_examples() {
         "examples/default_handler.atli",
         "examples/two_effects.atli",
         "examples/even_odd.atli",
+        "examples/conditional_handler.atli",
+        "examples/handler_in_recursion.atli",
+        "examples/drop_across_scopes.atli",
         "examples/wedge.atli",
     ] {
         let src = fs::read_to_string(path).expect(path);
@@ -125,6 +128,9 @@ fn cli_runs_examples_and_surfaces_witnesses() {
         ("examples/default_handler.atli", "9\n"),
         ("examples/two_effects.atli", "8\n"),
         ("examples/even_odd.atli", "1\n"),
+        ("examples/conditional_handler.atli", "5\n"),
+        ("examples/handler_in_recursion.atli", "0\n"),
+        ("examples/drop_across_scopes.atli", "9\n"),
     ];
     for (path, expected) in cases {
         let (code, stdout, stderr) = run_cli(&["run", path]);
@@ -229,6 +235,18 @@ fn codegen_emit_goldens_pin_certified_arena_literals() {
             "examples/even_odd.atli",
             "tests/goldens/codegen/even_odd.mlir",
         ),
+        (
+            "examples/conditional_handler.atli",
+            "tests/goldens/codegen/conditional_handler.mlir",
+        ),
+        (
+            "examples/handler_in_recursion.atli",
+            "tests/goldens/codegen/handler_in_recursion.mlir",
+        ),
+        (
+            "examples/drop_across_scopes.atli",
+            "tests/goldens/codegen/drop_across_scopes.mlir",
+        ),
     ] {
         let (code, stdout, stderr) = run_cli(&["emit", path]);
         assert_eq!(code, 0, "{stderr}");
@@ -245,6 +263,15 @@ fn codegen_emit_goldens_pin_certified_arena_literals() {
             assert!(stdout.contains("H-op-resume"));
             assert!(stdout.contains("L5_mentions_iff_resume"));
             assert!(stdout.contains("atli_debug_resume_once"));
+        }
+        if path.ends_with("conditional_handler.atli") {
+            assert!(stdout.contains("atli_scope_push"));
+            assert!(stdout.contains("atli_scope_perform"));
+            assert!(stdout.contains("handler-scope push"));
+        }
+        if path.ends_with("drop_across_scopes.atli") {
+            assert!(stdout.contains("atli_scope_pop"));
+            assert!(stdout.contains("H-op-drop"));
         }
     }
 }
@@ -287,6 +314,9 @@ fn compiled_native_outputs_match_oracle_for_finite_programs() {
         ("abort", fs::read_to_string("examples/abort.atli").unwrap(), "9\n"),
         ("two_effects", fs::read_to_string("examples/two_effects.atli").unwrap(), "8\n"),
         ("even_odd", fs::read_to_string("examples/even_odd.atli").unwrap(), "1\n"),
+        ("conditional_handler", fs::read_to_string("examples/conditional_handler.atli").unwrap(), "5\n"),
+        ("handler_in_recursion", fs::read_to_string("examples/handler_in_recursion.atli").unwrap(), "0\n"),
+        ("drop_across_scopes", fs::read_to_string("examples/drop_across_scopes.atli").unwrap(), "9\n"),
         ("const0", "fn main() -> Nat = 0\n".into(), "0\n"),
         ("const7", "fn main() -> Nat = 7\n".into(), "7\n"),
         ("add", "fn main() -> Nat = 8 + 5\n".into(), "13\n"),

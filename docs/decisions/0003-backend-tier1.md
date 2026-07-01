@@ -69,3 +69,28 @@ single lexically known label lets `perform` dispatch statically to the nearest h
 `H-op-drop` abandons the captured continuation without frame materialization; `H-op-resume`
 compiles the direct resume as a call back into the captured continuation shape. Tier 2 must
 generalize this to multi-label/dynamic handler stacks.
+
+## Sprint 09 second amendment: runtime handler-scope stack
+
+Sprint 09 replaces the lexical handler-dispatch smoke with a minimal runtime handler-scope stack for
+native lowering of the current first-order fragment. Entering a `handle` emits one scope record per
+operation clause:
+
+```text
+{ label_id: i64, mode: i64, value: i64, watermark: i64 }
+```
+
+The stack lives in the runtime shim rather than the certified β arena. Rationale: scope records are
+control metadata for dynamic handler search, not continuation/activation frames counted by §9.1's
+slot metric. The emitted IR still captures the arena high-water value at handler entry and passes it
+into the record so drop clauses have the watermark needed by the §5 `H-op-drop` contract; the current
+slot-frame backend has no cumulative bump pointer to reset, so the watermark is an observable
+contract field rather than a byte-moving operation.
+
+`perform ℓ` outside a lexically visible handler lowers to `atli_scope_perform(label_id(ℓ), arg)`,
+which walks the runtime stack innermost-out. Lexically visible operations still use the existing
+source-level lowering for precision: `H-op-drop` abandons the continuation path, and `H-op-resume`
+uses the direct-resume lowering licensed by `L5_mentions_iff_resume`. The runtime ABI handles the
+forcing case that lexical dispatch could not: a called function performing under a handler installed
+by its caller. Tier-3 optimization may replace this with evidence passing or handler inlining, but the
+semantic baseline is now dynamic scope search per `docs/calculus.md §5`.

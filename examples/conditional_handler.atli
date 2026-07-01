@@ -1,0 +1,13 @@
+effect L { op(x: Nat) -> Nat }
+
+fn ask(n: Nat) -> Nat = L.op(n)
+
+fn choose(n: Nat) -> Nat = case n {
+  0 -> handle ask(5) {
+    return(x) -> x
+    L.op(p), k -> k(p)
+  }
+  p -> 3
+}
+
+fn main() -> Nat = choose(0)

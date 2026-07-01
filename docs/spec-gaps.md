@@ -31,15 +31,16 @@ semantics.
 
 
 
-- SPEC-GAP(runtime-handler-scope-stack-codegen): Sprint 09 resolves `fix*` but does not
-  replace the compiled handler lowering with the runtime handler-scope stack required by
-  `docs/calculus.md §5` for fully dynamic handler scope. Current native handler examples
-  remain source-structure/lexical smoke tests; functions that perform under a handler
-  installed by their caller need a runtime `perform` ABI that walks scope records carrying
-  handled labels, clause targets, and arena watermarks. ADR 0003 still needs the second
-  amendment deciding scope-record layout and arena accounting.
-
 ## Resolved gaps
+
+- RESOLVED(runtime-handler-scope-stack-codegen): Sprint 09 replaces the compiled
+  unhandled-perform path with a runtime handler-scope stack. Entering a native `handle`
+  emits scope records keyed by interned label id with clause mode and entry watermark;
+  `perform ℓ` in called functions invokes `atli_scope_perform`, which walks innermost-out
+  at runtime. Lexically visible handler clauses still use the precise `H-op-drop`/
+  `H-op-resume` lowering, while dynamic resuming clauses return through the runtime scope
+  ABI. Goldens cover conditional installation, recursive installation, and drop-across
+  transparent scopes.
 
 - RESOLVED(mutual-recursion-core-implementation): Sprint 09 implements `fix*` binding
   groups through Rust core, interpreter, derived witness, checker, generator, surface

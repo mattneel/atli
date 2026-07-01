@@ -66,14 +66,15 @@ Sprint 07 makes the MLIR module load-bearing: `atli build` lowers emitted MLIR t
 calls the oracle interpreter; oracle execution is used only in tests to compare compiled
 outputs after the fact.
 
-Sprint 08 generalizes surface and core handlers to multiple labels. The compiler now
-selects a clause by label, and nested handlers over different labels are transparent in
-the compiled path exercised by `two_effects.atli`. The drop/resume classification within
-a selected clause remains static and is still licensed by `L5_mentions_iff_resume`: dropped
-clauses compile as `H-op-drop` and allocate no continuation frame, while resuming clauses
-compile as `H-op-resume` and call a debug one-shot check before invoking the captured
-continuation shape. A fully general runtime handler-scope stack is still future work; the
-current tier handles the tested lexical cross-label cases.
+Sprint 08 generalizes surface and core handlers to multiple labels. Sprint 09 adds the
+compiled runtime handler-scope stack for dynamic search: entering a native `handle` pushes
+label-keyed scope records carrying clause mode and handler-entry watermark, and `perform ℓ`
+in called functions invokes `atli_scope_perform` to walk those records innermost-out per
+`docs/calculus.md §5`. The drop/resume classification within a selected lexical clause
+remains static and is still licensed by `L5_mentions_iff_resume`: dropped clauses compile
+as `H-op-drop` and allocate no continuation frame, while resuming clauses compile as
+`H-op-resume` and call a debug one-shot check before invoking the captured continuation
+shape.
 
 ## Sprint 08 growable `Div` path
 

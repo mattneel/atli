@@ -1,0 +1,13 @@
+effect L { op(x: Nat) -> Nat }
+
+fn ask(n: Nat) -> Nat = L.op(n)
+
+fn descend(n: Nat) -> Nat measure n = case n {
+  0 -> 0
+  p -> handle ask(p) {
+    return(x) -> descend(x)
+    L.op(q), k -> k(q)
+  }
+}
+
+fn main() -> Nat = descend(3)

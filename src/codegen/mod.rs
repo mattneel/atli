@@ -287,6 +287,27 @@ fn runtime_shim() -> String {
        fprintf(stderr, \"ATLI ONE-SHOT VIOLATED\\n\");\n\
        exit(87);\n\
      }\n\
+     typedef struct { int64_t label; int64_t mode; int64_t value; int64_t watermark; } AtliScope;\n\
+     static AtliScope atli_scopes[256];\n\
+     static int atli_scope_depth = 0;\n\
+     void atli_scope_push(int64_t label, int64_t mode, int64_t value, int64_t watermark) {\n\
+       if (atli_scope_depth >= 256) { fprintf(stderr, \"ATLI HANDLER SCOPE OVERFLOW\\n\"); exit(88); }\n\
+       atli_scopes[atli_scope_depth++] = (AtliScope){label, mode, value, watermark};\n\
+     }\n\
+     void atli_scope_pop(void) {\n\
+       if (atli_scope_depth <= 0) { fprintf(stderr, \"ATLI HANDLER SCOPE UNDERFLOW\\n\"); exit(88); }\n\
+       atli_scope_depth--;\n\
+     }\n\
+     int64_t atli_scope_perform(int64_t label, int64_t arg) {\n\
+       for (int i = atli_scope_depth - 1; i >= 0; --i) {\n\
+         if (atli_scopes[i].label == label) {\n\
+           if (atli_scopes[i].mode == 0) return atli_scopes[i].value;\n\
+           return arg;\n\
+         }\n\
+       }\n\
+       fprintf(stderr, \"ATLI UNHANDLED EFFECT: dynamic handler scope missing\\n\");\n\
+       exit(89);\n\
+     }\n\
      int main(void) {\n\
        int64_t result = atli_program_main();\n\
        printf(\"%lld\\n\", (long long)result);\n\
@@ -339,6 +360,11 @@ impl<'a> MlirModule<'a> {
         out.push_str("  func.func private @atli_trap_overflow() -> ()\n");
         out.push_str("  func.func private @atli_trap_one_shot() -> ()\n");
         out.push_str("  func.func private @atli_tick() -> ()\n");
+        out.push_str(
+            "  func.func private @atli_scope_push(%label: i64, %mode: i64, %value: i64, %watermark: i64) -> ()\n",
+        );
+        out.push_str("  func.func private @atli_scope_pop() -> ()\n");
+        out.push_str("  func.func private @atli_scope_perform(%label: i64, %arg: i64) -> i64\n");
         self.emit_runtime_helpers(&mut out);
         for decl in &self.program.decls {
             match decl {
@@ -489,8 +515,11 @@ impl<'a> Builder<'a> {
             ExprKind::Unit => Err(CodegenError::new(
                 "tier-1 native lowering currently supports Nat results only",
             )),
+            ExprKind::QualifiedCall { effect, op, args } if op == "op" => {
+                self.dynamic_perform(effect, args, env, indent)
+            }
             ExprKind::QualifiedCall { .. } => Err(CodegenError::new(
-                "unhandled effect operations require a handler in tier-1 native lowering",
+                "native lowering supports only effect operation name `op`",
             )),
         }
     }
@@ -503,7 +532,10 @@ impl<'a> Builder<'a> {
         indent: usize,
     ) -> Result<Value, CodegenError> {
         let ctx = HandlerCtx::new(clauses)?;
-        self.handled_expr(body, &ctx, env, indent, Continuation::Return)
+        self.push_handler_scopes(&ctx, indent);
+        let value = self.handled_expr(body, &ctx, env, indent, Continuation::Return)?;
+        self.pop_handler_scopes(ctx.clauses.len(), indent);
+        Ok(value)
     }
 
     fn handled_expr(
@@ -515,15 +547,18 @@ impl<'a> Builder<'a> {
         cont: Continuation<'_>,
     ) -> Result<Value, CodegenError> {
         match &expr.kind {
-            ExprKind::QualifiedCall { effect, op, args }
-                if op == "op" && ctx.clause_for(effect).is_some() =>
-            {
-                if args.len() != 1 {
-                    return Err(CodegenError::new(
-                        "effect operation `op` expects one argument",
-                    ));
+            ExprKind::QualifiedCall { effect, op, args } if op == "op" => {
+                if ctx.clause_for(effect).is_some() {
+                    if args.len() != 1 {
+                        return Err(CodegenError::new(
+                            "effect operation `op` expects one argument",
+                        ));
+                    }
+                    self.handle_perform(effect, &args[0], ctx, env, indent, cont)
+                } else {
+                    let value = self.dynamic_perform(effect, args, env, indent)?;
+                    self.apply_cont(value, ctx, env, indent, cont)
                 }
-                self.handle_perform(effect, &args[0], ctx, env, indent, cont)
             }
             ExprKind::Block { bindings, result } => {
                 self.handled_block(bindings, result, ctx, env, indent, cont)
@@ -666,6 +701,71 @@ impl<'a> Builder<'a> {
             );
         }
         self.resume_body(clause, ctx, &op_env, indent, cont)
+    }
+
+    fn dynamic_perform(
+        &mut self,
+        effect: &str,
+        args: &[Expr],
+        env: &BTreeMap<String, String>,
+        indent: usize,
+    ) -> Result<Value, CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::new(
+                "effect operation `op` expects one argument",
+            ));
+        }
+        let label = self.constant(label_id(effect), indent);
+        let arg = self.expr(&args[0], env, indent)?;
+        let result = self.fresh("perform");
+        self.line(
+            indent,
+            &format!(
+                "{result} = func.call @atli_scope_perform({}, {}) : (i64, i64) -> i64",
+                label.name, arg.name
+            ),
+        );
+        Ok(Value { name: result })
+    }
+
+    fn push_handler_scopes(&mut self, ctx: &HandlerCtx<'_>, indent: usize) {
+        self.line(
+            indent,
+            "// handler-scope push, calculus.md §5: runtime innermost label search",
+        );
+        for clause in &ctx.clauses {
+            if clause.op_k.is_none() {
+                self.line(
+                    indent,
+                    &format!(
+                        "// H-op-drop scope record for {}.op carries entry watermark",
+                        clause.effect
+                    ),
+                );
+            }
+            let label = self.constant(label_id(clause.effect), indent);
+            let (mode, value) = clause.scope_mode();
+            let mode = self.constant(mode, indent);
+            let value = self.constant(value, indent);
+            let watermark = self.fresh("scope_watermark");
+            self.line(
+                indent,
+                &format!("{watermark} = func.call @atli_high_water_value() : () -> i64"),
+            );
+            self.line(
+                indent,
+                &format!(
+                    "func.call @atli_scope_push({}, {}, {}, {watermark}) : (i64, i64, i64, i64) -> ()",
+                    label.name, mode.name, value.name
+                ),
+            );
+        }
+    }
+
+    fn pop_handler_scopes(&mut self, count: usize, indent: usize) {
+        for _ in 0..count {
+            self.line(indent, "func.call @atli_scope_pop() : () -> ()");
+        }
     }
 
     fn resume_body(
@@ -989,6 +1089,38 @@ impl<'a> HandlerCtx<'a> {
     }
 }
 
+impl ClauseCtx<'_> {
+    fn scope_mode(&self) -> (u64, u64) {
+        const MODE_CONST: u64 = 0;
+        const MODE_ARG: u64 = 1;
+        match &self.op_body.kind {
+            ExprKind::Nat(value) => (MODE_CONST, *value),
+            ExprKind::Var(name) if Some(name.as_str()) == self.op_param => (MODE_ARG, 0),
+            ExprKind::Call { callee, args }
+                if self.op_k.is_some()
+                    && matches!(&callee.kind, ExprKind::Var(name) if Some(name.as_str()) == self.op_k)
+                    && args.len() == 1 =>
+            {
+                match &args[0].kind {
+                    ExprKind::Nat(value) => (MODE_CONST, *value),
+                    ExprKind::Var(name) if Some(name.as_str()) == self.op_param => (MODE_ARG, 0),
+                    _ => (MODE_ARG, 0),
+                }
+            }
+            ExprKind::Block { result, .. } => {
+                let nested = ClauseCtx {
+                    effect: self.effect,
+                    op_param: self.op_param,
+                    op_k: self.op_k,
+                    op_body: result,
+                };
+                nested.scope_mode()
+            }
+            _ => (MODE_ARG, 0),
+        }
+    }
+}
+
 fn expr_mentions_outer_only_effect(
     expr: &Expr,
     outer: &HandlerCtx<'_>,
@@ -1121,6 +1253,15 @@ fn c_ident(name: &str) -> String {
         out.insert(0, '_');
     }
     out
+}
+
+fn label_id(label: &str) -> u64 {
+    let mut hash = 1469598103934665603_u64;
+    for byte in label.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    hash
 }
 
 #[cfg(test)]

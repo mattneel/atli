@@ -5,6 +5,9 @@ module attributes {atli.certified_beta_slots = 0 : i64, atli.arena_overhead_slot
   func.func private @atli_trap_overflow() -> ()
   func.func private @atli_trap_one_shot() -> ()
   func.func private @atli_tick() -> ()
+  func.func private @atli_scope_push(%label: i64, %mode: i64, %value: i64, %watermark: i64) -> ()
+  func.func private @atli_scope_pop() -> ()
+  func.func private @atli_scope_perform(%label: i64, %arg: i64) -> i64
   func.func @atli_beta_slots() -> i64 {
     %beta = arith.constant 0 : i64
     return %beta : i64
