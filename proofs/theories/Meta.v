@@ -39,19 +39,19 @@ Theorem preservation : forall t u ty eps beta,
   has_type [] t ty eps beta -> step t u -> exists eps' beta', has_type [] u ty eps' beta'.
 Admitted.
 
-(* L6 sketch, owner: future Iris/resource sprint. Model affine continuations as a resource
-   owned by the handler clause; L5 supplies exactly-one direct resume when k is mentioned,
-   and dropped clauses allocate no resource. *)
-Theorem one_shot_soundness : forall t ty eps beta,
-  has_type [] t ty eps beta -> True.
-Admitted.
+(* L6 status: Stated-Pending-Infrastructure, owner: future Iris/resource sprint.
+   This is deliberately not a theorem yet: the scaffold has no continuation resource/usage
+   transition model to quantify over. The intended statement is that well-typed closed
+   programs cannot reach the §5 resume-after-use stuck state. L5 supplies the syntactic
+   exactly-one direct resume premise; the missing infrastructure is the dynamic one-shot
+   resource model. *)
 
-(* L7 sketch, owner: future boundedness sprint. Instrument [step] with the same frame-count
-   metric as interp.rs (not byte layout; see SPEC-GAP(frame-metric-byte-accuracy)) and show
-   every finite certified beta upper-bounds max realized frames along reduction. *)
-Theorem boundedness_soundness : forall t ty eps n,
-  has_type [] t ty eps (BFinite n) -> True.
-Admitted.
+(* L7 status: Stated-Pending-Infrastructure, owner: future boundedness sprint.
+   This is deliberately not a theorem yet: the scaffold has no instrumented frame-counting
+   step relation. Once that relation exists, the statement should quantify over reductions
+   from a term typed with finite beta and prove that every realized frame-count prefix is <=
+   beta. The metric is the interp.rs frame-count proxy, not byte layout; see
+   SPEC-GAP(frame-metric-byte-accuracy). *)
 
 Theorem solver_certificate_postfix_field : forall cert c,
   satisfies (certified_value cert) c.
@@ -61,5 +61,6 @@ Proof. intros cert c. exact (certificate_postfix cert c). Qed.
    post-fixpoint and widening only moves upward, then connect [solver_certificate] to Rust
    Part A's sealed [SolverCertificate] invariant. *)
 Theorem solver_certificate_soundness : forall rho cert c,
+  (forall c', satisfies rho c') ->
   satisfies (certified_value cert) c /\ bound_le (rho (target c)) (certified_value cert (target c)).
 Admitted.

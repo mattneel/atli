@@ -10,8 +10,10 @@ semantics.
   the number of captured evaluation-context frames in a handled operation continuation.
   Property tests check that this realized frame count never exceeds generated witness `β`;
   this is an empirical conformance check, not a byte-accurate backend allocation proof.
-  Sprint 04's Rocq scaffold states boundedness (`L7`) against this same frame-count proxy;
-  a byte-accurate theorem remains a future backend/layout refinement.
+  Sprint 04's Rocq scaffold deliberately does not state `L7` as a theorem yet: the
+  instrumented frame-counting step relation is missing. When added, it should target this
+  same frame-count proxy; a byte-accurate theorem remains a future backend/layout
+  refinement.
 
 - SPEC-GAP(measure-tag-trusted-reduced-core): Sprint 03 accepts `Measure`-tagged `fix`
   terms as the annotated recursion rung but does not verify an actual well-founded

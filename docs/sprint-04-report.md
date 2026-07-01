@@ -58,7 +58,8 @@ Build command: `make -C proofs`.
 
 ## Proof ladder table
 
-Exact admitted theorem count: 5.
+Exact admitted theorem count after ledger repair: 3. L6/L7 are explicitly demoted to
+`Stated-Pending-Infrastructure` until their resource/frame-count definitions exist.
 
 | Rung | Theorem family | Sprint 04 status | Evidence |
 |---|---|---:|---|
@@ -67,8 +68,8 @@ Exact admitted theorem count: 5.
 | L3 | Progress (§8.1) | Admitted | `Meta.v` statement with sketch/owner. |
 | L4 | Preservation (§8.2) | Admitted | `Meta.v` statement with sketch/owner. |
 | L5 | Mention iff direct resume (§6.2) | Qed | `handler_clause_ok_mentions_iff_resumes` and `L5_mentions_iff_resume`. |
-| L6 | One-shot soundness (§8.3) | Admitted | `Meta.v` statement with sketch/owner. |
-| L7 | Boundedness soundness (§8.4) | Admitted | Stated against the frame-count proxy; byte fidelity remains open. |
+| L6 | One-shot soundness (§8.3) | Stated-Pending-Infrastructure | No theorem placeholder; missing continuation resource/usage transition model is named in `Meta.v`. |
+| L7 | Boundedness soundness (§8.4) | Stated-Pending-Infrastructure | No theorem placeholder; missing instrumented frame-counting step relation is named in `Meta.v`. |
 | L8 | Solver/certificate soundness (§7.2/§7.3) | Admitted | `solver_certificate_soundness` stated; certificate field projection is Qed. |
 | Aux | Step determinism | Qed | `step_deterministic` / `step_is_deterministic`. |
 
@@ -95,8 +96,9 @@ No bridge mismatches were found.
   cannot create multi-node SCCs because the core has no mutual recursion. Multi-node SCC
   behavior is exercised by hand-built solver goldens/proofs only until a future core
   extension introduces a natural generated source.
-- `SPEC-GAP(frame-metric-byte-accuracy)` remains open. The Rocq `L7` statement is against
-  the interpreter's frame-count proxy, not byte layout.
+- `SPEC-GAP(frame-metric-byte-accuracy)` remains open. Rocq `L7` is not yet a theorem
+  statement; it is pending the instrumented frame-counting relation, which should target
+  the interpreter's frame-count proxy before any byte-layout refinement.
 - `SPEC-GAP(frame-metric-recursion-blindspot)` remains open; recursion boundedness is
   still witnessed by termination/divergence classification rather than a recursive frame
   metric.
@@ -115,4 +117,15 @@ Updated `.github/workflows/ci.yml` with a `proofs` job on `ubuntu-24.04` that in
 - `cargo clippy --all-targets -- -D warnings`
 - `cargo test`
 - `make -C proofs`
-- `grep -R "Admitted\." -n proofs/theories` → 5 admitted theorem obligations
+- `grep -R "Admitted\." -n proofs/theories` → 3 admitted theorem obligations
+
+## Post-review ledger repair
+
+A follow-up review found two ledger issues and both are repaired here:
+
+- L6/L7 no longer appear as `Admitted` theorems concluding `True`. They are demoted in
+  `Meta.v`, `proofs/README.md`, and this report to `Stated-Pending-Infrastructure` until
+  the continuation resource model and instrumented frame-counting step relation exist.
+- L8's admitted theorem now includes the missing true-solution hypothesis
+  `(forall c', satisfies rho c')`, so the future solver proof does not inherit an
+  obviously underconstrained `rho`.
