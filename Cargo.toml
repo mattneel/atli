@@ -1,0 +1,12 @@
+[package]
+name = "atli"
+version = "0.1.0"
+edition = "2021"
+description = "Executable reference spike for the reduced Atli core calculus"
+license = "MIT"
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+proptest = "1.9.0"
