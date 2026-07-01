@@ -31,6 +31,13 @@ semantics.
 
 ## Resolved gaps
 
+- RESOLVED(tier1-mlir-artifact-was-summary-not-lowering): Sprint 06's native path used a
+  generated C harness as the real compiler, while `atli emit` printed a summary MLIR module
+  containing the oracle-computed answer as `arith.constant`. Sprint 07 replaces that
+  summary with load-bearing MLIR: the MLIR module is the compilation input, no emission
+  path calls the oracle interpreter, and `interp` is used only by differential tests after
+  compiled execution.
+
 - RESOLVED(handler-k-usage-discipline): `docs/calculus.md §4.7` now makes option (i)
   explicit: a handler clause may drop `k` only by not mentioning it, and if `k` appears
   free then the clause must contain exactly one direct `resume k v` and no other free

@@ -41,3 +41,31 @@ publishes 22.1.8 binary artifacts.
 
 - LLVM release schedule, 22.1.x series: https://llvm.org/
 - LLVM 22.1.8 release assets: https://github.com/llvm/llvm-project/releases/tag/llvmorg-22.1.8
+
+## Sprint 07 amendment: MLIR is load-bearing
+
+Sprint 07 repairs the Sprint 06 deviation where the generated C harness was the real
+compiler and `atli emit` was a summary constant. The invariant is now: **the MLIR module
+is the compilation input; no emission path calls the oracle interpreter; the oracle only
+verifies compiled behavior after the fact.**
+
+The emitted dialect mix is `func`, `arith`, `scf`, and `memref`, lowered by:
+
+```text
+mlir-opt --convert-scf-to-cf --convert-cf-to-llvm --convert-func-to-llvm \
+         --convert-arith-to-llvm --finalize-memref-to-llvm \
+         --reconcile-unrealized-casts
+mlir-translate --mlir-to-llvmir
+clang-22 program.ll runtime.c -o program
+```
+
+The arena/high-water state lives in the MLIR module as `memref.global` data, and the β
+comparison operand is emitted in MLIR by `atli_touch_frame`. The runtime shim is not a
+compiler: it only wraps `main`, prints the result/high-water, and provides overflow and
+one-shot trap functions.
+
+Handler lowering strategy for Sprint 07 is a first defunctionalized/CPS-shaped tier: the
+single lexically known label lets `perform` dispatch statically to the nearest handler.
+`H-op-drop` abandons the captured continuation without frame materialization; `H-op-resume`
+compiles the direct resume as a call back into the captured continuation shape. Tier 2 must
+generalize this to multi-label/dynamic handler stacks.
