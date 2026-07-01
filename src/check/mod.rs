@@ -31,7 +31,8 @@ pub use error::{TypeError, TypeErrorKind};
 pub use solve::{CertifiedGrade, PendingGrade, SolverCertificate, SolverStats};
 
 use crate::core::{
-    ContinuationUseFacts, CoverageTag, Divergence, Handler, RecursionTag, Term, Type, Witness,
+    ContinuationUseFacts, CoverageTag, Divergence, FixBinding, Handler, RecursionTag, Term, Type,
+    Witness,
 };
 use crate::grade::{Bound, Eff, Region};
 use solve::{solve, BoundExpr, ConstraintSystem, UnknownId};
@@ -142,6 +143,7 @@ struct Env {
     vars: Vec<(String, Type)>,
     cont_vars: BTreeSet<String>,
     rec: Option<RecContext>,
+    recs: Vec<RecContext>,
 }
 
 impl Env {
@@ -167,7 +169,22 @@ impl Env {
             Type::Arrow(Box::new(Type::Nat), Box::new(Type::Nat)),
         ));
         next.vars.push((rec.param.clone(), Type::Nat));
+        next.recs = vec![rec.clone()];
         next.rec = Some(rec);
+        next
+    }
+
+    fn with_rec_group(&self, recs: Vec<RecContext>, current_func: &str, param: &str) -> Self {
+        let mut next = self.clone();
+        for rec in &recs {
+            next.vars.push((
+                rec.func.clone(),
+                Type::Arrow(Box::new(Type::Nat), Box::new(Type::Nat)),
+            ));
+        }
+        next.vars.push((param.into(), Type::Nat));
+        next.rec = recs.iter().find(|rec| rec.func == current_func).cloned();
+        next.recs = recs;
         next
     }
 
@@ -175,6 +192,11 @@ impl Env {
         let mut next = self.clone();
         if let Some(rec) = &mut next.rec {
             rec.strict_var = Some(strict_var.into());
+            for group_rec in &mut next.recs {
+                if group_rec.func == rec.func {
+                    group_rec.strict_var = Some(strict_var.into());
+                }
+            }
         }
         next
     }
@@ -252,6 +274,7 @@ impl Checker {
                 succ_body,
             } => self.infer_case(scrutinee, zero_body, succ_var, succ_body, env, term),
             Term::Fix { .. } => self.infer_fix(term, env),
+            Term::FixGroup { bindings, entry } => self.infer_fix_group(bindings, entry, env, term),
             Term::Perform(label, arg) => {
                 let mut out = self.infer(arg, env)?;
                 expect_type(&out.ty, &Type::Nat, term, "Perform", "§4.6")?;
@@ -301,16 +324,45 @@ impl Checker {
         env: &Env,
         whole: &Term,
     ) -> Result<PartialWitness, TypeError> {
-        if let (Term::Var(func), Some(rec)) = (fun, env.rec.as_ref()) {
-            if func == &rec.func {
+        if let Term::Var(func) = fun {
+            if let Some(rec) = env.recs.iter().find(|rec| &rec.func == func) {
                 let arg_w = self.infer(arg, env)?;
                 expect_type(&arg_w.ty, &Type::Nat, whole, "App/Fix", "§4.8/§7.1")?;
+                if env
+                    .rec
+                    .as_ref()
+                    .is_some_and(|current| current.tag == RecursionTag::Structural)
+                    && env
+                        .rec
+                        .as_ref()
+                        .is_none_or(|current| current.func != rec.func)
+                {
+                    return Err(TypeError::new(
+                        "FixGroup-Structural",
+                        "§4.8/§7.1",
+                        whole,
+                        format!(
+                            "Structural `{}` calls group member `{}` forming a cycle; cyclic groups require `measure` or `div`",
+                            env.rec.as_ref().map_or("<unknown>", |current| current.func.as_str()),
+                            rec.func
+                        ),
+                        TypeErrorKind::NonStrictStructuralRecursion,
+                    ));
+                }
                 let strict =
                     matches!(arg, Term::Var(name) if rec.strict_var.as_ref() == Some(name));
                 let mut out = arg_w;
                 out.ty = Type::Nat;
                 out.bound = match rec.tag {
-                    RecursionTag::Structural if strict => BoundExpr::constant(Bound::finite(1)),
+                    RecursionTag::Structural
+                        if strict
+                            && env
+                                .rec
+                                .as_ref()
+                                .is_some_and(|current| current.func == rec.func) =>
+                    {
+                        BoundExpr::constant(Bound::finite(1))
+                    }
                     RecursionTag::Structural => {
                         return Err(TypeError::new(
                             "Fix-Structural",
@@ -319,6 +371,17 @@ impl Checker {
                             "recursive call argument is not the peeled predecessor",
                             TypeErrorKind::NonStrictStructuralRecursion,
                         ));
+                    }
+                    RecursionTag::Measure
+                        if env
+                            .rec
+                            .as_ref()
+                            .is_some_and(|current| current.func != rec.func) =>
+                    {
+                        // `fix*` constraints (`calculus.md §7.1`) expose sibling calls as
+                        // dependencies so generated mutual groups exercise multi-node SCCs.
+                        // Self `measure` calls keep Sprint 03's trusted finite rung.
+                        BoundExpr::unknown(rec.unknown).join(BoundExpr::constant(Bound::finite(1)))
                     }
                     RecursionTag::Measure => BoundExpr::constant(Bound::finite(1)),
                     RecursionTag::Div => {
@@ -457,6 +520,87 @@ impl Checker {
             }
             RecursionTag::Div => {}
         }
+        Ok(out)
+    }
+
+    fn infer_fix_group(
+        &mut self,
+        bindings: &[FixBinding],
+        entry: &str,
+        env: &Env,
+        whole: &Term,
+    ) -> Result<PartialWitness, TypeError> {
+        // Binding-group typing (`calculus.md §4.8`) emits one β unknown per member; cyclic
+        // groups therefore feed the existing SCC solver exactly as `§7.1` specifies.
+        if bindings.is_empty() || !bindings.iter().any(|binding| binding.func == entry) {
+            return Err(TypeError::new(
+                "FixGroup",
+                "§4.8",
+                whole,
+                format!("fix* entry `{entry}` is not a member of the binding group"),
+                TypeErrorKind::Solver("malformed fix* entry".into()),
+            ));
+        }
+        let recs = bindings
+            .iter()
+            .map(|binding| {
+                expect_type(&binding.param_ty, &Type::Nat, whole, "FixGroup", "§4.8")?;
+                Ok(RecContext {
+                    func: binding.func.clone(),
+                    param: binding.param.clone(),
+                    tag: binding.tag,
+                    strict_var: None,
+                    unknown: self.system.fresh_unknown(),
+                })
+            })
+            .collect::<Result<Vec<_>, TypeError>>()?;
+        let mut entry_ty = Type::Nat;
+        let mut entry_bound = BoundExpr::constant(Bound::ZERO);
+        let mut entry_divergence = Divergence::Terminates;
+        let mut coverage = BTreeSet::new();
+        for binding in bindings {
+            let body_env = env.with_rec_group(recs.clone(), &binding.func, &binding.param);
+            let body_w = self.infer(&binding.body, &body_env)?;
+            let rec = recs
+                .iter()
+                .find(|rec| rec.func == binding.func)
+                .expect("binding has rec context");
+            let constraint = if binding.tag == RecursionTag::Div {
+                BoundExpr::unknown(rec.unknown).seq(BoundExpr::constant(Bound::finite(1)))
+            } else {
+                body_w.bound.clone()
+            };
+            self.system.constrain(rec.unknown, constraint);
+            coverage.extend(body_w.coverage.iter().copied());
+            match binding.tag {
+                RecursionTag::Structural => {
+                    coverage.insert(CoverageTag::FixStructural);
+                }
+                RecursionTag::Measure => {
+                    coverage.insert(CoverageTag::FixMeasure);
+                }
+                RecursionTag::Div => {}
+            }
+            if binding.func == entry {
+                entry_ty = body_w.ty.clone();
+                entry_bound = match binding.tag {
+                    RecursionTag::Structural => BoundExpr::unknown(rec.unknown),
+                    RecursionTag::Measure => {
+                        BoundExpr::unknown(rec.unknown).join(BoundExpr::constant(Bound::finite(1)))
+                    }
+                    RecursionTag::Div => BoundExpr::unknown(rec.unknown),
+                };
+                entry_divergence = if binding.tag == RecursionTag::Div {
+                    Divergence::Div
+                } else {
+                    body_w.divergence
+                };
+            }
+        }
+        let mut out = PartialWitness::pure(Type::Arrow(Box::new(Type::Nat), Box::new(entry_ty)));
+        out.bound = entry_bound;
+        out.divergence = entry_divergence;
+        out.coverage = coverage;
         Ok(out)
     }
 
@@ -630,6 +774,15 @@ fn free_var_count(term: &Term, name: &str) -> usize {
         Term::Fix {
             func, param, body, ..
         } => usize::from(func != name && param != name) * free_var_count(body, name),
+        Term::FixGroup { bindings, .. } => {
+            usize::from(!bindings.iter().any(|binding| binding.func == name))
+                * bindings
+                    .iter()
+                    .map(|binding| {
+                        usize::from(binding.param != name) * free_var_count(&binding.body, name)
+                    })
+                    .sum::<usize>()
+        }
         Term::CaseNat {
             scrutinee,
             zero_body,
@@ -680,6 +833,16 @@ fn direct_resume_count(term: &Term, name: &str) -> usize {
         Term::Fix {
             func, param, body, ..
         } => usize::from(func != name && param != name) * direct_resume_count(body, name),
+        Term::FixGroup { bindings, .. } => {
+            usize::from(!bindings.iter().any(|binding| binding.func == name))
+                * bindings
+                    .iter()
+                    .map(|binding| {
+                        usize::from(binding.param != name)
+                            * direct_resume_count(&binding.body, name)
+                    })
+                    .sum::<usize>()
+        }
         Term::CaseNat {
             scrutinee,
             zero_body,

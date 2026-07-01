@@ -202,6 +202,9 @@ pub fn contains_effect_syntax(term: &Term) -> bool {
                 || contains_effect_syntax(succ_body)
         }
         Term::Lam { body, .. } | Term::Fix { body, .. } => contains_effect_syntax(body),
+        Term::FixGroup { bindings, .. } => bindings
+            .iter()
+            .any(|binding| contains_effect_syntax(&binding.body)),
         Term::App(lhs, rhs) => contains_effect_syntax(lhs) || contains_effect_syntax(rhs),
         Term::Let { expr, body, .. } => {
             contains_effect_syntax(expr) || contains_effect_syntax(body)

@@ -183,9 +183,16 @@ mod tests {
 
         let mut frame_positive = 0;
         let mut tight_hits = 0;
+        let mut scc_histogram = std::collections::BTreeMap::new();
         for generated in &sample {
             let expect_div = generated.witness.divergence == Divergence::Div;
             let report = eval(generated.term.clone(), STEP_BUDGET, expect_div);
+            if generated.expected == ExpectedOutcome::Safe {
+                let checked = check(&generated.term).expect("fixed sample checks");
+                for size in &checked.solver_stats().scc_sizes {
+                    *scc_histogram.entry(*size).or_insert(0usize) += 1;
+                }
+            }
             if report.max_frame > 0 {
                 frame_positive += 1;
             }
@@ -202,6 +209,10 @@ mod tests {
         assert!(
             tight_hits > 0,
             "expected at least one tight max_frame == β hit"
+        );
+        assert!(
+            scc_histogram.keys().any(|size| *size >= 2),
+            "generated sample must include natural multi-node SCCs: {scc_histogram:?}"
         );
     }
 

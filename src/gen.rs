@@ -12,8 +12,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::{
-    ContinuationUseFacts, CoverageTag, Divergence, ExpectedOutcome, GeneratedTerm, GenerationFacts,
-    Handler, OpClause, RecursionTag, Term, Type, Witness,
+    ContinuationUseFacts, CoverageTag, Divergence, ExpectedOutcome, FixBinding, GeneratedTerm,
+    GenerationFacts, Handler, OpClause, RecursionTag, Term, Type, Witness,
 };
 use crate::grade::{Bound, Eff, Label, Region};
 
@@ -53,7 +53,7 @@ pub fn generated_from_input(input: GenInput) -> GeneratedTerm {
 #[must_use]
 pub fn generated_from_choices(choices: Vec<u8>) -> GeneratedTerm {
     let mut builder = Builder::new(ChoiceStream::new(choices));
-    let top_choice = builder.choices.next_mod(14);
+    let top_choice = builder.choices.next_mod(15);
     let mut expected = ExpectedOutcome::Safe;
     let (name, term) = match top_choice {
         0 => (
@@ -96,6 +96,10 @@ pub fn generated_from_choices(choices: Vec<u8>) -> GeneratedTerm {
             "multi_label_clause_set",
             builder.gen_multi_label_clause_set(),
         ),
+        13 => (
+            "fix_group_measure",
+            builder.gen_fix_group(RecursionTag::Measure),
+        ),
         _ => {
             expected = ExpectedOutcome::UnhandledOperation;
             (
@@ -113,7 +117,7 @@ pub fn fixed_seed_inputs() -> Vec<GenInput> {
     (0..SAMPLE_SIZE)
         .map(|case| {
             let mut choices = Vec::with_capacity(MAX_CHOICES);
-            choices.push((case % 14) as u8);
+            choices.push((case % 15) as u8);
             for _ in 1..MAX_CHOICES {
                 state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
                 choices.push((state >> 32) as u8);
@@ -630,6 +634,58 @@ impl Builder {
         }
     }
 
+    fn gen_fix_group(&mut self, tag: RecursionTag) -> Term {
+        // Generated `fix*` groups (`calculus.md §3/§4.8/§7.1`) provide natural
+        // multi-node SCCs for the boundedness solver, closing Sprint 03's singleton-SCC
+        // coverage reservation.
+        let even = self.fresh_name("even");
+        let odd = self.fresh_name("odd");
+        let n_even = self.fresh_name("n");
+        let n_odd = self.fresh_name("n");
+        let p_even = self.fresh_name("p");
+        let p_odd = self.fresh_name("p");
+        let even_body = Term::CaseNat {
+            scrutinee: Box::new(Term::var(&n_even)),
+            zero_body: Box::new(Term::nat(1)),
+            succ_var: p_even.clone(),
+            succ_body: Box::new(Term::App(
+                Box::new(Term::var(&odd)),
+                Box::new(Term::var(&p_even)),
+            )),
+        };
+        let odd_body = Term::CaseNat {
+            scrutinee: Box::new(Term::var(&n_odd)),
+            zero_body: Box::new(Term::zero()),
+            succ_var: p_odd.clone(),
+            succ_body: Box::new(Term::App(
+                Box::new(Term::var(&even)),
+                Box::new(Term::var(&p_odd)),
+            )),
+        };
+        Term::App(
+            Box::new(Term::FixGroup {
+                bindings: vec![
+                    FixBinding {
+                        func: even.clone(),
+                        param: n_even,
+                        param_ty: Type::Nat,
+                        body: Box::new(even_body),
+                        tag,
+                    },
+                    FixBinding {
+                        func: odd,
+                        param: n_odd,
+                        param_ty: Type::Nat,
+                        body: Box::new(odd_body),
+                        tag,
+                    },
+                ],
+                entry: even,
+            }),
+            Box::new(Term::nat(4)),
+        )
+    }
+
     fn gen_handler(&mut self, resume: bool) -> Handler {
         let op_body = if resume {
             let resume = Term::Resume {
@@ -666,6 +722,7 @@ struct Env {
     vars: Vec<(String, Type)>,
     cont_vars: BTreeSet<String>,
     rec: Option<RecContext>,
+    recs: Vec<RecContext>,
 }
 
 impl Env {
@@ -707,7 +764,22 @@ impl Env {
             Type::Arrow(Box::new(Type::Nat), Box::new(Type::Nat)),
         ));
         next.vars.push((rec.param.clone(), Type::Nat));
+        next.recs = vec![rec.clone()];
         next.rec = Some(rec);
+        next
+    }
+
+    fn with_rec_group(&self, recs: Vec<RecContext>, current_func: &str, param: &str) -> Self {
+        let mut next = self.clone();
+        for rec in &recs {
+            next.vars.push((
+                rec.func.clone(),
+                Type::Arrow(Box::new(Type::Nat), Box::new(Type::Nat)),
+            ));
+        }
+        next.vars.push((param.into(), Type::Nat));
+        next.rec = recs.iter().find(|rec| rec.func == current_func).cloned();
+        next.recs = recs;
         next
     }
 
@@ -715,6 +787,11 @@ impl Env {
         let mut next = self.clone();
         if let Some(rec) = &mut next.rec {
             rec.strict_var = Some(strict_var.into());
+            for group_rec in &mut next.recs {
+                if group_rec.func == rec.func {
+                    group_rec.strict_var = Some(strict_var.into());
+                }
+            }
         }
         next
     }
@@ -893,6 +970,7 @@ fn derive(term: &Term, env: &Env) -> Derived {
             }
             out
         }
+        Term::FixGroup { bindings, entry } => derive_fix_group(bindings, entry, env),
         Term::Perform(label, arg) => {
             let arg_d = derive(arg, env);
             debug_assert_eq!(arg_d.ty, Type::Nat);
@@ -939,14 +1017,22 @@ fn case_divergence(
 }
 
 fn derive_app(fun: &Term, arg: &Term, env: &Env) -> Derived {
-    if let (Term::Var(func), Some(rec)) = (fun, env.rec.as_ref()) {
-        if func == &rec.func {
+    if let Term::Var(func) = fun {
+        if let Some(rec) = env.recs.iter().find(|rec| rec.func == *func) {
             let arg_d = derive(arg, env);
             let strict = matches!(arg, Term::Var(name) if rec.strict_var.as_ref() == Some(name));
             let mut out = arg_d;
             out.ty = Type::Nat;
             out.bound = match rec.tag {
-                RecursionTag::Structural if strict => Bound::finite(1),
+                RecursionTag::Structural
+                    if strict
+                        && env
+                            .rec
+                            .as_ref()
+                            .is_some_and(|current| current.func == rec.func) =>
+                {
+                    Bound::finite(1)
+                }
                 RecursionTag::Structural => Bound::Omega,
                 RecursionTag::Measure => Bound::finite(1),
                 RecursionTag::Div => Bound::Omega,
@@ -986,6 +1072,67 @@ fn derive_app(fun: &Term, arg: &Term, env: &Env) -> Derived {
     let mut out = fun_d.combine(&arg_d);
     out.ty = result_ty;
     out.bound = fun_bound.sequential(arg_bound);
+    out
+}
+
+fn derive_fix_group(bindings: &[FixBinding], entry: &str, env: &Env) -> Derived {
+    // Compositional analyzer mirror of group typing (`calculus.md §4.8`): all members are
+    // in scope for all bodies, and the selected entry determines the arrow witness.
+    let recs: Vec<_> = bindings
+        .iter()
+        .map(|binding| RecContext {
+            func: binding.func.clone(),
+            param: binding.param.clone(),
+            tag: binding.tag,
+            strict_var: None,
+        })
+        .collect();
+    let mut body_results = BTreeMap::new();
+    let mut coverage = BTreeSet::new();
+    for binding in bindings {
+        debug_assert_eq!(binding.param_ty, Type::Nat);
+        let body_d = derive(
+            &binding.body,
+            &env.with_rec_group(recs.clone(), &binding.func, &binding.param),
+        );
+        coverage.extend(body_d.coverage.iter().copied());
+        match binding.tag {
+            RecursionTag::Structural => {
+                coverage.insert(CoverageTag::FixStructural);
+            }
+            RecursionTag::Measure => {
+                coverage.insert(CoverageTag::FixMeasure);
+            }
+            RecursionTag::Div => {}
+        }
+        body_results.insert(binding.func.clone(), body_d);
+    }
+    let entry_binding = bindings
+        .iter()
+        .find(|binding| binding.func == entry)
+        .or_else(|| bindings.first());
+    let Some(entry_binding) = entry_binding else {
+        return Derived::pure(Type::Arrow(Box::new(Type::Nat), Box::new(Type::Nat)));
+    };
+    let entry_body = body_results
+        .get(&entry_binding.func)
+        .cloned()
+        .unwrap_or_else(|| Derived::pure(Type::Nat));
+    let mut out = Derived::pure(Type::Arrow(
+        Box::new(Type::Nat),
+        Box::new(entry_body.ty.clone()),
+    ));
+    out.coverage = coverage;
+    out.bound = match entry_binding.tag {
+        RecursionTag::Structural => entry_body.bound,
+        RecursionTag::Measure => entry_body.bound.join(Bound::finite(1)),
+        RecursionTag::Div => Bound::Omega,
+    };
+    out.divergence = if out.bound == Bound::Omega {
+        Divergence::Div
+    } else {
+        entry_body.divergence
+    };
     out
 }
 
@@ -1071,6 +1218,13 @@ fn term_depth(term: &Term) -> usize {
         Term::Var(_) | Term::Unit | Term::Zero | Term::Cont(_) => 1,
         Term::Succ(inner) | Term::Perform(_, inner) => 1 + term_depth(inner),
         Term::Lam { body, .. } | Term::Fix { body, .. } => 1 + term_depth(body),
+        Term::FixGroup { bindings, .. } => {
+            1 + bindings
+                .iter()
+                .map(|binding| term_depth(&binding.body))
+                .max()
+                .unwrap_or(0)
+        }
         Term::App(fun, arg) => 1 + term_depth(fun).max(term_depth(arg)),
         Term::Let { expr, body, .. } => 1 + term_depth(expr).max(term_depth(body)),
         Term::CaseNat {
@@ -1107,6 +1261,11 @@ fn scan_handlers(term: &Term, in_handler: bool, facts: &mut GenerationFacts) {
         }
         Term::Succ(inner) | Term::Perform(_, inner) => scan_handlers(inner, in_handler, facts),
         Term::Lam { body, .. } | Term::Fix { body, .. } => scan_handlers(body, in_handler, facts),
+        Term::FixGroup { bindings, .. } => {
+            for binding in bindings {
+                scan_handlers(&binding.body, in_handler, facts);
+            }
+        }
         Term::App(fun, arg) => {
             scan_handlers(fun, in_handler, facts);
             scan_handlers(arg, in_handler, facts);
@@ -1152,6 +1311,20 @@ fn scan_rec_calls(term: &Term, stack: &mut Vec<RecScan>, facts: &mut GenerationF
             });
             scan_rec_calls(body, stack, facts);
             stack.pop();
+        }
+        Term::FixGroup { bindings, .. } => {
+            let start = stack.len();
+            for binding in bindings {
+                stack.push(RecScan {
+                    func: binding.func.clone(),
+                    param: binding.param.clone(),
+                    strict_vars: BTreeSet::new(),
+                });
+            }
+            for binding in bindings {
+                scan_rec_calls(&binding.body, stack, facts);
+            }
+            stack.truncate(start);
         }
         Term::App(fun, arg) => {
             if let Term::Var(func) = &**fun {
@@ -1231,6 +1404,9 @@ fn term_obeys_continuation_usage_under(term: &Term) -> bool {
         Term::Lam { body, .. } | Term::Fix { body, .. } => {
             term_obeys_continuation_usage_under(body)
         }
+        Term::FixGroup { bindings, .. } => bindings
+            .iter()
+            .all(|binding| term_obeys_continuation_usage_under(&binding.body)),
         Term::App(fun, arg) | Term::Resume { kont: fun, arg } => {
             term_obeys_continuation_usage_under(fun) && term_obeys_continuation_usage_under(arg)
         }
@@ -1274,6 +1450,18 @@ fn free_var_count(term: &Term, name: &str) -> usize {
         Term::Fix {
             func, param, body, ..
         } => usize::from(func != name && param != name) * free_var_count(body, name),
+        Term::FixGroup { bindings, .. } => {
+            if bindings.iter().any(|binding| binding.func == name) {
+                0
+            } else {
+                bindings
+                    .iter()
+                    .map(|binding| {
+                        usize::from(binding.param != name) * free_var_count(&binding.body, name)
+                    })
+                    .sum()
+            }
+        }
         Term::CaseNat {
             scrutinee,
             zero_body,
@@ -1324,6 +1512,19 @@ fn direct_resume_count(term: &Term, name: &str) -> usize {
         Term::Fix {
             func, param, body, ..
         } => usize::from(func != name && param != name) * direct_resume_count(body, name),
+        Term::FixGroup { bindings, .. } => {
+            if bindings.iter().any(|binding| binding.func == name) {
+                0
+            } else {
+                bindings
+                    .iter()
+                    .map(|binding| {
+                        usize::from(binding.param != name)
+                            * direct_resume_count(&binding.body, name)
+                    })
+                    .sum()
+            }
+        }
         Term::CaseNat {
             scrutinee,
             zero_body,
@@ -1377,6 +1578,20 @@ fn closed_under(term: &Term, scope: &mut Vec<String>) -> bool {
             let ok = closed_under(body, scope);
             scope.pop();
             scope.pop();
+            ok
+        }
+        Term::FixGroup { bindings, .. } => {
+            let start = scope.len();
+            for binding in bindings {
+                scope.push(binding.func.clone());
+            }
+            let ok = bindings.iter().all(|binding| {
+                scope.push(binding.param.clone());
+                let body_ok = closed_under(&binding.body, scope);
+                scope.pop();
+                body_ok
+            });
+            scope.truncate(start);
             ok
         }
         Term::CaseNat {

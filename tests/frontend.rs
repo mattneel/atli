@@ -48,6 +48,7 @@ fn pretty_reparse_elaboration_is_stable_for_examples() {
         "examples/state_handler.atli",
         "examples/default_handler.atli",
         "examples/two_effects.atli",
+        "examples/even_odd.atli",
         "examples/wedge.atli",
     ] {
         let src = fs::read_to_string(path).expect(path);
@@ -123,6 +124,7 @@ fn cli_runs_examples_and_surfaces_witnesses() {
         ("examples/state_handler.atli", "7\n"),
         ("examples/default_handler.atli", "9\n"),
         ("examples/two_effects.atli", "8\n"),
+        ("examples/even_odd.atli", "1\n"),
     ];
     for (path, expected) in cases {
         let (code, stdout, stderr) = run_cli(&["run", path]);
@@ -223,6 +225,10 @@ fn codegen_emit_goldens_pin_certified_arena_literals() {
             "examples/counter.atli",
             "tests/goldens/codegen/counter.mlir",
         ),
+        (
+            "examples/even_odd.atli",
+            "tests/goldens/codegen/even_odd.mlir",
+        ),
     ] {
         let (code, stdout, stderr) = run_cli(&["emit", path]);
         assert_eq!(code, 0, "{stderr}");
@@ -280,6 +286,7 @@ fn compiled_native_outputs_match_oracle_for_finite_programs() {
         ("counter", fs::read_to_string("examples/counter.atli").unwrap(), "3\n"),
         ("abort", fs::read_to_string("examples/abort.atli").unwrap(), "9\n"),
         ("two_effects", fs::read_to_string("examples/two_effects.atli").unwrap(), "8\n"),
+        ("even_odd", fs::read_to_string("examples/even_odd.atli").unwrap(), "1\n"),
         ("const0", "fn main() -> Nat = 0\n".into(), "0\n"),
         ("const7", "fn main() -> Nat = 7\n".into(), "7\n"),
         ("add", "fn main() -> Nat = 8 + 5\n".into(), "13\n"),
@@ -312,6 +319,36 @@ fn compiled_native_outputs_match_oracle_for_finite_programs() {
         );
         let _ = fs::remove_file(name);
     }
+}
+
+#[test]
+fn structural_mutual_recursion_is_rejected_with_pair_blame() {
+    let src = r#"
+fn even(n: Nat) -> Nat = case n {
+  0 -> 1
+  p -> odd(p)
+}
+
+fn odd(n: Nat) -> Nat = case n {
+  0 -> 0
+  p -> even(p)
+}
+
+fn main() -> Nat = even(4)
+"#;
+    let path = "target/structural_even_odd_reject.atli";
+    fs::write(path, src).unwrap();
+    let (code, _stdout, stderr) = run_cli(&["check", path]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("FixGroup-Structural §4.8/§7.1"), "{stderr}");
+    assert!(
+        stderr.contains("Structural `even` calls group member `odd`"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("cyclic groups require `measure` or `div`"),
+        "{stderr}"
+    );
 }
 
 fn parse_high_water(stderr: &str) -> (u64, u64) {

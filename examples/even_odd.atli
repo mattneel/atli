@@ -1,0 +1,12 @@
+// Mutual recursion elaborates to core fix*; cyclic groups use the trusted measure rung.
+fn even(n: Nat) -> Nat measure n = case n {
+  0 -> 1
+  p -> odd(p)
+}
+
+fn odd(n: Nat) -> Nat measure n = case n {
+  0 -> 0
+  p -> even(p)
+}
+
+fn main() -> Nat = even(4)

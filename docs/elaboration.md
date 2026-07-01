@@ -84,3 +84,18 @@ causes the runtime shim to exit successfully after `N` divergent iterations and 
 `ATLI_GROWABLE_SEGMENT=64`; without that test variable the compiled program follows its
 source divergence. Finite-β programs still use the exact certified arena and the same
 overflow trap.
+
+## Top-level declaration SCCs (Sprint 09)
+
+Top-level function references are analyzed as a declaration call graph before lowering. Strongly
+connected components with more than one function elaborate to `fix*` binding groups
+(`docs/calculus.md §3/§4.8/§7.1`): every member is checked with all group members in scope, and each
+surface name is bound to a projection of the shared group entry. Singleton declarations keep the
+existing lowering: nonrecursive functions become lambdas, and self-recursive unary `Nat` functions
+become unary `fix`.
+
+The elaborator uses its own small Tarjan pass over surface declaration names rather than reusing the
+boundedness solver's Tarjan; the two graphs have different domains. A cyclic group with the default
+structural tag is intentionally rejected by the checker under the conservative §4.8 rule. Cyclic
+surface groups should be annotated `measure n` or `div` until a future precision pass proves
+cross-member structural descent.

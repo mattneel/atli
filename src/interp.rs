@@ -183,11 +183,48 @@ impl Machine {
                     rule: Rule::Unfold,
                 }
             }
+            Term::FixGroup { bindings, entry } => self.step_fix_group(bindings, entry),
             Term::Perform(label, arg) => self.step_perform(label, *arg),
             Term::Handle { body, handler } => self.step_handle(*body, handler),
             // `resume κ v → κ v` if unused; otherwise stuck (`calculus.md §5`).
             Term::Resume { kont, arg } => self.step_resume(*kont, *arg),
             value_or_var => StepResult::Stuck(Outcome::InternalMalformed, value_or_var),
+        }
+    }
+
+    fn step_fix_group(
+        &mut self,
+        bindings: Vec<crate::core::FixBinding>,
+        entry: String,
+    ) -> StepResult {
+        // `fix*` group unfold (`calculus.md §5`, Sprint 09): selecting an entry exposes
+        // that member's lambda body with every group name rebound to a projection of the
+        // same binding group.
+        let Some(binding) = bindings
+            .iter()
+            .find(|binding| binding.func == entry)
+            .cloned()
+        else {
+            return StepResult::Stuck(
+                Outcome::InternalMalformed,
+                Term::FixGroup { bindings, entry },
+            );
+        };
+        let mut unfolded_body = (*binding.body).clone();
+        for member in &bindings {
+            let projection = Term::FixGroup {
+                bindings: bindings.clone(),
+                entry: member.func.clone(),
+            };
+            unfolded_body = unfolded_body.subst(&member.func, &projection);
+        }
+        StepResult::Stepped {
+            term: Term::Lam {
+                param: binding.param,
+                param_ty: binding.param_ty,
+                body: Box::new(unfolded_body),
+            },
+            rule: Rule::Unfold,
         }
     }
 
@@ -434,6 +471,12 @@ fn term_mentions_var(term: &Term, name: &str) -> bool {
         Term::Fix {
             func, param, body, ..
         } => func != name && param != name && term_mentions_var(body, name),
+        Term::FixGroup { bindings, .. } => {
+            !bindings.iter().any(|binding| binding.func == name)
+                && bindings
+                    .iter()
+                    .any(|binding| binding.param != name && term_mentions_var(&binding.body, name))
+        }
         Term::CaseNat {
             scrutinee,
             zero_body,

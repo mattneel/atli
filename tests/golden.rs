@@ -1,4 +1,4 @@
-use atli::core::{Handler, OpClause, RecursionTag, Term, Type};
+use atli::core::{FixBinding, Handler, OpClause, RecursionTag, Term, Type};
 use atli::gen::{derive_witness, term_obeys_continuation_usage};
 use atli::grade::{Bound, Label};
 use atli::interp::{eval, Outcome, Rule};
@@ -22,6 +22,44 @@ fn identity_handler(op_body: Term) -> Handler {
             op_body: Box::new(op_body),
         },
     )
+}
+
+fn even_odd_group(tag: RecursionTag, entry: &str) -> Term {
+    Term::FixGroup {
+        bindings: vec![
+            FixBinding {
+                func: "even".into(),
+                param: "n".into(),
+                param_ty: Type::Nat,
+                body: Box::new(Term::CaseNat {
+                    scrutinee: Box::new(Term::var("n")),
+                    zero_body: Box::new(Term::nat(1)),
+                    succ_var: "p".into(),
+                    succ_body: Box::new(Term::App(
+                        Box::new(Term::var("odd")),
+                        Box::new(Term::var("p")),
+                    )),
+                }),
+                tag,
+            },
+            FixBinding {
+                func: "odd".into(),
+                param: "n".into(),
+                param_ty: Type::Nat,
+                body: Box::new(Term::CaseNat {
+                    scrutinee: Box::new(Term::var("n")),
+                    zero_body: Box::new(Term::zero()),
+                    succ_var: "p".into(),
+                    succ_body: Box::new(Term::App(
+                        Box::new(Term::var("even")),
+                        Box::new(Term::var("p")),
+                    )),
+                }),
+                tag,
+            },
+        ],
+        entry: entry.into(),
+    }
 }
 
 #[test]
@@ -259,6 +297,80 @@ fn divergent_fix_exhausts_budget_when_tagged_div() {
     let report = eval(Term::App(Box::new(fix), Box::new(Term::nat(0))), 8, true);
     assert_eq!(report.outcome, Outcome::BudgetExhaustedDiv);
     assert!(report.trace.contains(&Rule::Unfold));
+}
+
+#[test]
+fn fix_group_even_odd_unfolds_and_evaluates() {
+    let term = Term::App(
+        Box::new(even_odd_group(RecursionTag::Measure, "even")),
+        Box::new(Term::nat(5)),
+    );
+    let report = eval(term, 128, false);
+    assert_eq!(report.outcome, Outcome::Value, "{report:?}");
+    assert_eq!(report.final_term, Term::zero());
+    assert!(report.trace.contains(&Rule::Unfold));
+}
+
+#[test]
+fn fix_group_three_member_cycle_evaluates() {
+    let group = Term::FixGroup {
+        bindings: vec![
+            FixBinding {
+                func: "a".into(),
+                param: "n".into(),
+                param_ty: Type::Nat,
+                body: Box::new(Term::CaseNat {
+                    scrutinee: Box::new(Term::var("n")),
+                    zero_body: Box::new(Term::nat(1)),
+                    succ_var: "p".into(),
+                    succ_body: Box::new(Term::App(
+                        Box::new(Term::var("b")),
+                        Box::new(Term::var("p")),
+                    )),
+                }),
+                tag: RecursionTag::Measure,
+            },
+            FixBinding {
+                func: "b".into(),
+                param: "n".into(),
+                param_ty: Type::Nat,
+                body: Box::new(Term::App(
+                    Box::new(Term::var("c")),
+                    Box::new(Term::var("n")),
+                )),
+                tag: RecursionTag::Measure,
+            },
+            FixBinding {
+                func: "c".into(),
+                param: "n".into(),
+                param_ty: Type::Nat,
+                body: Box::new(Term::App(
+                    Box::new(Term::var("a")),
+                    Box::new(Term::var("n")),
+                )),
+                tag: RecursionTag::Measure,
+            },
+        ],
+        entry: "a".into(),
+    };
+    let report = eval(
+        Term::App(Box::new(group), Box::new(Term::nat(2))),
+        128,
+        false,
+    );
+    assert_eq!(report.outcome, Outcome::Value, "{report:?}");
+    assert_eq!(report.final_term, Term::nat(1));
+}
+
+#[test]
+fn checker_rejects_structural_fix_group_cycle() {
+    let err = atli::check::check(&even_odd_group(RecursionTag::Structural, "even"))
+        .expect_err("structural cyclic group must be rejected");
+    assert_eq!(err.rule, "FixGroup-Structural");
+    assert_eq!(err.section, "§4.8/§7.1");
+    assert!(err
+        .message
+        .contains("Structural `even` calls group member `odd`"));
 }
 
 #[test]

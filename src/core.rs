@@ -69,6 +69,11 @@ pub enum Term {
         body: Box<Term>,
         tag: RecursionTag,
     },
+    /// Binding group form `fix*` from `docs/calculus.md §3/§4.8/§7.1`.
+    FixGroup {
+        bindings: Vec<FixBinding>,
+        entry: Name,
+    },
     Perform(Label, Box<Term>),
     Handle {
         body: Box<Term>,
@@ -95,6 +100,15 @@ pub struct OpClause {
     pub op_param: Name,
     pub op_k: Name,
     pub op_body: Box<Term>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixBinding {
+    pub func: Name,
+    pub param: Name,
+    pub param_ty: Type,
+    pub body: Box<Term>,
+    pub tag: RecursionTag,
 }
 
 impl Handler {
@@ -218,6 +232,7 @@ impl Term {
             | Self::App(_, _)
             | Self::Let { .. }
             | Self::Fix { .. }
+            | Self::FixGroup { .. }
             | Self::Perform(_, _)
             | Self::Handle { .. }
             | Self::Resume { .. } => false,
@@ -305,6 +320,19 @@ impl Term {
                 body: Box::new(body.subst(name, replacement)),
                 tag: *tag,
             },
+            Self::FixGroup { bindings, entry } => {
+                if bindings.iter().any(|binding| binding.func == name) {
+                    self.clone()
+                } else {
+                    Self::FixGroup {
+                        bindings: bindings
+                            .iter()
+                            .map(|binding| binding.subst(name, replacement))
+                            .collect(),
+                        entry: entry.clone(),
+                    }
+                }
+            }
             Self::Perform(label, arg) => {
                 Self::Perform(*label, Box::new(arg.subst(name, replacement)))
             }
@@ -369,6 +397,13 @@ impl Term {
                 body: Box::new(body.normalize_cont_ids()),
                 tag: *tag,
             },
+            Self::FixGroup { bindings, entry } => Self::FixGroup {
+                bindings: bindings
+                    .iter()
+                    .map(FixBinding::normalize_cont_ids)
+                    .collect(),
+                entry: entry.clone(),
+            },
             Self::Perform(label, arg) => Self::Perform(*label, Box::new(arg.normalize_cont_ids())),
             Self::Handle { body, handler } => Self::Handle {
                 body: Box::new(body.normalize_cont_ids()),
@@ -378,6 +413,35 @@ impl Term {
                 kont: Box::new(kont.normalize_cont_ids()),
                 arg: Box::new(arg.normalize_cont_ids()),
             },
+        }
+    }
+}
+
+impl FixBinding {
+    #[must_use]
+    pub fn subst(&self, name: &str, replacement: &Term) -> Self {
+        let body = if self.func == name || self.param == name {
+            self.body.clone()
+        } else {
+            Box::new(self.body.subst(name, replacement))
+        };
+        Self {
+            func: self.func.clone(),
+            param: self.param.clone(),
+            param_ty: self.param_ty.clone(),
+            body,
+            tag: self.tag,
+        }
+    }
+
+    #[must_use]
+    pub fn normalize_cont_ids(&self) -> Self {
+        Self {
+            func: self.func.clone(),
+            param: self.param.clone(),
+            param_ty: self.param_ty.clone(),
+            body: Box::new(self.body.normalize_cont_ids()),
+            tag: self.tag,
         }
     }
 }
@@ -487,6 +551,17 @@ impl fmt::Display for Term {
                 body,
                 tag,
             } => write!(f, "(fix[{tag:?}] {func}. λ{param}:{param_ty}. {body})"),
+            Term::FixGroup { bindings, entry } => {
+                write!(f, "(fix* entry {entry} {{")?;
+                for binding in bindings {
+                    write!(
+                        f,
+                        " {}[{:?}] = λ{}:{}. {};",
+                        binding.func, binding.tag, binding.param, binding.param_ty, binding.body
+                    )?;
+                }
+                f.write_str(" })")
+            }
             Term::Perform(label, arg) => write!(f, "(perform {label} {arg})"),
             Term::Handle { body, handler } => write!(f, "(handle {body} with {handler})"),
             Term::Resume { kont, arg } => write!(f, "(resume {kont} {arg})"),

@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::core::{Handler, OpClause, RecursionTag, Term, Type};
+use crate::core::{FixBinding, Handler, OpClause, RecursionTag, Term, Type};
 use crate::grade::Label;
 use crate::surface::ast::{
     BinaryOp, Boundedness, Decl, Expr, ExprKind, FnDecl, HandleClause, Pattern, Program, Span,
@@ -150,48 +150,68 @@ impl<'a> Elaborator<'a> {
             });
         }
 
+        let fn_decls: Vec<_> = self
+            .program
+            .decls
+            .iter()
+            .filter_map(|decl| match decl {
+                Decl::Fn(func) if func.name.node != "main" => Some(func.clone()),
+                _ => None,
+            })
+            .collect();
+        let order = declaration_scc_order(&fn_decls);
         let mut env = Env::default();
         let mut bindings = Vec::new();
-        let decls = self.program.decls.clone();
-        for decl in decls {
-            if let Decl::Fn(func) = decl {
-                if func.name.node == "main" {
-                    let main = self.expr(&func.body, &env)?;
-                    let mut term = main.clone();
-                    for (name, value) in bindings.into_iter().rev() {
-                        term = self.record(
-                            Term::Let {
-                                var: name,
-                                expr: Box::new(value),
-                                body: Box::new(term),
-                            },
-                            func.span,
-                        );
-                    }
-                    let injected = self.prelude_with_dependencies();
-                    for prelude in injected.iter().rev().copied() {
-                        term = self.record(
-                            Term::Let {
-                                var: prelude_name(prelude).into(),
-                                expr: Box::new(prelude_term(prelude)),
-                                body: Box::new(term),
-                            },
-                            func.span,
-                        );
-                    }
-                    return Ok(ElaboratedProgram {
-                        term,
-                        main,
-                        spans: self.spans.clone(),
-                        prelude: injected.into_iter().map(prelude_name).collect(),
-                    });
-                }
-                let core = self.function_value(&func, &env)?;
+        for component in order {
+            if component.len() == 1 {
+                let func = &fn_decls[component[0]];
+                let core = self.function_value(func, &env)?;
                 env.vars.insert(func.name.node.clone());
-                bindings.push((func.name.node.clone(), core));
+                bindings.push((func.name.node.clone(), core, func.span));
+            } else {
+                let group = self.function_group_values(
+                    &component
+                        .iter()
+                        .map(|idx| fn_decls[*idx].clone())
+                        .collect::<Vec<_>>(),
+                    &env,
+                )?;
+                for (name, value, span) in group {
+                    env.vars.insert(name.clone());
+                    bindings.push((name, value, span));
+                }
             }
         }
-        unreachable!("main declaration was found before elaboration loop");
+
+        let main = self.expr(&main_decl.body, &env)?;
+        let mut term = main.clone();
+        for (name, value, span) in bindings.into_iter().rev() {
+            term = self.record(
+                Term::Let {
+                    var: name,
+                    expr: Box::new(value),
+                    body: Box::new(term),
+                },
+                span.join(main_decl.span),
+            );
+        }
+        let injected = self.prelude_with_dependencies();
+        for prelude in injected.iter().rev().copied() {
+            term = self.record(
+                Term::Let {
+                    var: prelude_name(prelude).into(),
+                    expr: Box::new(prelude_term(prelude)),
+                    body: Box::new(term),
+                },
+                main_decl.span,
+            );
+        }
+        Ok(ElaboratedProgram {
+            term,
+            main,
+            spans: self.spans.clone(),
+            prelude: injected.into_iter().map(prelude_name).collect(),
+        })
     }
 
     fn function_value(&mut self, func: &FnDecl, env: &Env) -> Result<Term, ElaborateError> {
@@ -243,6 +263,63 @@ impl<'a> Elaborator<'a> {
             );
         }
         Ok(term)
+    }
+
+    fn function_group_values(
+        &mut self,
+        funcs: &[FnDecl],
+        env: &Env,
+    ) -> Result<Vec<(String, Term, Span)>, ElaborateError> {
+        let mut recs = Vec::new();
+        let group_names: BTreeSet<_> = funcs.iter().map(|func| func.name.node.clone()).collect();
+        let mut base_env = env.clone();
+        for name in &group_names {
+            base_env.vars.insert(name.clone());
+        }
+        for func in funcs {
+            let sig = self
+                .functions
+                .get(&func.name.node)
+                .cloned()
+                .ok_or_else(|| ElaborateError {
+                    span: func.name.span,
+                    message: "internal missing function signature".into(),
+                })?;
+            if sig.params.len() != 1 || sig.params[0].1 != Type::Nat {
+                return Err(ElaborateError {
+                    span: func.name.span,
+                    message: "recursive binding groups must contain unary `Nat -> ...` members"
+                        .into(),
+                });
+            }
+            let tag = self.recursion_tag(&func.boundedness, &sig.params[0].0)?;
+            let mut body_env = base_env.clone();
+            body_env.vars.insert(sig.params[0].0.clone());
+            let body = self.expr(&func.body, &body_env)?;
+            recs.push(FixBinding {
+                func: func.name.node.clone(),
+                param: sig.params[0].0.clone(),
+                param_ty: Type::Nat,
+                body: Box::new(body),
+                tag,
+            });
+        }
+        Ok(funcs
+            .iter()
+            .map(|func| {
+                (
+                    func.name.node.clone(),
+                    self.record(
+                        Term::FixGroup {
+                            bindings: recs.clone(),
+                            entry: func.name.node.clone(),
+                        },
+                        func.span,
+                    ),
+                    func.span,
+                )
+            })
+            .collect())
     }
 
     fn recursion_tag(
@@ -688,4 +765,119 @@ fn expr_mentions(expr: &Expr, name: &str) -> bool {
                 })
         }
     }
+}
+
+fn declaration_scc_order(functions: &[FnDecl]) -> Vec<Vec<usize>> {
+    let name_to_idx: BTreeMap<_, _> = functions
+        .iter()
+        .enumerate()
+        .map(|(idx, func)| (func.name.node.clone(), idx))
+        .collect();
+    let graph: Vec<Vec<usize>> = functions
+        .iter()
+        .map(|func| {
+            name_to_idx
+                .iter()
+                .filter_map(|(name, idx)| {
+                    (name != &func.name.node && expr_mentions(&func.body, name)).then_some(*idx)
+                })
+                .collect()
+        })
+        .collect();
+    let sccs = tarjan_sccs(&graph);
+    let mut comp_of = vec![0; functions.len()];
+    for (comp_idx, comp) in sccs.iter().enumerate() {
+        for node in comp {
+            comp_of[*node] = comp_idx;
+        }
+    }
+    let mut comp_deps = vec![BTreeSet::new(); sccs.len()];
+    for (node, deps) in graph.iter().enumerate() {
+        for dep in deps {
+            if comp_of[node] != comp_of[*dep] {
+                comp_deps[comp_of[node]].insert(comp_of[*dep]);
+            }
+        }
+    }
+    fn visit(
+        comp: usize,
+        deps: &[BTreeSet<usize>],
+        sccs: &[Vec<usize>],
+        seen: &mut BTreeSet<usize>,
+        out: &mut Vec<Vec<usize>>,
+    ) {
+        if !seen.insert(comp) {
+            return;
+        }
+        for dep in &deps[comp] {
+            visit(*dep, deps, sccs, seen, out);
+        }
+        out.push(sccs[comp].clone());
+    }
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for comp in 0..sccs.len() {
+        visit(comp, &comp_deps, &sccs, &mut seen, &mut out);
+    }
+    out
+}
+
+fn tarjan_sccs(graph: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    struct Tarjan<'a> {
+        graph: &'a [Vec<usize>],
+        index: usize,
+        indices: Vec<Option<usize>>,
+        lowlinks: Vec<usize>,
+        stack: Vec<usize>,
+        on_stack: BTreeSet<usize>,
+        sccs: Vec<Vec<usize>>,
+    }
+    impl Tarjan<'_> {
+        fn strongconnect(&mut self, v: usize) {
+            self.indices[v] = Some(self.index);
+            self.lowlinks[v] = self.index;
+            self.index += 1;
+            self.stack.push(v);
+            self.on_stack.insert(v);
+
+            for w in &self.graph[v] {
+                if self.indices[*w].is_none() {
+                    self.strongconnect(*w);
+                    self.lowlinks[v] = self.lowlinks[v].min(self.lowlinks[*w]);
+                } else if self.on_stack.contains(w) {
+                    self.lowlinks[v] = self.lowlinks[v].min(self.indices[*w].unwrap());
+                }
+            }
+
+            if self.lowlinks[v] == self.indices[v].unwrap() {
+                let mut scc = Vec::new();
+                loop {
+                    let w = self.stack.pop().expect("tarjan stack nonempty");
+                    self.on_stack.remove(&w);
+                    scc.push(w);
+                    if w == v {
+                        break;
+                    }
+                }
+                scc.sort_unstable();
+                self.sccs.push(scc);
+            }
+        }
+    }
+
+    let mut tarjan = Tarjan {
+        graph,
+        index: 0,
+        indices: vec![None; graph.len()],
+        lowlinks: vec![0; graph.len()],
+        stack: Vec::new(),
+        on_stack: BTreeSet::new(),
+        sccs: Vec::new(),
+    };
+    for v in 0..graph.len() {
+        if tarjan.indices[v].is_none() {
+            tarjan.strongconnect(v);
+        }
+    }
+    tarjan.sccs
 }

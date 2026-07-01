@@ -30,14 +30,23 @@ semantics.
   layout model for recursion.
 
 
-- SPEC-GAP(mutual-recursion-core-implementation): Sprint 08 amends `docs/calculus.md` with
-  `fix*` binding groups and the conservative cyclic-group rule, but the Rust core/checker
-  still represents only unary `fix`. Surface `even/odd` therefore remains rejected as an
-  unbound forward reference rather than elaborating to a multi-node generated SCC. The
-  solver's multi-node machinery is still unit-tested; generated-term evidence for natural
-  multi-node SCCs remains pending until the `fix*` AST/checker/interpreter ripple lands.
+
+- SPEC-GAP(runtime-handler-scope-stack-codegen): Sprint 09 resolves `fix*` but does not
+  replace the compiled handler lowering with the runtime handler-scope stack required by
+  `docs/calculus.md §5` for fully dynamic handler scope. Current native handler examples
+  remain source-structure/lexical smoke tests; functions that perform under a handler
+  installed by their caller need a runtime `perform` ABI that walks scope records carrying
+  handled labels, clause targets, and arena watermarks. ADR 0003 still needs the second
+  amendment deciding scope-record layout and arena accounting.
 
 ## Resolved gaps
+
+- RESOLVED(mutual-recursion-core-implementation): Sprint 09 implements `fix*` binding
+  groups through Rust core, interpreter, derived witness, checker, generator, surface
+  elaboration, and native codegen. Surface declaration SCCs now elaborate to group
+  projections, `even_odd.atli` runs under both oracle and compiled paths, and the fixed-seed
+  generated sample produces natural multi-node solver SCCs (`{1: 743, 2: 68}`), closing the
+  Sprint 03 singleton-SCC reservation with generated evidence.
 
 
 - RESOLVED(multi-label-effects-reduced-core): Sprint 08 generalizes labels from the single
