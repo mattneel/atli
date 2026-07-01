@@ -10,12 +10,15 @@ semantics.
   the number of captured evaluation-context frames in a handled operation continuation.
   Property tests check that this realized frame count never exceeds generated witness `β`;
   this is an empirical conformance check, not a byte-accurate backend allocation proof.
+  Sprint 04's Rocq scaffold states boundedness (`L7`) against this same frame-count proxy;
+  a byte-accurate theorem remains a future backend/layout refinement.
 
 - SPEC-GAP(measure-tag-trusted-reduced-core): Sprint 03 accepts `Measure`-tagged `fix`
   terms as the annotated recursion rung but does not verify an actual well-founded
   measure. This is intentional for the reduced core: `docs/calculus.md §4.8/§7` keeps the
   solver architecture real while deferring real measure obligations to the future surface
-  checker/elaborator.
+  checker/elaborator. Sprint 04's `Typing.v` mirrors that trust boundary with a rule comment
+  rather than adding an unproven measure checker to the mechanized core.
 
 - SPEC-GAP(frame-metric-recursion-blindspot): the substitution-based reference interpreter
   reifies continuation frames only when a handler captures an operation context

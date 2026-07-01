@@ -1,1 +1,9 @@
 /target/
+
+# Coq/Rocq build artifacts
+proofs/**/*.vo
+proofs/**/*.vos
+proofs/**/*.vok
+proofs/**/*.glob
+proofs/**/.*.aux
+proofs/.lia.cache
