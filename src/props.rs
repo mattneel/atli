@@ -138,4 +138,42 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn nat_case_strict_descent_gives_structural_fix_finite_beta() {
+        let fix = crate::core::Term::Fix {
+            func: "f".into(),
+            param: "x".into(),
+            param_ty: crate::core::Type::Nat,
+            body: Box::new(crate::core::Term::CaseNat {
+                scrutinee: Box::new(crate::core::Term::var("x")),
+                zero_body: Box::new(crate::core::Term::zero()),
+                succ_var: "pred".into(),
+                succ_body: Box::new(crate::core::Term::App(
+                    Box::new(crate::core::Term::var("f")),
+                    Box::new(crate::core::Term::var("pred")),
+                )),
+            }),
+            tag: crate::core::RecursionTag::Structural,
+        };
+        let witness = crate::gen::derive_witness(&fix);
+        assert_eq!(witness.bound, Bound::finite(1));
+    }
+
+    #[test]
+    fn non_strict_structural_fix_derives_omega_beta() {
+        let fix = crate::core::Term::Fix {
+            func: "f".into(),
+            param: "x".into(),
+            param_ty: crate::core::Type::Nat,
+            body: Box::new(crate::core::Term::App(
+                Box::new(crate::core::Term::var("f")),
+                Box::new(crate::core::Term::var("x")),
+            )),
+            tag: crate::core::RecursionTag::Structural,
+        };
+        let witness = crate::gen::derive_witness(&fix);
+        assert_eq!(witness.bound, Bound::Omega);
+        assert_eq!(witness.divergence, Divergence::Div);
+    }
 }

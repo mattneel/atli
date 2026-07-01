@@ -43,7 +43,14 @@ impl fmt::Display for ContId {
 pub enum Term {
     Var(Name),
     Unit,
-    Nat(u64),
+    Zero,
+    Succ(Box<Term>),
+    CaseNat {
+        scrutinee: Box<Term>,
+        zero_body: Box<Term>,
+        succ_var: Name,
+        succ_body: Box<Term>,
+    },
     Lam {
         param: Name,
         param_ty: Type,
@@ -141,8 +148,22 @@ impl Term {
     }
 
     #[must_use]
+    pub fn zero() -> Self {
+        Self::Zero
+    }
+
+    #[must_use]
+    pub fn succ(inner: Self) -> Self {
+        Self::Succ(Box::new(inner))
+    }
+
+    #[must_use]
     pub fn nat(value: u64) -> Self {
-        Self::Nat(value)
+        let mut term = Self::Zero;
+        for _ in 0..value {
+            term = Self::succ(term);
+        }
+        term
     }
 
     #[must_use]
@@ -152,19 +173,43 @@ impl Term {
 
     #[must_use]
     pub fn is_value(&self) -> bool {
-        matches!(
-            self,
-            Self::Unit | Self::Nat(_) | Self::Lam { .. } | Self::Cont(_)
-        )
+        match self {
+            Self::Unit | Self::Zero | Self::Lam { .. } | Self::Cont(_) => true,
+            Self::Succ(inner) => inner.is_value(),
+            Self::Var(_)
+            | Self::CaseNat { .. }
+            | Self::App(_, _)
+            | Self::Let { .. }
+            | Self::Fix { .. }
+            | Self::Perform(_, _)
+            | Self::Handle { .. }
+            | Self::Resume { .. } => false,
+        }
     }
 
     /// Capture-avoiding enough for generated terms, which use globally fresh names.
-    /// Implements substitution used by β/let/unfold/H-return/H-op (`calculus.md §5`).
+    /// Implements substitution used by β/let/unfold/case/H-return/H-op (`calculus.md §5`).
     #[must_use]
     pub fn subst(&self, name: &str, replacement: &Self) -> Self {
         match self {
             Self::Var(var) if var == name => replacement.clone(),
-            Self::Var(_) | Self::Unit | Self::Nat(_) | Self::Cont(_) => self.clone(),
+            Self::Var(_) | Self::Unit | Self::Zero | Self::Cont(_) => self.clone(),
+            Self::Succ(inner) => Self::Succ(Box::new(inner.subst(name, replacement))),
+            Self::CaseNat {
+                scrutinee,
+                zero_body,
+                succ_var,
+                succ_body,
+            } => Self::CaseNat {
+                scrutinee: Box::new(scrutinee.subst(name, replacement)),
+                zero_body: Box::new(zero_body.subst(name, replacement)),
+                succ_var: succ_var.clone(),
+                succ_body: if succ_var == name {
+                    succ_body.clone()
+                } else {
+                    Box::new(succ_body.subst(name, replacement))
+                },
+            },
             Self::Lam {
                 param,
                 param_ty,
@@ -243,7 +288,19 @@ impl Term {
     pub fn normalize_cont_ids(&self) -> Self {
         match self {
             Self::Cont(_) => Self::Cont(ContId(0)),
-            Self::Var(_) | Self::Unit | Self::Nat(_) => self.clone(),
+            Self::Var(_) | Self::Unit | Self::Zero => self.clone(),
+            Self::Succ(inner) => Self::Succ(Box::new(inner.normalize_cont_ids())),
+            Self::CaseNat {
+                scrutinee,
+                zero_body,
+                succ_var,
+                succ_body,
+            } => Self::CaseNat {
+                scrutinee: Box::new(scrutinee.normalize_cont_ids()),
+                zero_body: Box::new(zero_body.normalize_cont_ids()),
+                succ_var: succ_var.clone(),
+                succ_body: Box::new(succ_body.normalize_cont_ids()),
+            },
             Self::Lam {
                 param,
                 param_ty,
@@ -344,7 +401,17 @@ impl fmt::Display for Term {
         match self {
             Term::Var(name) => f.write_str(name),
             Term::Unit => f.write_str("()"),
-            Term::Nat(value) => write!(f, "{value}"),
+            Term::Zero => f.write_str("zero"),
+            Term::Succ(inner) => write!(f, "succ({inner})"),
+            Term::CaseNat {
+                scrutinee,
+                zero_body,
+                succ_var,
+                succ_body,
+            } => write!(
+                f,
+                "(case {scrutinee} {{ zero => {zero_body}; succ {succ_var} => {succ_body} }})"
+            ),
             Term::Lam {
                 param,
                 param_ty,

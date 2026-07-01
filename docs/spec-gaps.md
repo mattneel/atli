@@ -11,9 +11,10 @@ semantics.
   check that this realized frame count never exceeds generated witness `β`; this is an
   empirical conformance check, not a byte-accurate backend allocation proof.
 
-- SPEC-GAP(nat-structural-recursion-core): `docs/calculus.md §10` includes `Nat` and
-  `Fix`, but the reduced term grammar in `docs/calculus.md §3.2` has no eliminator such
-  as `if0`/case/predecessor/arithmetic for expressing genuine structural recursion on
-  `Nat`. Sprint 01 golden/generated “structural fix” cases therefore exercise the `Fix`
-  unfolding rule with terminating bodies and tag the witness as structural; real
-  structural descent needs a future core eliminator or an explicit generation rule.
+## Resolved gaps
+
+- RESOLVED(nat-structural-recursion-core): `docs/calculus.md` now includes unary `zero` /
+  `succ e` naturals and `case e { zero => e₀ ; succ x => e₁ }`. The predecessor `x` in
+  the `succ` branch is the strict subterm used by structural `Fix`; `gen.rs` derives
+  finite `β` for recursive calls on that predecessor and `ω` for non-strict structural
+  recursion.

@@ -44,6 +44,34 @@ fn let_reduction_substitutes_value() {
 }
 
 #[test]
+fn case_zero_reduces_to_zero_branch() {
+    let term = Term::CaseNat {
+        scrutinee: Box::new(Term::zero()),
+        zero_body: Box::new(Term::nat(10)),
+        succ_var: "p".into(),
+        succ_body: Box::new(Term::var("p")),
+    };
+    let report = eval(term, 8, false);
+    assert_eq!(report.outcome, Outcome::Value);
+    assert_eq!(report.final_term, Term::nat(10));
+    assert_eq!(report.trace, vec![Rule::CaseZero]);
+}
+
+#[test]
+fn case_succ_reduces_with_predecessor_substitution() {
+    let term = Term::CaseNat {
+        scrutinee: Box::new(Term::succ(Term::nat(2))),
+        zero_body: Box::new(Term::zero()),
+        succ_var: "p".into(),
+        succ_body: Box::new(Term::var("p")),
+    };
+    let report = eval(term, 8, false);
+    assert_eq!(report.outcome, Outcome::Value);
+    assert_eq!(report.final_term, Term::nat(2));
+    assert_eq!(report.trace, vec![Rule::CaseSucc]);
+}
+
+#[test]
 fn unhandled_perform_is_intentional_negative_fixture() {
     let report = eval(Term::Perform(Label::L, Box::new(Term::nat(1))), 8, false);
     assert_eq!(report.outcome, Outcome::StuckUnhandledOperation);
@@ -132,13 +160,37 @@ fn structural_fix_unfolds_to_terminating_function() {
         func: "f".into(),
         param: "x".into(),
         param_ty: Type::Nat,
-        body: Box::new(Term::var("x")),
+        body: Box::new(Term::CaseNat {
+            scrutinee: Box::new(Term::var("x")),
+            zero_body: Box::new(Term::zero()),
+            succ_var: "pred".into(),
+            succ_body: Box::new(Term::App(
+                Box::new(Term::var("f")),
+                Box::new(Term::var("pred")),
+            )),
+        }),
         tag: RecursionTag::Structural,
     };
-    let report = eval(Term::App(Box::new(fix), Box::new(Term::nat(5))), 8, false);
+    let report = eval(Term::App(Box::new(fix), Box::new(Term::nat(3))), 32, false);
     assert_eq!(report.outcome, Outcome::Value);
-    assert_eq!(report.final_term, Term::nat(5));
-    assert_eq!(report.trace, vec![Rule::Unfold, Rule::Beta]);
+    assert_eq!(report.final_term, Term::zero());
+    assert_eq!(
+        report.trace,
+        vec![
+            Rule::Unfold,
+            Rule::Beta,
+            Rule::CaseSucc,
+            Rule::Unfold,
+            Rule::Beta,
+            Rule::CaseSucc,
+            Rule::Unfold,
+            Rule::Beta,
+            Rule::CaseSucc,
+            Rule::Unfold,
+            Rule::Beta,
+            Rule::CaseZero,
+        ]
+    );
 }
 
 #[test]

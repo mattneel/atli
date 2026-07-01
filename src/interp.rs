@@ -12,6 +12,8 @@ use crate::grade::Label;
 pub enum Rule {
     Beta,
     Let,
+    CaseZero,
+    CaseSucc,
     Unfold,
     HReturn,
     HOp,
@@ -60,10 +62,19 @@ struct Continuation {
 enum Frame {
     AppFun(Box<Term>),
     AppArg(Box<Term>),
-    Let { var: String, body: Box<Term> },
+    Let {
+        var: String,
+        body: Box<Term>,
+    },
     Perform(Label),
     ResumeKont(Box<Term>),
     ResumeArg(Box<Term>),
+    Succ,
+    CaseNat {
+        zero_body: Box<Term>,
+        succ_var: String,
+        succ_body: Box<Term>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +150,13 @@ impl Machine {
             Term::App(fun, arg) => self.step_app(*fun, *arg),
             // `let x = v in e → e[x := v]` (let), `calculus.md §5`.
             Term::Let { var, expr, body } => self.step_let(var, *expr, *body),
+            Term::Succ(inner) => self.step_succ(*inner),
+            Term::CaseNat {
+                scrutinee,
+                zero_body,
+                succ_var,
+                succ_body,
+            } => self.step_case_nat(*scrutinee, *zero_body, succ_var, *succ_body),
             // `fix f. λx. e → λx. e[f := fix f. λx. e]` (unfold), `calculus.md §5`.
             Term::Fix {
                 func,
@@ -169,6 +187,54 @@ impl Machine {
             // `resume κ v → κ v` if unused; otherwise stuck (`calculus.md §5`).
             Term::Resume { kont, arg } => self.step_resume(*kont, *arg),
             value_or_var => StepResult::Stuck(Outcome::InternalMalformed, value_or_var),
+        }
+    }
+
+    fn step_succ(&mut self, inner: Term) -> StepResult {
+        if inner.is_value() {
+            StepResult::Stuck(Outcome::InternalMalformed, Term::Succ(Box::new(inner)))
+        } else {
+            self.step_nested(inner, |term| Term::Succ(Box::new(term)))
+        }
+    }
+
+    fn step_case_nat(
+        &mut self,
+        scrutinee: Term,
+        zero_body: Term,
+        succ_var: String,
+        succ_body: Term,
+    ) -> StepResult {
+        if !scrutinee.is_value() {
+            return self.step_nested(scrutinee, |term| Term::CaseNat {
+                scrutinee: Box::new(term),
+                zero_body: Box::new(zero_body),
+                succ_var,
+                succ_body: Box::new(succ_body),
+            });
+        }
+        match scrutinee {
+            // `case zero { zero => e0; succ x => e1 } → e0` (case-zero),
+            // `calculus.md §5`.
+            Term::Zero => StepResult::Stepped {
+                term: zero_body,
+                rule: Rule::CaseZero,
+            },
+            // `case (succ v) { ...; succ x => e1 } → e1[x := v]` (case-succ),
+            // `calculus.md §5`.
+            Term::Succ(value) if value.is_value() => StepResult::Stepped {
+                term: succ_body.subst(&succ_var, &value),
+                rule: Rule::CaseSucc,
+            },
+            other => StepResult::Stuck(
+                Outcome::InternalMalformed,
+                Term::CaseNat {
+                    scrutinee: Box::new(other),
+                    zero_body: Box::new(zero_body),
+                    succ_var,
+                    succ_body: Box::new(succ_body),
+                },
+            ),
         }
     }
 
@@ -365,6 +431,25 @@ fn decompose(term: &Term, frames: Vec<Frame>) -> Option<CapturedPerform> {
             next.push(Frame::Perform(*label));
             decompose(arg, next)
         }
+        Term::Succ(inner) if !inner.is_value() => {
+            let mut next = frames;
+            next.push(Frame::Succ);
+            decompose(inner, next)
+        }
+        Term::CaseNat {
+            scrutinee,
+            zero_body,
+            succ_var,
+            succ_body,
+        } if !scrutinee.is_value() => {
+            let mut next = frames;
+            next.push(Frame::CaseNat {
+                zero_body: zero_body.clone(),
+                succ_var: succ_var.clone(),
+                succ_body: succ_body.clone(),
+            });
+            decompose(scrutinee, next)
+        }
         Term::App(fun, arg) if !fun.is_value() => {
             let mut next = frames;
             next.push(Frame::AppFun(arg.clone()));
@@ -418,6 +503,17 @@ fn plug(mut term: Term, frames: &[Frame]) -> Term {
             Frame::ResumeArg(kont) => Term::Resume {
                 kont: kont.clone(),
                 arg: Box::new(term),
+            },
+            Frame::Succ => Term::Succ(Box::new(term)),
+            Frame::CaseNat {
+                zero_body,
+                succ_var,
+                succ_body,
+            } => Term::CaseNat {
+                scrutinee: Box::new(term),
+                zero_body: zero_body.clone(),
+                succ_var: succ_var.clone(),
+                succ_body: succ_body.clone(),
             },
         };
     }

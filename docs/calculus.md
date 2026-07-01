@@ -158,7 +158,10 @@ uniqueness `1` (affine) — see `Handle`.
 
 ```
 e ::= x
-    | () | true | false | n
+    | () | true | false
+    | zero | succ e                    unary naturals
+    | case e { zero => e₀ ; succ x => e₁ }
+                                       Nat eliminator; x is the predecessor subterm
     | λ x:T. e                        abstraction
     | e₁ e₂                           application
     | let x = e₁ in e₂                sequencing (monadic bind)
@@ -208,7 +211,31 @@ x :[1] T , 0·Γ  ⊢  x : T ! ø
 Γ ⊢ e : (τ @ q') ! σ            where T = τ @ q
 ```
 
-### 4.2 Functions
+### 4.2 Naturals
+
+Unary natural introduction and elimination make structural descent explicit: in the
+`succ x` branch, `x` is a strict subterm of the scrutinee.
+
+```
+──────────────────────────────  (Zero)
+Γ ⊢ zero : Nat @ 1 ! ø
+
+Γ ⊢ e : Nat @ q ! σ
+──────────────────────────────  (Succ)
+Γ ⊢ succ e : Nat @ 1 ! σ
+
+Γ₀ ⊢ e : Nat @ q ! σ       Γ₁ ⊢ e₀ : T ! σ₀
+Γ₂ , x :[q_x] Nat @ 1 ⊢ e₁ : T ! σ₁
+────────────────────────────────────────────────────────────  (Case-Nat)
+Γ₀ + Γ₁ + Γ₂ ⊢ case e { zero => e₀ ; succ x => e₁ }
+  : T ! σ ▷ (σ₀ ⊔ σ₁)
+```
+
+If the case scrutinee is the parameter of an enclosing structural `fix`, recursive calls
+on the `x` bound by the `succ x` branch satisfy the strict-descent side condition in
+`Fix` (§4.8): each recursive step peels exactly one `succ`.
+
+### 4.3 Functions
 
 Abstraction records the body's row as the arrow's *latent* row:
 
@@ -229,7 +256,7 @@ caller's.
 Γ₁ + Γ₂  ⊢  e₁ e₂  :  T₂  !  σ₁ ▷ σ₂ ▷ σ_f
 ```
 
-### 4.3 Sequencing (bind)
+### 4.4 Sequencing (bind)
 
 ```
 Γ₁ ⊢ e₁ : T₁ ! σ₁          Γ₂ , x :[q] T₁ ⊢ e₂ : T₂ ! σ₂
@@ -237,7 +264,7 @@ caller's.
 Γ₁ + Γ₂  ⊢  let x = e₁ in e₂  :  T₂  !  σ₁ ▷ σ₂
 ```
 
-### 4.4 Uniqueness escapes
+### 4.5 Uniqueness escapes
 
 ```
 Γ ⊢ e : (τ @ 1) ! σ                       Γ ⊢ e : (τ @ 1) ! σ
@@ -250,7 +277,7 @@ region (enabling zero-copy cross-task transfer, checked against `ρ`); `inplace`
 licenses destructive mutation in the backend (§9). Neither is well-typed on a `ω`
 (shared) value — that is a compile error naming the alias that forced sharing.
 
-### 4.5 Effects
+### 4.6 Effects
 
 ```
 Γ ⊢ e : A ! σ            (ℓ : A ↠ B) ∈ Signature
@@ -262,7 +289,7 @@ licenses destructive mutation in the backend (§9). Neither is well-typed on a `
 cost `β_ℓ`. The operation's resume-type `B` is what a handler's continuation will be
 fed. Nothing here says whether `ℓ` terminates — that is decided *at its handler*.
 
-### 4.6 The handler rule — the centerpiece
+### 4.7 The handler rule — the centerpiece
 
 *(Deep handlers: the continuation reinstalls `H`. See §6 for the full discussion, and
 §6.2 for the one-shot lemma that makes the `β`-side sound.)*
@@ -309,7 +336,7 @@ Key facts encoded above:
   the clause. If `eᵢ` resumes, that `β` is paid; the handler's own `β` then flows back
   *outward* in the result row. Effects out, boundedness qualifier in, at the same site.
 
-### 4.7 Recursion
+### 4.8 Recursion
 
 ```
 Γ , f :[ω] (T₁ →[σ] T₂) , x :[q] T₁  ⊢  e : T₂ ! σ'
@@ -320,11 +347,15 @@ Key facts encoded above:
 ```
 
 The occurrences of `f` in `e` make `β` **recursive**: `β` must satisfy
-`β ⊒ Fix_β(f, e)`, whose least solution over `Bound` is computed in §7. If that lfp is
-finite, the frame is statically sized (stackless codegen); if it widens to `ω`, the
-function is `div` and gets the stackful fallback.
+`β ⊒ Fix_β(f, e)`, whose least solution over `Bound` is computed in §7. For the
+structural/free rung, the concrete strict-descent condition is: a recursive call may use
+only a variable bound by a `succ x` pattern whose scrutinee is the current recursive
+parameter. That variable is a strict subterm of the scrutinee because the `case` rule has
+peeled one `succ`. If the resulting lfp is finite, the frame is statically sized
+(stackless codegen); if it widens to `ω`, the function is `div` and gets the stackful
+fallback.
 
-### 4.8 Subsumption (mind the variance)
+### 4.9 Subsumption (mind the variance)
 
 ```
 Γ ⊢ e : T ! σ        T <: T'        σ ⊑⁺ σ'
@@ -361,7 +392,8 @@ evaluation contexts (no `handle` frame between the hole and the redex); `H`-deli
 context is handled explicitly by the two handler rules.
 
 ```
-E ::= [·] | E e | v E | let x = E in e | perform ℓ E | E.ℓ | resume E e | resume v E
+E ::= [·] | succ E | case E { zero => e₀ ; succ x => e₁ }
+    | E e | v E | let x = E in e | perform ℓ E | E.ℓ | resume E e | resume v E
 ```
 
 Core reductions:
@@ -369,6 +401,10 @@ Core reductions:
 ```
 (λx. e) v                      →   e[x := v]                              (β)
 let x = v in e                 →   e[x := v]                              (let)
+case zero { zero => e₀ ; succ x => e₁ }
+                                  →   e₀                                  (case-zero)
+case (succ v) { zero => e₀ ; succ x => e₁ }
+                                  →   e₁[x := v]                          (case-succ)
 fix f. λx. e                   →   λx. e[f := fix f. λx. e]               (unfold)
 ⟨…, ℓ = v, …⟩.ℓ                →   v                                     (proj)
 ```
@@ -442,11 +478,13 @@ noted here only as a known design point, not adopted.
 
 ### 7.1 Constraint generation
 
-`Fix` and `App`/`Let` generate a system of constraints over `Bound`-valued unknowns
-(one per definition, plus row variables). All constraints have the monotone shape
-`βₓ ⊒ Φₓ(β⃗)` where `Φ` is built from `⊕` (nesting), `⊔` (branching), and substitution
-at recursive occurrences. The intended solution is the **least fixpoint** `lfp Φ`
-(tightest sound frame sizes).
+`Fix`, `App`, `Let`, and `case` generate a system of constraints over `Bound`-valued
+unknowns (one per definition, plus row variables). All constraints have the monotone
+shape `βₓ ⊒ Φₓ(β⃗)` where `Φ` is built from `⊕` (nesting), `⊔` (branching), and
+substitution at recursive occurrences. For structural recursion over `Nat`, a recursive
+occurrence is accepted at the free rung only when its argument is the predecessor variable
+introduced by a surrounding `succ x` branch for the current recursive parameter. The
+intended solution is the **least fixpoint** `lfp Φ` (tightest sound frame sizes).
 
 ### 7.2 Solving
 
@@ -521,7 +559,7 @@ predicate is `≥ true size`, not `⊆ safe set`. The direction is the point.
 
 ### 8.6 Principality — **[novel, the technical crux]**
 > Algorithmic inference computes, for every typeable `e`, a type that is principal with
-> respect to the declarative subtyping of §4.8 — where the effect component is
+> respect to the declarative subtyping of §4.9 — where the effect component is
 > minimized (covariant) and the boundedness component sits in contravariant position
 > under the arrow.
 
@@ -571,7 +609,7 @@ selected per target.
 Mechanize in Rocq (Iris for the substructural/linearity reasoning). Prove soundness on a
 **radically shrunk core** containing exactly the novel interaction and nothing else:
 
-- Types: `Unit`, `Nat`, one arrow, `Cont`.
+- Types: `Unit`, `Nat`, one arrow, `Cont`; `Nat` has unary `zero`/`succ` and `case`.
 - Effects: **one** operation `ℓ`.
 - **One** handler form (`Handle`), deep, affine `k`.
 - Boundedness: `Bound = ℕ ∪ {ω}`, `⊕`/`⊔`, `Fix` with the recursive `β`-constraint.
