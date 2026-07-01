@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Rocq/Coq, LLVM/MLIR 22, and mdBook
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget lsb-release gnupg software-properties-common coq=8.18.0+dfsg-1build2
+          wget -O /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 22
+          sudo apt-get install -y clang-22 mlir-22-tools llvm-22-tools
+          cargo install mdbook --locked
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: make -C proofs
+      - run: scripts/check-admitted-count.sh
+      - run: cargo run -- test examples/
+      - run: mdbook build book
+      - run: scripts/check-book-samples.sh
+      - name: Build linux x86_64 binary
+        run: cargo build --release --bin atli
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          cp target/release/atli dist/atli-linux-x86_64
+          tar -C dist -czf atli-linux-x86_64.tar.gz atli-linux-x86_64
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: atli-linux-x86_64.tar.gz
+          body: |
+            Atli v0.1.0 ships the finite-β + effects + mutual-recursion language with oracle and native execution. Certified boundedness grades size native arenas; dynamic handler scopes and the growable `div` path are included.
+
+            Not yet included: uniqueness, concurrency, WASM, byte-accurate frame refinement, full proof discharges, and real measure verification. See ROADMAP.md and the Book.

@@ -302,6 +302,7 @@ fn runtime_shim() -> String {
        for (int i = atli_scope_depth - 1; i >= 0; --i) {\n\
          if (atli_scopes[i].label == label) {\n\
            if (atli_scopes[i].mode == 0) return atli_scopes[i].value;\n\
+           if (atli_scopes[i].mode == 2) return arg + atli_scopes[i].value;\n\
            return arg;\n\
          }\n\
        }\n\
@@ -323,6 +324,7 @@ struct MlirModule<'a> {
     arena_slots: u32,
     growable: bool,
     functions: BTreeMap<String, usize>,
+    force_dynamic_dispatch: bool,
 }
 
 impl<'a> MlirModule<'a> {
@@ -340,6 +342,8 @@ impl<'a> MlirModule<'a> {
             arena_slots,
             growable,
             functions,
+            force_dynamic_dispatch: std::env::var("ATLI_FORCE_DYNAMIC_DISPATCH").ok().as_deref()
+                == Some("1"),
         }
     }
 
@@ -424,7 +428,7 @@ impl<'a> MlirModule<'a> {
 
     fn emit_function(&self, func: &FnDecl) -> Result<String, CodegenError> {
         assert_nat_type(&func.ret)?;
-        let mut builder = Builder::new(&self.functions);
+        let mut builder = Builder::new(&self.functions, self.force_dynamic_dispatch);
         let mut params = Vec::new();
         let mut env = BTreeMap::new();
         for param in &func.params {
@@ -464,14 +468,16 @@ struct Builder<'a> {
     out: String,
     next: usize,
     functions: &'a BTreeMap<String, usize>,
+    force_dynamic_dispatch: bool,
 }
 
 impl<'a> Builder<'a> {
-    fn new(functions: &'a BTreeMap<String, usize>) -> Self {
+    fn new(functions: &'a BTreeMap<String, usize>, force_dynamic_dispatch: bool) -> Self {
         Self {
             out: String::new(),
             next: 0,
             functions,
+            force_dynamic_dispatch,
         }
     }
 
@@ -548,13 +554,26 @@ impl<'a> Builder<'a> {
     ) -> Result<Value, CodegenError> {
         match &expr.kind {
             ExprKind::QualifiedCall { effect, op, args } if op == "op" => {
-                if ctx.clause_for(effect).is_some() {
+                if let Some(clause) = ctx.clause_for(effect) {
                     if args.len() != 1 {
                         return Err(CodegenError::new(
                             "effect operation `op` expects one argument",
                         ));
                     }
-                    self.handle_perform(effect, &args[0], ctx, env, indent, cont)
+                    if self.force_dynamic_dispatch {
+                        self.line(
+                            indent,
+                            "// forced dynamic dispatch: runtime handler-scope search, no lexical fast path",
+                        );
+                        let value = self.dynamic_perform(effect, args, env, indent)?;
+                        if clause.op_k.is_none() {
+                            Ok(value)
+                        } else {
+                            self.apply_cont(value, ctx, env, indent, cont)
+                        }
+                    } else {
+                        self.handle_perform(effect, &args[0], ctx, env, indent, cont)
+                    }
                 } else {
                     let value = self.dynamic_perform(effect, args, env, indent)?;
                     self.apply_cont(value, ctx, env, indent, cont)
@@ -1093,6 +1112,7 @@ impl ClauseCtx<'_> {
     fn scope_mode(&self) -> (u64, u64) {
         const MODE_CONST: u64 = 0;
         const MODE_ARG: u64 = 1;
+        const MODE_ADD_CONST: u64 = 2;
         match &self.op_body.kind {
             ExprKind::Nat(value) => (MODE_CONST, *value),
             ExprKind::Var(name) if Some(name.as_str()) == self.op_param => (MODE_ARG, 0),
@@ -1104,6 +1124,32 @@ impl ClauseCtx<'_> {
                 match &args[0].kind {
                     ExprKind::Nat(value) => (MODE_CONST, *value),
                     ExprKind::Var(name) if Some(name.as_str()) == self.op_param => (MODE_ARG, 0),
+                    ExprKind::Binary {
+                        op: BinaryOp::Add,
+                        lhs,
+                        rhs,
+                    } if matches!(&lhs.kind, ExprKind::Var(name) if Some(name.as_str()) == self.op_param)
+                        && matches!(&rhs.kind, ExprKind::Nat(_)) =>
+                    {
+                        if let ExprKind::Nat(value) = rhs.kind {
+                            (MODE_ADD_CONST, value)
+                        } else {
+                            (MODE_ARG, 0)
+                        }
+                    }
+                    ExprKind::Binary {
+                        op: BinaryOp::Add,
+                        lhs,
+                        rhs,
+                    } if matches!(&rhs.kind, ExprKind::Var(name) if Some(name.as_str()) == self.op_param)
+                        && matches!(&lhs.kind, ExprKind::Nat(_)) =>
+                    {
+                        if let ExprKind::Nat(value) = lhs.kind {
+                            (MODE_ADD_CONST, value)
+                        } else {
+                            (MODE_ARG, 0)
+                        }
+                    }
                     _ => (MODE_ARG, 0),
                 }
             }

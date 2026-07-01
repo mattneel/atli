@@ -5,28 +5,46 @@ on:
   pull_request:
 
 jobs:
-  rust:
+  gate:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - name: Install tier-1 codegen toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Rocq/Coq and LLVM/MLIR 22
         run: |
           sudo apt-get update
-          if ! sudo apt-get install -y clang-22 mlir-22-tools llvm-22-tools; then
-            echo "::warning::LLVM 22 toolchain unavailable; codegen tests will skip compiled execution"
-          fi
+          sudo apt-get install -y wget lsb-release gnupg software-properties-common coq=8.18.0+dfsg-1build2
+          wget -O /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 22
+          sudo apt-get install -y clang-22 mlir-22-tools llvm-22-tools
+      - name: Install mdBook
+        run: |
+          if ! command -v mdbook >/dev/null; then cargo install mdbook --locked; fi
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - run: make -C proofs
+      - run: scripts/check-admitted-count.sh
+      - run: cargo run -- test examples/
+      - run: mdbook build book
+      - run: scripts/check-book-samples.sh
 
-
-  proofs:
+  llvm18-informational:
     runs-on: ubuntu-24.04
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v5
-      - run: sudo apt-get update && sudo apt-get install -y coq=8.18.0+dfsg-1build2
-      - run: coqc --version
-      - run: make -C proofs
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install LLVM/MLIR 18 tolerance toolchain
+        run: sudo apt-get update && sudo apt-get install -y clang-18 mlir-18-tools llvm-18-tools
+      - name: Run compiled differential on LLVM 18
+        run: |
+          ATLI_CLANG=/usr/bin/clang-18 \
+          ATLI_MLIR_OPT=/usr/lib/llvm-18/bin/mlir-opt \
+          ATLI_MLIR_TRANSLATE=/usr/lib/llvm-18/bin/mlir-translate \
+          cargo run -- test examples/

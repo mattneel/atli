@@ -58,13 +58,11 @@ module attributes {atli.certified_beta_slots = 1 : i64, atli.arena_overhead_slot
     } else {
       %c8 = arith.constant 1 : i64
       %pred9 = arith.subi %n, %c8 : i64
-      %call10 = func.call @atli_fn_counter(%pred9) : (i64) -> i64
-      // H-op-resume, calculus.md §5; static dispatch licensed by L5_mentions_iff_resume
-      %c11 = arith.constant 1 : i64
-      %add12 = arith.addi %call10, %c11 : i64
-      %resume_uses13 = arith.constant 1 : i64
-      func.call @atli_debug_resume_once(%resume_uses13) : (i64) -> ()
-      scf.yield %add12 : i64
+      // forced dynamic dispatch: runtime handler-scope search, no lexical fast path
+      %c10 = arith.constant 4953246919537031357 : i64
+      %call11 = func.call @atli_fn_counter(%pred9) : (i64) -> i64
+      %perform12 = func.call @atli_scope_perform(%c10, %call11) : (i64, i64) -> i64
+      scf.yield %perform12 : i64
     }
     func.call @atli_scope_pop() : () -> ()
     return %hcase6 : i64

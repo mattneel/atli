@@ -1,5 +1,8 @@
 use std::fs;
 use std::process::Command;
+use std::sync::Mutex;
+
+static CODEGEN_LOCK: Mutex<()> = Mutex::new(());
 
 use atli::check::check;
 use atli::core::{Handler, OpClause, Term};
@@ -154,7 +157,7 @@ fn cli_wedge_rejects_with_source_blame_and_core_is_inspectable() {
     assert_eq!(code, 1);
     assert!(stderr.contains("Handle §4.7"));
     assert!(stderr.contains("extra-mention"));
-    assert!(stderr.contains("examples/wedge.atli:6:9"));
+    assert!(stderr.contains("examples/wedge.atli:7:9"));
     assert!(stderr.contains("z = k"));
     assert!(stderr.contains("^"));
 
@@ -171,7 +174,7 @@ fn cli_unsupported_construct_exits_one_with_clear_diagnostic() {
     let (code, _stdout, stderr) = run_cli(&["check", "examples/unsupported.atli"]);
     assert_eq!(code, 1);
     assert!(stderr.contains("uniqueness `^` is not yet in the reduced surface"));
-    assert!(stderr.contains("examples/unsupported.atli:1:11"));
+    assert!(stderr.contains("examples/unsupported.atli:2:11"));
 }
 
 #[test]
@@ -278,6 +281,7 @@ fn codegen_emit_goldens_pin_certified_arena_literals() {
 
 #[test]
 fn growable_div_backend_bounded_run_exhausts_test_iters() {
+    let _guard = CODEGEN_LOCK.lock().unwrap();
     if !has_codegen_toolchain() {
         eprintln!("skipping growable backend smoke: LLVM/MLIR toolchain not found");
         return;
@@ -299,6 +303,7 @@ fn growable_div_backend_bounded_run_exhausts_test_iters() {
 
 #[test]
 fn compiled_native_outputs_match_oracle_for_finite_programs() {
+    let _guard = CODEGEN_LOCK.lock().unwrap();
     if !has_codegen_toolchain() {
         eprintln!("skipping compiled differential: LLVM/MLIR toolchain not found");
         return;
@@ -349,6 +354,81 @@ fn compiled_native_outputs_match_oracle_for_finite_programs() {
         );
         let _ = fs::remove_file(name);
     }
+}
+
+#[test]
+fn cli_test_runner_covers_examples() {
+    let _guard = CODEGEN_LOCK.lock().unwrap();
+    let (code, stdout, stderr) = run_cli(&["test", "examples/"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stdout.contains("atli test: all examples passed"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("examples/wedge.atli check-error"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn forced_dynamic_dispatch_matches_handler_fast_path() {
+    let _guard = CODEGEN_LOCK.lock().unwrap();
+    if !has_codegen_toolchain() {
+        eprintln!("skipping forced-dynamic differential: LLVM/MLIR toolchain not found");
+        return;
+    }
+    let handler_examples = [
+        "examples/state_handler.atli",
+        "examples/default_handler.atli",
+        "examples/counter.atli",
+        "examples/abort.atli",
+        "examples/two_effects.atli",
+        "examples/conditional_handler.atli",
+        "examples/handler_in_recursion.atli",
+        "examples/drop_across_scopes.atli",
+    ];
+    for path in handler_examples {
+        let fast = Command::new(bin())
+            .args(["run", "--compiled", path])
+            .output()
+            .expect("fast compiled run");
+        assert!(
+            fast.status.success(),
+            "{path}: {}",
+            String::from_utf8_lossy(&fast.stderr)
+        );
+        let dynamic = Command::new(bin())
+            .env("ATLI_FORCE_DYNAMIC_DISPATCH", "1")
+            .args(["run", "--compiled", path])
+            .output()
+            .expect("dynamic compiled run");
+        assert!(
+            dynamic.status.success(),
+            "{path}: {}",
+            String::from_utf8_lossy(&dynamic.stderr)
+        );
+        assert_eq!(fast.stdout, dynamic.stdout, "{path} stdout");
+        assert_eq!(
+            parse_high_water(&String::from_utf8(fast.stderr).unwrap()),
+            parse_high_water(&String::from_utf8(dynamic.stderr).unwrap()),
+            "{path} high-water"
+        );
+    }
+
+    let forced = Command::new(bin())
+        .env("ATLI_FORCE_DYNAMIC_DISPATCH", "1")
+        .args(["emit", "examples/counter.atli"])
+        .output()
+        .expect("forced emit");
+    assert!(forced.status.success());
+    let stdout = String::from_utf8(forced.stdout).unwrap();
+    assert_eq!(
+        stdout,
+        fs::read_to_string("tests/goldens/codegen/counter.forced-dynamic.mlir").unwrap()
+    );
+    assert!(stdout.contains("forced dynamic dispatch"));
+    assert!(!stdout.contains("H-op-resume, calculus.md §5"));
 }
 
 #[test]

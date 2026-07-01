@@ -1,0 +1,8 @@
+[book]
+title = "The Atli Book"
+authors = ["Atli Contributors"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/mattneel/atli"

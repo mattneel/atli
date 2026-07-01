@@ -7,3 +7,6 @@ proofs/**/*.vok
 proofs/**/*.glob
 proofs/**/.*.aux
 proofs/.lia.cache
+
+# mdBook output
+book/book/

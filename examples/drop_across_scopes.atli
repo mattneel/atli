@@ -1,3 +1,4 @@
+// expect: 9
 effect A { op(x: Nat) -> Nat }
 effect B { op(x: Nat) -> Nat }
 

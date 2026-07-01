@@ -1,3 +1,4 @@
+// expect: 3
 effect L { op(x: Nat) -> Nat }
 
 fn counter(n: Nat) -> Nat measure n = handle case n {

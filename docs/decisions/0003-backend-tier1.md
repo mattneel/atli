@@ -94,3 +94,17 @@ uses the direct-resume lowering licensed by `L5_mentions_iff_resume`. The runtim
 forcing case that lexical dispatch could not: a called function performing under a handler installed
 by its caller. Tier-3 optimization may replace this with evidence passing or handler inlining, but the
 semantic baseline is now dynamic scope search per `docs/calculus.md §5`.
+
+## Sprint 10 third amendment: CI toolchain gate and LLVM tolerance
+
+The required CI gate installs the LLVM/MLIR 22 package set (`clang-22`, `mlir-22-tools`,
+`llvm-22-tools`) via apt.llvm.org and runs the compiled/oracle differential through
+`atli test examples/`; CI does not skip this leg. Local contributors without LLVM keep
+the existing loud local failure/skip behavior in cargo tests, but the repository gate is
+pinned to the ADR's LLVM 22 line.
+
+The emitted dialect subset has also been robust on LLVM 18 locally. Sprint 10 converts
+that accident into an explicit informational tolerance job: CI runs `atli test examples/`
+with LLVM 18 tools and `continue-on-error: true`. The tolerance job is evidence about the
+conservatism of the emitted `func`/`arith`/`scf`/`memref`/`cf` subset; it is not a release
+gate and does not weaken the LLVM 22 requirement.

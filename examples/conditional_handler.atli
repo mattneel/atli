@@ -1,3 +1,4 @@
+// expect: 5
 effect L { op(x: Nat) -> Nat }
 
 fn ask(n: Nat) -> Nat = L.op(n)

@@ -1,3 +1,4 @@
+// expect: 9
 effect L { op(x: Nat) -> Nat }
 
 fn main() -> Nat = handle L.op(1) {

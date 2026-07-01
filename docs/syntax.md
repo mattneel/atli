@@ -1,16 +1,32 @@
-# Atli Syntax (draft 0)
+# Atli Syntax
 
-> **Status: draft‑0, provisional.** This pins the surface grammar enough to write a
-> parser against; specific tokens are still movable. Examples are fenced ```zig``` so
-> GitHub colors the Zig-shaped tokens (`fn`, `pub`, `if`, `//`, strings, numbers) — Atli
-> keywords like `effect`, `handle`, `measure`, `case` won't highlight until there's a
-> real grammar file. The type system these surface forms elaborate into is
-> [`docs/calculus.md`](calculus.md); this document is only about how it *reads*.
+> **Status: implemented subset + open list (v0.1.0).** This document began as draft-0.
+> The v0.1.0 compiler implements the reduced surface listed below and keeps the rest in
+> the Open list. Normative elaboration details live in [`docs/elaboration.md`](elaboration.md);
+> the core semantics live in [`docs/calculus.md`](calculus.md).
 
-Two decisions are settled (they were reached by liking a draft that used them):
-handlers bind the continuation **explicitly** as a one-shot value, and blocks are
-delimited with **braces**. See [Appendix B](#appendix-b-settled-vs-open) for what's still
-open.
+## Implemented in v0.1.0
+
+- `fn` / `pub fn` declarations, expression or block bodied.
+- Types: `Unit`, `Nat`, arrows, and effect rows `! {A, B}`.
+- Expressions: `()`, decimal naturals, variables, unary calls, curried multi-arg calls,
+  blocks, `case n { 0 -> e0; p -> e1 }`, pipes, and `+ - *` over `Nat` (`-` is monus).
+- Recursion: structural by default, `measure e` trusted by the reduced core, and `div`.
+  Real Fibonacci uses `measure`; arithmetic calls like `m - 1` are not the peeled
+  predecessor required by strict structural recursion.
+- Effects: multiple `effect L { op(x: Nat) -> Nat }` declarations, `L.op(e)`, and
+  multi-label handlers with `k` or `_` continuation clauses.
+- Mutual top-level recursion: declaration SCCs elaborate to core `fix*` groups.
+- Example-test directives in leading comments: `expect`, `expect-oracle`,
+  `expect-compiled`, `expect-check-error`, and `env`.
+
+## Still open
+
+Records, variants, full numeric tower, strings/chars/floats as runtime values, type
+parameters, uniqueness markers (`^`, `^u`), `move`, `inplace`, `freeze`, `scope`,
+`spawn`, modules/`use`, byte-accurate frame layout, real measure verification, and the
+full region grade remain future work. Unsupported v0.1.0 constructs diagnose as "not yet
+in the reduced surface".
 
 ---
 

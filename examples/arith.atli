@@ -1,1 +1,2 @@
+// expect: 14
 fn main() -> Nat = (2 + 3) * 4 - 6

@@ -1,3 +1,4 @@
+// expect: 9
 effect L { op(x: Nat) -> Nat }
 
 fn burn(n: Nat) -> Nat measure n = case n {

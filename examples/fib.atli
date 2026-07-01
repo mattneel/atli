@@ -1,3 +1,4 @@
+// expect: 55
 // Real Fibonacci under the reduced checker: arithmetic arguments are non-strict, so this
 // algorithm uses the annotated measure rung. In the successor arm, m is n - 1.
 fn fib(n: Nat) -> Nat measure n = case n {

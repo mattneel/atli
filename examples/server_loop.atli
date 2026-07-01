@@ -1,3 +1,6 @@
+// env: ATLI_MAX_ITERS=5
+// expect-oracle: budget exhausted after 4096 steps (classified Div)
+// expect-compiled: ATLI_MAX_ITERS exhausted after 5 iterations; ATLI_GROWABLE_SEGMENT=64
 // Deliberately divergent loop.
 fn server_loop(n: Nat) -> Nat div = server_loop(n)
 
