@@ -21,7 +21,8 @@ use crate::core::{Divergence, Term};
 use crate::elaborate::ElaboratedProgram;
 use crate::grade::Bound;
 use crate::surface::ast::{
-    BinaryOp, Boundedness, Decl, Expr, ExprKind, FnDecl, Pattern, Program, TypeExpr,
+    BinaryOp, Binding, Boundedness, Decl, Expr, ExprKind, FnDecl, HandleClause, Pattern, Program,
+    TypeExpr,
 };
 
 const BUILD_DIR: &str = "target/atli";
@@ -352,6 +353,14 @@ impl<'a> MlirModule<'a> {
         out.push_str("    %v = memref.load %g[%c0] : memref<1xi64>\n");
         out.push_str("    return %v : i64\n");
         out.push_str("  }\n");
+        out.push_str("  func.func @atli_debug_resume_once(%uses: i64) -> () {\n");
+        out.push_str("    %one = arith.constant 1 : i64\n");
+        out.push_str("    %bad = arith.cmpi sgt, %uses, %one : i64\n");
+        out.push_str("    scf.if %bad {\n");
+        out.push_str("      func.call @atli_trap_one_shot() : () -> ()\n");
+        out.push_str("    }\n");
+        out.push_str("    return\n");
+        out.push_str("  }\n");
         out.push_str("  func.func @atli_touch_frame(%slots: i64) -> () {\n");
         out.push_str(&format!(
             "    %beta = arith.constant {} : i64\n",
@@ -458,12 +467,230 @@ impl<'a> Builder<'a> {
                 self.expr(result, &local, indent)
             }
             ExprKind::CaseNat { scrutinee, arms } => self.case_nat(scrutinee, arms, env, indent),
+            ExprKind::Handle { body, clauses } => self.handle(body, clauses, env, indent),
             ExprKind::Unit => Err(CodegenError::new(
                 "tier-1 native lowering currently supports Nat results only",
             )),
-            ExprKind::QualifiedCall { .. } | ExprKind::Handle { .. } => Err(CodegenError::new(
-                "effects and handlers are Sprint 07 territory for tier-1 native lowering",
+            ExprKind::QualifiedCall { .. } => Err(CodegenError::new(
+                "unhandled effect operations require a handler in tier-1 native lowering",
             )),
+        }
+    }
+
+    fn handle(
+        &mut self,
+        body: &Expr,
+        clauses: &[HandleClause],
+        env: &BTreeMap<String, String>,
+        indent: usize,
+    ) -> Result<Value, CodegenError> {
+        let ctx = HandlerCtx::new(clauses)?;
+        self.handled_expr(body, &ctx, env, indent, Continuation::Return)
+    }
+
+    fn handled_expr(
+        &mut self,
+        expr: &Expr,
+        ctx: &HandlerCtx<'_>,
+        env: &BTreeMap<String, String>,
+        indent: usize,
+        cont: Continuation<'_>,
+    ) -> Result<Value, CodegenError> {
+        match &expr.kind {
+            ExprKind::QualifiedCall { effect, op, args } if effect == "L" && op == "op" => {
+                if args.len() != 1 {
+                    return Err(CodegenError::new("`L.op` expects one argument"));
+                }
+                self.handle_perform(&args[0], ctx, env, indent, cont)
+            }
+            ExprKind::Block { bindings, result } => {
+                self.handled_block(bindings, result, ctx, env, indent, cont)
+            }
+            ExprKind::CaseNat { scrutinee, arms } => {
+                if arms.len() != 2 {
+                    return Err(CodegenError::new(
+                        "tier-1 Nat case expects exactly two arms",
+                    ));
+                }
+                let scrut = self.expr(scrutinee, env, indent)?;
+                let zero_const = self.constant(0, indent);
+                let cond = self.fresh("is_zero");
+                self.line(
+                    indent,
+                    &format!(
+                        "{cond} = arith.cmpi eq, {}, {} : i64",
+                        scrut.name, zero_const.name
+                    ),
+                );
+                let out = self.fresh("hcase");
+                self.line(indent, &format!("{out} = scf.if {cond} -> (i64) {{"));
+                match &arms[0].pattern {
+                    Pattern::Zero(_) => {
+                        let zero_body =
+                            self.handled_expr(&arms[0].body, ctx, env, indent + 2, cont.clone())?;
+                        self.line(indent + 2, &format!("scf.yield {} : i64", zero_body.name));
+                    }
+                    _ => return Err(CodegenError::new("first case arm must be `0`")),
+                }
+                self.line(indent, "} else {");
+                let pred = match &arms[1].pattern {
+                    Pattern::Bind(name) => name.node.clone(),
+                    _ => return Err(CodegenError::new("second case arm must bind predecessor")),
+                };
+                let one = self.constant(1, indent + 2);
+                let pred_value = self.fresh("pred");
+                self.line(
+                    indent + 2,
+                    &format!(
+                        "{pred_value} = arith.subi {}, {} : i64",
+                        scrut.name, one.name
+                    ),
+                );
+                let mut local = env.clone();
+                local.insert(pred, pred_value);
+                let succ_body = self.handled_expr(&arms[1].body, ctx, &local, indent + 2, cont)?;
+                self.line(indent + 2, &format!("scf.yield {} : i64", succ_body.name));
+                self.line(indent, "}");
+                Ok(Value { name: out })
+            }
+            _ => {
+                let value = self.expr(expr, env, indent)?;
+                self.apply_cont(value, ctx, env, indent, cont)
+            }
+        }
+    }
+
+    fn handled_block(
+        &mut self,
+        bindings: &[Binding],
+        result: &Expr,
+        ctx: &HandlerCtx<'_>,
+        env: &BTreeMap<String, String>,
+        indent: usize,
+        cont: Continuation<'_>,
+    ) -> Result<Value, CodegenError> {
+        let mut local = env.clone();
+        for (idx, binding) in bindings.iter().enumerate() {
+            if matches!(binding.expr.kind, ExprKind::QualifiedCall { .. }) {
+                return self.handled_expr(
+                    &binding.expr,
+                    ctx,
+                    &local,
+                    indent,
+                    Continuation::BlockRest {
+                        var: binding.name.node.as_str(),
+                        rest: &bindings[idx + 1..],
+                        result,
+                        outer: Box::new(cont),
+                    },
+                );
+            }
+            let value = self.expr(&binding.expr, &local, indent)?;
+            local.insert(binding.name.node.clone(), value.name);
+        }
+        self.handled_expr(result, ctx, &local, indent, cont)
+    }
+
+    fn handle_perform(
+        &mut self,
+        arg: &Expr,
+        ctx: &HandlerCtx<'_>,
+        env: &BTreeMap<String, String>,
+        indent: usize,
+        cont: Continuation<'_>,
+    ) -> Result<Value, CodegenError> {
+        let arg = self.expr(arg, env, indent)?;
+        let mut op_env = env.clone();
+        if let Some(param) = ctx.op_param {
+            op_env.insert(param.to_string(), arg.name);
+        }
+        if ctx.op_k.is_none() {
+            self.line(
+                indent,
+                "// H-op-drop, calculus.md §5: dropped k allocates no continuation frame",
+            );
+            return self.expr(ctx.op_body, &op_env, indent);
+        }
+        self.line(
+            indent,
+            "// H-op-resume, calculus.md §5; static dispatch licensed by L5_mentions_iff_resume",
+        );
+        self.resume_body(ctx.op_body, ctx, &op_env, indent, cont)
+    }
+
+    fn resume_body(
+        &mut self,
+        body: &Expr,
+        ctx: &HandlerCtx<'_>,
+        env: &BTreeMap<String, String>,
+        indent: usize,
+        cont: Continuation<'_>,
+    ) -> Result<Value, CodegenError> {
+        let Some(k_name) = ctx.op_k else {
+            return Err(CodegenError::new(
+                "internal resume body without continuation",
+            ));
+        };
+        match &body.kind {
+            ExprKind::Call { callee, args } if matches!(&callee.kind, ExprKind::Var(name) if name == k_name) =>
+            {
+                if args.len() != 1 {
+                    return Err(CodegenError::new(
+                        "continuation resume expects one argument",
+                    ));
+                }
+                let resumed = self.expr(&args[0], env, indent)?;
+                let uses = self.fresh("resume_uses");
+                self.line(indent, &format!("{uses} = arith.constant 1 : i64"));
+                self.line(
+                    indent,
+                    &format!("func.call @atli_debug_resume_once({uses}) : (i64) -> ()"),
+                );
+                self.apply_cont(resumed, ctx, env, indent, cont)
+            }
+            ExprKind::Block { bindings, result } => {
+                let mut local = env.clone();
+                for binding in bindings {
+                    let value = self.expr(&binding.expr, &local, indent)?;
+                    local.insert(binding.name.node.clone(), value.name);
+                }
+                self.resume_body(result, ctx, &local, indent, cont)
+            }
+            _ => Err(CodegenError::new(
+                "tier-1 resuming handlers require a direct `k(v)` resume",
+            )),
+        }
+    }
+
+    fn apply_cont(
+        &mut self,
+        value: Value,
+        ctx: &HandlerCtx<'_>,
+        env: &BTreeMap<String, String>,
+        indent: usize,
+        cont: Continuation<'_>,
+    ) -> Result<Value, CodegenError> {
+        match cont {
+            Continuation::Return => {
+                let mut ret_env = env.clone();
+                ret_env.insert(ctx.return_var.to_string(), value.name);
+                self.expr(ctx.return_body, &ret_env, indent)
+            }
+            Continuation::BlockRest {
+                var,
+                rest,
+                result,
+                outer,
+            } => {
+                let mut local = env.clone();
+                local.insert(var.to_string(), value.name);
+                for binding in rest {
+                    let value = self.expr(&binding.expr, &local, indent)?;
+                    local.insert(binding.name.node.clone(), value.name);
+                }
+                let result = self.expr(result, &local, indent)?;
+                self.apply_cont(result, ctx, &local, indent, *outer)
+            }
         }
     }
 
@@ -628,6 +855,77 @@ impl<'a> Builder<'a> {
         self.out.push_str(&" ".repeat(indent));
         self.out.push_str(line);
         self.out.push('\n');
+    }
+}
+
+#[derive(Clone)]
+enum Continuation<'a> {
+    Return,
+    BlockRest {
+        var: &'a str,
+        rest: &'a [Binding],
+        result: &'a Expr,
+        outer: Box<Continuation<'a>>,
+    },
+}
+
+struct HandlerCtx<'a> {
+    return_var: &'a str,
+    return_body: &'a Expr,
+    op_param: Option<&'a str>,
+    op_k: Option<&'a str>,
+    op_body: &'a Expr,
+}
+
+impl<'a> HandlerCtx<'a> {
+    fn new(clauses: &'a [HandleClause]) -> Result<Self, CodegenError> {
+        let mut return_var = None;
+        let mut return_body = None;
+        let mut op_param = None;
+        let mut op_k = None;
+        let mut op_body = None;
+        for clause in clauses {
+            match clause {
+                HandleClause::Return { var, body, .. } => {
+                    return_var = Some(var.node.as_str());
+                    return_body = Some(body);
+                }
+                HandleClause::Operation {
+                    effect,
+                    op,
+                    param,
+                    kont,
+                    body,
+                    ..
+                } => {
+                    if effect.node != "L" || op.node != "op" {
+                        return Err(CodegenError::new(
+                            "tier-1 supports only handler clause `L.op`",
+                        ));
+                    }
+                    op_param = pattern_name(param);
+                    op_k = pattern_name(kont);
+                    op_body = Some(body);
+                }
+            }
+        }
+        Ok(Self {
+            return_var: return_var
+                .ok_or_else(|| CodegenError::new("handler missing return clause"))?,
+            return_body: return_body
+                .ok_or_else(|| CodegenError::new("handler missing return body"))?,
+            op_param,
+            op_k,
+            op_body: op_body
+                .ok_or_else(|| CodegenError::new("handler missing operation clause"))?,
+        })
+    }
+}
+
+fn pattern_name(pattern: &Pattern) -> Option<&str> {
+    match pattern {
+        Pattern::Bind(name) => Some(name.node.as_str()),
+        Pattern::Wildcard(_) | Pattern::Zero(_) => None,
     }
 }
 
@@ -813,5 +1111,98 @@ mod tests {
         assert_eq!(output.status.code(), Some(86));
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(stderr.contains("ATLI ARENA OVERFLOW"));
+    }
+
+    #[test]
+    fn corrupted_resume_debug_check_trips_one_shot_trap() {
+        if find_tool("ATLI_CLANG", &["clang-22", "clang"]).is_none()
+            || find_tool(
+                "ATLI_MLIR_OPT",
+                &["mlir-opt", "/usr/lib/llvm-22/bin/mlir-opt"],
+            )
+            .is_none()
+            || find_tool(
+                "ATLI_MLIR_TRANSLATE",
+                &["mlir-translate", "/usr/lib/llvm-22/bin/mlir-translate"],
+            )
+            .is_none()
+        {
+            eprintln!("skipping one-shot trap test: LLVM/MLIR toolchain not found");
+            return;
+        }
+        let src = "effect L { op(x: Nat) -> Nat }\nfn main() -> Nat = handle L.op(1) { return(x) -> x; L.op(p), k -> k(p) }\n";
+        let program = parse_program(src).unwrap();
+        let elaborated = elaborate_program(&program).unwrap();
+        let checked = check(&elaborated.term).unwrap();
+        let arena = CertifiedArena::from_checked(&checked).unwrap();
+        let mut emission = emit(EmitInput {
+            program: &program,
+            elaborated: &elaborated,
+            checked: &checked,
+            arena,
+        })
+        .unwrap();
+        emission.mlir = emission
+            .mlir
+            .replace("%resume_uses", "%resume_uses_corrupt");
+        emission.mlir = emission.mlir.replace(
+            "= arith.constant 1 : i64\n    func.call @atli_debug_resume_once(%resume_uses_corrupt",
+            "= arith.constant 2 : i64\n    func.call @atli_debug_resume_once(%resume_uses_corrupt",
+        );
+        fs::create_dir_all(BUILD_DIR).unwrap();
+        let mlir_path = Path::new(BUILD_DIR).join("corrupt_resume.mlir");
+        let runtime_path = Path::new(BUILD_DIR).join("corrupt_resume_runtime.c");
+        let llvm_mlir_path = Path::new(BUILD_DIR).join("corrupt_resume.llvm.mlir");
+        let llvm_ir_path = Path::new(BUILD_DIR).join("corrupt_resume.ll");
+        let exe = Path::new(BUILD_DIR).join("corrupt_resume");
+        fs::write(&mlir_path, emission.mlir).unwrap();
+        fs::write(&runtime_path, emission.runtime_c).unwrap();
+        run_tool(
+            find_tool(
+                "ATLI_MLIR_OPT",
+                &["mlir-opt", "/usr/lib/llvm-22/bin/mlir-opt"],
+            )
+            .unwrap(),
+            &[
+                mlir_path.as_os_str(),
+                "--convert-scf-to-cf".as_ref(),
+                "--convert-cf-to-llvm".as_ref(),
+                "--convert-func-to-llvm".as_ref(),
+                "--convert-arith-to-llvm".as_ref(),
+                "--finalize-memref-to-llvm".as_ref(),
+                "--reconcile-unrealized-casts".as_ref(),
+                "-o".as_ref(),
+                llvm_mlir_path.as_os_str(),
+            ],
+        )
+        .unwrap();
+        run_tool(
+            find_tool(
+                "ATLI_MLIR_TRANSLATE",
+                &["mlir-translate", "/usr/lib/llvm-22/bin/mlir-translate"],
+            )
+            .unwrap(),
+            &[
+                "--mlir-to-llvmir".as_ref(),
+                llvm_mlir_path.as_os_str(),
+                "-o".as_ref(),
+                llvm_ir_path.as_os_str(),
+            ],
+        )
+        .unwrap();
+        run_tool(
+            find_tool("ATLI_CLANG", &["clang-22", "clang"]).unwrap(),
+            &[
+                llvm_ir_path.as_os_str(),
+                runtime_path.as_os_str(),
+                "-o".as_ref(),
+                exe.as_os_str(),
+            ],
+        )
+        .unwrap();
+        let output = Command::new(&exe).output().unwrap();
+        assert_eq!(output.status.code(), Some(87));
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("ATLI ONE-SHOT VIOLATED"));
     }
 }

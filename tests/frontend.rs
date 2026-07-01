@@ -190,17 +190,18 @@ fn cli_unhandled_eval_outcome_is_internal_exit_two() {
     assert!(stderr.contains("StuckUnhandledOperation"));
 }
 
-fn has_clang() -> bool {
-    Command::new("clang-22")
-        .arg("--version")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-        || Command::new("clang")
+fn has_codegen_toolchain() -> bool {
+    fn has(cmd: &str) -> bool {
+        Command::new(cmd)
             .arg("--version")
             .output()
             .map(|output| output.status.success())
             .unwrap_or(false)
+    }
+    (has("clang-22") || has("clang"))
+        && (has("mlir-opt") || std::path::Path::new("/usr/lib/llvm-22/bin/mlir-opt").exists())
+        && (has("mlir-translate")
+            || std::path::Path::new("/usr/lib/llvm-22/bin/mlir-translate").exists())
 }
 
 #[test]
@@ -208,29 +209,45 @@ fn codegen_emit_goldens_pin_certified_arena_literals() {
     for (path, golden) in [
         ("examples/fib.atli", "tests/goldens/codegen/fib.mlir"),
         ("examples/arith.atli", "tests/goldens/codegen/arith.mlir"),
+        (
+            "examples/default_handler.atli",
+            "tests/goldens/codegen/default_handler.mlir",
+        ),
+        (
+            "examples/counter.atli",
+            "tests/goldens/codegen/counter.mlir",
+        ),
     ] {
         let (code, stdout, stderr) = run_cli(&["emit", path]);
         assert_eq!(code, 0, "{stderr}");
         assert_eq!(stdout, fs::read_to_string(golden).unwrap(), "{path}");
         assert!(stdout.contains("atli.certified_beta_slots"));
+        if path.ends_with("fib.atli") {
+            assert!(stdout.contains("func.call @atli_fn_fib"));
+            assert!(!stdout.contains("arith.constant 55"));
+        }
+        if path.ends_with("default_handler.atli") {
+            assert!(stdout.contains("H-op-drop"));
+        }
+        if path.ends_with("counter.atli") {
+            assert!(stdout.contains("H-op-resume"));
+            assert!(stdout.contains("L5_mentions_iff_resume"));
+            assert!(stdout.contains("atli_debug_resume_once"));
+        }
     }
 }
 
 #[test]
 fn codegen_fragment_boundaries_are_diagnostics() {
-    let (code, _stdout, stderr) = run_cli(&["build", "examples/state_handler.atli"]);
-    assert_eq!(code, 1);
-    assert!(stderr.contains("effects and handlers are Sprint 07 territory"));
-
     let (code, _stdout, stderr) = run_cli(&["build", "examples/server_loop.atli"]);
     assert_eq!(code, 1);
     assert!(stderr.contains("Div functions require the growable backend"));
 }
 
 #[test]
-fn compiled_native_outputs_match_oracle_for_effect_free_finite_programs() {
-    if !has_clang() {
-        eprintln!("skipping compiled differential: no clang-22/clang found");
+fn compiled_native_outputs_match_oracle_for_finite_programs() {
+    if !has_codegen_toolchain() {
+        eprintln!("skipping compiled differential: LLVM/MLIR toolchain not found");
         return;
     }
     fs::create_dir_all("target/codegen_cases").unwrap();
@@ -238,6 +255,10 @@ fn compiled_native_outputs_match_oracle_for_effect_free_finite_programs() {
         ("fib", fs::read_to_string("examples/fib.atli").unwrap(), "55\n"),
         ("arith", fs::read_to_string("examples/arith.atli").unwrap(), "14\n"),
         ("log2", fs::read_to_string("examples/log2.atli").unwrap(), "0\n"),
+        ("state_handler", fs::read_to_string("examples/state_handler.atli").unwrap(), "7\n"),
+        ("default_handler", fs::read_to_string("examples/default_handler.atli").unwrap(), "9\n"),
+        ("counter", fs::read_to_string("examples/counter.atli").unwrap(), "3\n"),
+        ("abort", fs::read_to_string("examples/abort.atli").unwrap(), "9\n"),
         ("const0", "fn main() -> Nat = 0\n".into(), "0\n"),
         ("const7", "fn main() -> Nat = 7\n".into(), "7\n"),
         ("add", "fn main() -> Nat = 8 + 5\n".into(), "13\n"),

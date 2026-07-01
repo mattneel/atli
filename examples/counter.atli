@@ -1,0 +1,11 @@
+effect L { op(x: Nat) -> Nat }
+
+fn counter(n: Nat) -> Nat measure n = handle case n {
+  0 -> 0
+  p -> L.op(counter(p))
+} {
+  return(x) -> x
+  L.op(v), k -> k(v + 1)
+}
+
+fn main() -> Nat = counter(3)

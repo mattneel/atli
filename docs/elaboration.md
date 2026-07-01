@@ -56,3 +56,17 @@ backend performance boundary: the oracle still sees unary library recursion, whi
 tier-1 native harness lowers surface `+`, `-`, and `*` to native `i64` arithmetic. Monus
 is emitted as `max(a - b, 0)`. This is semantics-preserving for the reduced `Nat` subset
 and does not add primitive arithmetic to the core calculus.
+
+## Real MLIR and handler lowering (Sprint 07)
+
+Sprint 07 makes the MLIR module load-bearing: `atli build` lowers emitted MLIR through
+`mlir-opt`/`mlir-translate` and links only a tiny runtime shim. The emission path never
+calls the oracle interpreter; oracle execution is used only in tests to compare compiled
+outputs after the fact.
+
+The tier-1 handler lowering is intentionally lexical and single-label. For a checked
+handler, the emitter statically classifies the operation clause using the same
+mention/resume discipline formalized by `L5_mentions_iff_resume`: dropped clauses compile
+as `H-op-drop` and allocate no continuation frame, while resuming clauses compile as
+`H-op-resume` and call a debug one-shot check before invoking the captured continuation
+shape. Multi-label/dynamic handler stacks remain tier-2 work.

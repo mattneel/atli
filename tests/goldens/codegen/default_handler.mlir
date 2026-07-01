@@ -38,21 +38,10 @@ module attributes {atli.certified_beta_slots = 0 : i64, atli.arena_overhead_slot
     return
   }
   func.func @atli_fn_main() -> i64 {
-    %c0 = arith.constant 2 : i64
-    %c1 = arith.constant 3 : i64
-    %add2 = arith.addi %c0, %c1 : i64
-    %c3 = arith.constant 4 : i64
-    %mul4 = arith.muli %add2, %c3 : i64
-    %c5 = arith.constant 6 : i64
-    %gt6 = arith.cmpi sgt, %mul4, %c5 : i64
-    %monus7 = scf.if %gt6 -> (i64) {
-      %diff8 = arith.subi %mul4, %c5 : i64
-      scf.yield %diff8 : i64
-    } else {
-      %zero9 = arith.constant 0 : i64
-      scf.yield %zero9 : i64
-    }
-    return %monus7 : i64
+    %c0 = arith.constant 1 : i64
+    // H-op-drop, calculus.md §5: dropped k allocates no continuation frame
+    %c1 = arith.constant 9 : i64
+    return %c1 : i64
   }
   func.func @atli_program_main() -> i64 {
     %r = func.call @atli_fn_main() : () -> i64

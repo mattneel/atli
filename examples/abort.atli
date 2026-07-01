@@ -1,0 +1,15 @@
+effect L { op(x: Nat) -> Nat }
+
+fn burn(n: Nat) -> Nat measure n = case n {
+  0 -> 0
+  p -> burn(p)
+}
+
+fn main() -> Nat = handle {
+  x = burn(3)
+  y = L.op(x)
+  y + 1
+} {
+  return(x) -> x
+  L.op(p), _ -> 9
+}
