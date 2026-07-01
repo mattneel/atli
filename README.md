@@ -39,7 +39,7 @@ source, and the type system turns that legibility into faster generated code.**
 A pure, total function has *zero* ceremony. The effect row and the boundedness grade are
 there — they're just all-defaults, so nothing shows:
 
-```atli
+```zig
 pub fn fib(n: Nat) -> Nat = case n {
   0 -> 0
   1 -> 1
@@ -50,7 +50,7 @@ pub fn fib(n: Nat) -> Nat = case n {
 Do something impure and the row surfaces — in the *signature*, not at the call site. The
 contract carries the property; the body stays clean:
 
-```atli
+```zig
 effect File {
   read(path: String) -> Bytes
   write(path: String, data: Bytes) -> Unit
@@ -64,7 +64,7 @@ Effects are handled with algebraic handlers, and the continuation is a **one-sho
 value** you can see being spent. Resume by calling `k` (at most once — twice is a type
 error); drop `k` with `_` and you've written an exception / early return:
 
-```atli
+```zig
 pub fn with_memory_fs[A](files: Map[String, Bytes], body: () -> A ! {File}) -> A =
   handle body() {
     return(x)              -> x
@@ -79,7 +79,7 @@ immutable pipe‑chaining; it *compiles* to a mutable buffer being scribbled on 
 zero copies, zero refcount traffic — because `buf` is unique (`^Image`) and each
 `inplace` step is *licensed* by that uniqueness:
 
-```atli
+```zig
 pub fn render(size: Nat) -> Image = {
   buf = Image.blank(size)          // buf : ^Image  — unique, arena-allocated
   buf
