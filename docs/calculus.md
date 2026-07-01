@@ -610,10 +610,42 @@ Each grade is a license the backend cashes:
 |-------|---------|
 | `q = 1` at `inplace` | emit in-place destructive update; no RC traffic on the target |
 | `q = 1` at `move` | emit zero-copy ownership transfer across regions; elide the atomic refcount bump |
-| `β ∈ ℕ` (finite) | emit a **stackless frontend-split frame of exactly `β` bytes, allocated in `ρ`'s arena**; no stack-overflow guard, no growth check, no heap fallback |
-| `β = ω` (`div`) | emit the growable/stackful lowering for this SCC |
+| `β ∈ ℕ` (finite) | emit a stackless frontend-split computation in a preallocated arena of exactly `β` **frame slots** plus the tier overhead `C` (§9.1); no heap fallback |
+| `β = ω` (`div`) | emit the growable/stackful lowering for this SCC, or reject on tier-1 backends (§9.1) |
 | `ρ` | select the arena; frame dies when `ρ`'s node in the spawn tree is cancelled/completes |
 | `ε \ L = ∅` after all handlers | computation is pure at this point; standard optimizations unlocked |
+
+
+### 9.1 Frame model, tier 1
+
+This tier pins the unit of `β` for executable backends: **`β` counts frame slots, not
+bytes**. One frame slot is one uniform machine word; in tier 1 that word is represented
+as an `i64`. A frame is the per-activation record of either a `fix` call or a captured
+continuation context. Its slot count is what the §7 boundedness constraints count.
+
+Slot-counting is deliberately representation-independent. The same certified `β` can
+be compared to the reference interpreter's frame-count proxy and to any backend whose
+activation records fit in the slot model. Byte accuracy is a refinement: a later backend
+may attach a target-specific `slot_size` map to frame fields, but that refinement must
+prove it implements this slot metric rather than silently replacing it.
+
+**Arena contract.** A computation checked with finite `β` executes within a
+preallocated arena of exactly `β` frame slots plus a documented constant overhead `C`.
+For tier 1, `C = 0`: the bump pointer, high-water counter, and diagnostic bookkeeping
+live outside the certified arena and are not counted as program frame slots. Overflow of
+this arena in a certified computation is a certified-grade soundness violation in the
+§2.3 miscompile direction, not a recoverable slow path. Tier-1 backends must trap with a
+distinguishable error if the bump would exceed `β + C`; the trap exists to falsify the
+thesis if the certified bound is wrong.
+
+**`Div` contract.** A computation with `β = ω` requires a growable lowering. Tier 1 may
+refuse to compile it with the diagnostic: `Div functions require the growable backend,
+not yet built`.
+
+**L7 hook.** The mechanized boundedness-soundness statement (§8.4/L7) quantifies over
+this slot metric: every realized frame-slot prefix of a reduction from a term typed with
+finite `β` is at most `β`. A byte-level theorem is a future refinement over the same
+slot model.
 
 **No LLVM coroutines.** Atli owns the continuation split in its own mid-end (Zig's hard-
 won lesson: LLVM couples frame alloc/dealloc to execution, forcing heap-allocated self-

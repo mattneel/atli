@@ -4,16 +4,13 @@ This file records `SPEC-GAP:` findings exposed while turning the calculus into e
 Rust. The implementation chooses conservative interpretations and does not silently expand
 semantics.
 
-- SPEC-GAP(frame-metric-byte-accuracy): `docs/calculus.md §8.4` states that finite `β`
-  bounds continuation-frame bytes, but Sprint 01/Sprint 02 have no byte layout, ABI, or
-  frame-field sizing rules. The interpreter therefore uses an executable proxy metric:
-  the number of captured evaluation-context frames in a handled operation continuation.
-  Property tests check that this realized frame count never exceeds generated witness `β`;
-  this is an empirical conformance check, not a byte-accurate backend allocation proof.
-  Sprint 04's Rocq scaffold deliberately does not state `L7` as a theorem yet: the
-  instrumented frame-counting step relation is missing. When added, it should target this
-  same frame-count proxy; a byte-accurate theorem remains a future backend/layout
-  refinement.
+- SPEC-GAP(frame-metric-byte-accuracy): Sprint 06 narrows this gap by pinning the unit
+  of finite `β` in `docs/calculus.md §9.1`: `β` counts frame slots, and tier 1 defines one
+  slot as one `i64` machine word with arena overhead `C = 0`. The remaining gap is byte
+  refinement for future backends with variable-size activations or target-specific frame
+  fields. Sprint 04's Rocq scaffold still does not state `L7` as a theorem: the
+  instrumented slot-counting step relation is missing. When added, it should target the
+  §9.1 slot metric; byte-accurate layout is a later backend refinement over that metric.
 
 - SPEC-GAP(measure-tag-trusted-reduced-core): Sprint 03 accepts `Measure`-tagged `fix`
   terms as the annotated recursion rung but does not verify an actual well-founded

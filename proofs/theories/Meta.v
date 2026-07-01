@@ -47,11 +47,11 @@ Admitted.
    resource model. *)
 
 (* L7 status: Stated-Pending-Infrastructure, owner: future boundedness sprint.
-   This is deliberately not a theorem yet: the scaffold has no instrumented frame-counting
+   This is deliberately not a theorem yet: the scaffold has no instrumented frame-slot
    step relation. Once that relation exists, the statement should quantify over reductions
-   from a term typed with finite beta and prove that every realized frame-count prefix is <=
-   beta. The metric is the interp.rs frame-count proxy, not byte layout; see
-   SPEC-GAP(frame-metric-byte-accuracy). *)
+   from a term typed with finite beta and prove that every realized frame-slot prefix is <=
+   beta. The metric is the docs/calculus.md §9.1 slot model (tier-1 i64 slots); byte
+   layout remains the refinement tracked by SPEC-GAP(frame-metric-byte-accuracy). *)
 
 Theorem solver_certificate_postfix_field : forall cert c,
   satisfies (certified_value cert) c.
