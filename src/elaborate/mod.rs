@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::core::{Handler, RecursionTag, Term, Type};
+use crate::core::{Handler, OpClause, RecursionTag, Term, Type};
 use crate::grade::Label;
 use crate::surface::ast::{
     BinaryOp, Boundedness, Decl, Expr, ExprKind, FnDecl, HandleClause, Pattern, Program, Span,
@@ -89,7 +89,6 @@ enum PreludeFn {
 impl<'a> Elaborator<'a> {
     fn new(program: &'a Program) -> Result<Self, ElaborateError> {
         let mut functions = BTreeMap::new();
-        let mut effect_count = 0;
         for decl in &program.decls {
             match decl {
                 Decl::Fn(func) => {
@@ -102,19 +101,12 @@ impl<'a> Elaborator<'a> {
                     functions.insert(func.name.node.clone(), FunctionSig { params });
                 }
                 Decl::Effect(effect) => {
-                    effect_count += 1;
-                    if effect_count > 1 {
+                    // Multi-label reduced effects (`docs/syntax.md §6`, `calculus.md §2.2`):
+                    // each declared effect contributes one `Nat -> Nat` operation named `op`.
+                    if effect.op.node != "op" {
                         return Err(ElaborateError {
-                            span: effect.span,
-                            message: "reduced core supports one effect label".into(),
-                        });
-                    }
-                    if effect.name.node != "L" || effect.op.node != "op" {
-                        return Err(ElaborateError {
-                            span: effect.span,
-                            message:
-                                "reduced core supports exactly `effect L { op(x: Nat) -> Nat }`"
-                                    .into(),
+                            span: effect.op.span,
+                            message: "reduced core supports only operation name `op`".into(),
                         });
                     }
                     if lower_type(&effect.param.ty)? != Type::Nat
@@ -307,19 +299,19 @@ impl<'a> Elaborator<'a> {
                 )
             }
             ExprKind::QualifiedCall { effect, op, args } => {
-                if effect != "L" || op != "op" {
+                if op != "op" {
                     return Err(ElaborateError {
                         span: expr.span,
-                        message: "reduced core supports only `L.op(e)`".into(),
+                        message: "reduced core supports only operation name `op`".into(),
                     });
                 }
                 if args.len() != 1 {
                     return Err(ElaborateError {
                         span: expr.span,
-                        message: "`L.op` expects exactly one argument".into(),
+                        message: "effect operation `op` expects exactly one argument".into(),
                     });
                 }
-                Term::Perform(Label::L, Box::new(self.expr(&args[0], env)?))
+                Term::Perform(Label::intern(effect), Box::new(self.expr(&args[0], env)?))
             }
             ExprKind::Pipe { lhs, rhs } => {
                 let desugared = desugar_pipe((**lhs).clone(), (**rhs).clone(), expr.span)?;
@@ -448,11 +440,11 @@ impl<'a> Elaborator<'a> {
         span: Span,
     ) -> Result<Term, ElaborateError> {
         let mut return_clause = None;
-        let mut op_clause = None;
+        let mut op_clauses = Vec::new();
         for clause in clauses {
             match clause {
                 HandleClause::Return { .. } => return_clause = Some(clause),
-                HandleClause::Operation { .. } => op_clause = Some(clause),
+                HandleClause::Operation { .. } => op_clauses.push(clause),
             }
         }
         let Some(HandleClause::Return {
@@ -466,45 +458,55 @@ impl<'a> Elaborator<'a> {
                 message: "handler requires a return clause in the reduced surface".into(),
             });
         };
-        let Some(HandleClause::Operation {
-            effect,
-            op,
-            param,
-            kont,
-            body: op_body,
-            ..
-        }) = op_clause
-        else {
+        if op_clauses.is_empty() {
             return Err(ElaborateError {
                 span,
-                message: "handler requires one operation clause in the reduced surface".into(),
-            });
-        };
-        if effect.node != "L" || op.node != "op" {
-            return Err(ElaborateError {
-                span: effect.span.join(op.span),
-                message: "reduced core supports only handler clause `L.op(...)`".into(),
+                message: "handler requires at least one operation clause in the reduced surface"
+                    .into(),
             });
         }
-        let op_param = pattern_binder(param, "_p")?;
-        let op_k = pattern_binder(kont, "_k")?;
         let mut ret_env = env.clone();
         ret_env.vars.insert(var.node.clone());
-        let mut op_env = env.clone();
-        op_env.vars.insert(op_param.clone());
-        if op_k != "_k" {
-            op_env.vars.insert(op_k.clone());
-            op_env.cont_vars.insert(op_k.clone());
+        let mut core_clauses = Vec::new();
+        for clause in op_clauses {
+            let HandleClause::Operation {
+                effect,
+                op,
+                param,
+                kont,
+                body: op_body,
+                ..
+            } = clause
+            else {
+                unreachable!("operation clause vector contains only operation clauses");
+            };
+            if op.node != "op" {
+                return Err(ElaborateError {
+                    span: op.span,
+                    message: "reduced core supports only operation name `op`".into(),
+                });
+            }
+            let op_param = pattern_binder(param, "_p")?;
+            let op_k = pattern_binder(kont, "_k")?;
+            let mut op_env = env.clone();
+            op_env.vars.insert(op_param.clone());
+            if op_k != "_k" {
+                op_env.vars.insert(op_k.clone());
+                op_env.cont_vars.insert(op_k.clone());
+            }
+            core_clauses.push(OpClause {
+                op_label: Label::intern(&effect.node),
+                op_param,
+                op_k,
+                op_body: Box::new(self.expr(op_body, &op_env)?),
+            });
         }
         Ok(Term::Handle {
             body: Box::new(self.expr(body, env)?),
             handler: Handler {
                 return_var: var.node.clone(),
                 return_body: Box::new(self.expr(return_body, &ret_env)?),
-                op_label: Label::L,
-                op_param,
-                op_k,
-                op_body: Box::new(self.expr(op_body, &op_env)?),
+                clauses: core_clauses,
             },
         })
     }

@@ -86,10 +86,31 @@ pub enum Term {
 pub struct Handler {
     pub return_var: Name,
     pub return_body: Box<Term>,
+    pub clauses: Vec<OpClause>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpClause {
     pub op_label: Label,
     pub op_param: Name,
     pub op_k: Name,
     pub op_body: Box<Term>,
+}
+
+impl Handler {
+    #[must_use]
+    pub fn single(return_var: Name, return_body: Box<Term>, clause: OpClause) -> Self {
+        Self {
+            return_var,
+            return_body,
+            clauses: vec![clause],
+        }
+    }
+
+    #[must_use]
+    pub fn clause_for(&self, label: Label) -> Option<&OpClause> {
+        self.clauses.iter().find(|clause| clause.op_label == label)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -369,14 +390,41 @@ impl Handler {
         } else {
             Box::new(self.return_body.subst(name, replacement))
         };
+        let clauses = self
+            .clauses
+            .iter()
+            .map(|clause| clause.subst(name, replacement))
+            .collect();
+        Self {
+            return_var: self.return_var.clone(),
+            return_body,
+            clauses,
+        }
+    }
+
+    #[must_use]
+    pub fn normalize_cont_ids(&self) -> Self {
+        Self {
+            return_var: self.return_var.clone(),
+            return_body: Box::new(self.return_body.normalize_cont_ids()),
+            clauses: self
+                .clauses
+                .iter()
+                .map(OpClause::normalize_cont_ids)
+                .collect(),
+        }
+    }
+}
+
+impl OpClause {
+    #[must_use]
+    pub fn subst(&self, name: &str, replacement: &Term) -> Self {
         let op_body = if self.op_param == name || self.op_k == name {
             self.op_body.clone()
         } else {
             Box::new(self.op_body.subst(name, replacement))
         };
         Self {
-            return_var: self.return_var.clone(),
-            return_body,
             op_label: self.op_label,
             op_param: self.op_param.clone(),
             op_k: self.op_k.clone(),
@@ -387,8 +435,6 @@ impl Handler {
     #[must_use]
     pub fn normalize_cont_ids(&self) -> Self {
         Self {
-            return_var: self.return_var.clone(),
-            return_body: Box::new(self.return_body.normalize_cont_ids()),
             op_label: self.op_label,
             op_param: self.op_param.clone(),
             op_k: self.op_k.clone(),
@@ -399,16 +445,15 @@ impl Handler {
 
 impl fmt::Display for Handler {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{{ return {} -> {}; {} {} {} -> {} }}",
-            self.return_var,
-            self.return_body,
-            self.op_label,
-            self.op_param,
-            self.op_k,
-            self.op_body
-        )
+        write!(f, "{{ return {} -> {}", self.return_var, self.return_body)?;
+        for clause in &self.clauses {
+            write!(
+                f,
+                "; {} {} {} -> {}",
+                clause.op_label, clause.op_param, clause.op_k, clause.op_body
+            )?;
+        }
+        f.write_str(" }")
     }
 }
 

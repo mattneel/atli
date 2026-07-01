@@ -1,9 +1,10 @@
 // Atli tier-1 MLIR lowering. docs/calculus.md §9.1
 // arena_slots = certified_beta + C = 1 + 0
-module attributes {atli.certified_beta_slots = 1 : i64, atli.arena_overhead_slots = 0 : i64} {
+module attributes {atli.certified_beta_slots = 1 : i64, atli.arena_overhead_slots = 0 : i64, atli.growable = false} {
   memref.global "private" @atli_high_water : memref<1xi64> = dense<0>
   func.func private @atli_trap_overflow() -> ()
   func.func private @atli_trap_one_shot() -> ()
+  func.func private @atli_tick() -> ()
   func.func @atli_beta_slots() -> i64 {
     %beta = arith.constant 1 : i64
     return %beta : i64

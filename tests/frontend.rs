@@ -2,7 +2,7 @@ use std::fs;
 use std::process::Command;
 
 use atli::check::check;
-use atli::core::{Handler, Term};
+use atli::core::{Handler, OpClause, Term};
 use atli::elaborate::elaborate_program;
 use atli::grade::Label;
 use atli::interp::eval;
@@ -47,6 +47,7 @@ fn pretty_reparse_elaboration_is_stable_for_examples() {
         "examples/arith.atli",
         "examples/state_handler.atli",
         "examples/default_handler.atli",
+        "examples/two_effects.atli",
         "examples/wedge.atli",
     ] {
         let src = fs::read_to_string(path).expect(path);
@@ -65,17 +66,19 @@ fn surface_handler_examples_match_hand_built_core() {
     let state = elaborate_program(&parse_program(&state_src).unwrap()).unwrap();
     let core_state = Term::Handle {
         body: Box::new(Term::Perform(Label::L, Box::new(Term::nat(7)))),
-        handler: Handler {
-            return_var: "x".into(),
-            return_body: Box::new(Term::var("x")),
-            op_label: Label::L,
-            op_param: "p".into(),
-            op_k: "k".into(),
-            op_body: Box::new(Term::Resume {
-                kont: Box::new(Term::var("k")),
-                arg: Box::new(Term::var("p")),
-            }),
-        },
+        handler: Handler::single(
+            "x".into(),
+            Box::new(Term::var("x")),
+            OpClause {
+                op_label: Label::L,
+                op_param: "p".into(),
+                op_k: "k".into(),
+                op_body: Box::new(Term::Resume {
+                    kont: Box::new(Term::var("k")),
+                    arg: Box::new(Term::var("p")),
+                }),
+            },
+        ),
     };
     assert_eq!(
         check(&state.term).unwrap().witness(),
@@ -90,14 +93,16 @@ fn surface_handler_examples_match_hand_built_core() {
     let default = elaborate_program(&parse_program(&default_src).unwrap()).unwrap();
     let core_default = Term::Handle {
         body: Box::new(Term::Perform(Label::L, Box::new(Term::nat(1)))),
-        handler: Handler {
-            return_var: "x".into(),
-            return_body: Box::new(Term::var("x")),
-            op_label: Label::L,
-            op_param: "p".into(),
-            op_k: "_k".into(),
-            op_body: Box::new(Term::nat(9)),
-        },
+        handler: Handler::single(
+            "x".into(),
+            Box::new(Term::var("x")),
+            OpClause {
+                op_label: Label::L,
+                op_param: "p".into(),
+                op_k: "_k".into(),
+                op_body: Box::new(Term::nat(9)),
+            },
+        ),
     };
     assert_eq!(
         check(&default.term).unwrap().witness(),
@@ -117,6 +122,7 @@ fn cli_runs_examples_and_surfaces_witnesses() {
         ("examples/arith.atli", "14\n"),
         ("examples/state_handler.atli", "7\n"),
         ("examples/default_handler.atli", "9\n"),
+        ("examples/two_effects.atli", "8\n"),
     ];
     for (path, expected) in cases {
         let (code, stdout, stderr) = run_cli(&["run", path]);
@@ -238,10 +244,24 @@ fn codegen_emit_goldens_pin_certified_arena_literals() {
 }
 
 #[test]
-fn codegen_fragment_boundaries_are_diagnostics() {
+fn growable_div_backend_bounded_run_exhausts_test_iters() {
+    if !has_codegen_toolchain() {
+        eprintln!("skipping growable backend smoke: LLVM/MLIR toolchain not found");
+        return;
+    }
     let (code, _stdout, stderr) = run_cli(&["build", "examples/server_loop.atli"]);
-    assert_eq!(code, 1);
-    assert!(stderr.contains("Div functions require the growable backend"));
+    assert_eq!(code, 0, "{stderr}");
+    let output = Command::new("./server_loop")
+        .env("ATLI_MAX_ITERS", "5")
+        .output()
+        .expect("run compiled server loop");
+    assert!(output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("ATLI_MAX_ITERS exhausted after 5 iterations"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("ATLI_GROWABLE_SEGMENT=64"), "{stderr}");
 }
 
 #[test]
@@ -259,6 +279,7 @@ fn compiled_native_outputs_match_oracle_for_finite_programs() {
         ("default_handler", fs::read_to_string("examples/default_handler.atli").unwrap(), "9\n"),
         ("counter", fs::read_to_string("examples/counter.atli").unwrap(), "3\n"),
         ("abort", fs::read_to_string("examples/abort.atli").unwrap(), "9\n"),
+        ("two_effects", fs::read_to_string("examples/two_effects.atli").unwrap(), "8\n"),
         ("const0", "fn main() -> Nat = 0\n".into(), "0\n"),
         ("const7", "fn main() -> Nat = 7\n".into(), "7\n"),
         ("add", "fn main() -> Nat = 8 + 5\n".into(), "13\n"),

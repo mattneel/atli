@@ -655,9 +655,11 @@ this arena in a certified computation is a certified-grade soundness violation i
 distinguishable error if the bump would exceed `β + C`; the trap exists to falsify the
 thesis if the certified bound is wrong.
 
-**`Div` contract.** A computation with `β = ω` requires a growable lowering. Tier 1 may
-refuse to compile it with the diagnostic: `Div functions require the growable backend,
-not yet built`.
+**`Div` contract.** A computation with `β = ω` requires a growable lowering. Sprint 08's
+tier-2 smoke backend starts with a 64-slot growable segment and may run under a bounded
+test harness (`ATLI_MAX_ITERS`) to observe divergent programs without claiming finite
+boundedness. Finite-β frames never use the growable segment; the checker-certified grade
+selects the exact arena path versus the `ω` growable path.
 
 **L7 hook.** The mechanized boundedness-soundness statement (§8.4/L7) quantifies over
 this slot metric: every realized frame-slot prefix of a reduction from a term typed with

@@ -1,0 +1,10 @@
+effect A { op(x: Nat) -> Nat }
+effect B { op(x: Nat) -> Nat }
+
+fn main() -> Nat ! {A, B} = handle handle B.op(1) {
+  return(x) -> x;
+  A.op(p), k -> k(p)
+} {
+  return(x) -> x;
+  B.op(p), _ -> 8
+}

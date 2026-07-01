@@ -29,7 +29,29 @@ semantics.
   must exhaust the budget. This is honest differential coverage, not a complete frame
   layout model for recursion.
 
+
+- SPEC-GAP(mutual-recursion-core-implementation): Sprint 08 amends `docs/calculus.md` with
+  `fix*` binding groups and the conservative cyclic-group rule, but the Rust core/checker
+  still represents only unary `fix`. Surface `even/odd` therefore remains rejected as an
+  unbound forward reference rather than elaborating to a multi-node generated SCC. The
+  solver's multi-node machinery is still unit-tested; generated-term evidence for natural
+  multi-node SCCs remains pending until the `fix*` AST/checker/interpreter ripple lands.
+
 ## Resolved gaps
+
+
+- RESOLVED(multi-label-effects-reduced-core): Sprint 08 generalizes labels from the single
+  `L` fixture to interned label identifiers. Core handlers carry clause vectors, the
+  checker and derived witness compute per-clause `β̂ᵢ`, surface effect rows parse finite
+  label lists, and the interpreter's `H-op` search treats nested handlers for other labels
+  as transparent (`docs/calculus.md §5`). Goldens cover both transparent different-label
+  nesting and same-label delimiting.
+
+- RESOLVED(div-growable-backend-smoke): Sprint 08 removes the native-code diagnostic for
+  `β = ω` programs. The compiled path now emits a growable module mode with an initial
+  64-slot segment and a test-only `ATLI_MAX_ITERS` runtime tick; `server_loop.atli` builds
+  and bounded-runs natively. This is a smoke growable backend, not a proof of variable-size
+  frame layout.
 
 - RESOLVED(tier1-mlir-artifact-was-summary-not-lowering): Sprint 06's native path used a
   generated C harness as the real compiler, while `atli emit` printed a summary MLIR module

@@ -1,4 +1,4 @@
-use atli::core::{Handler, RecursionTag, Term, Type};
+use atli::core::{Handler, OpClause, RecursionTag, Term, Type};
 use atli::gen::{derive_witness, term_obeys_continuation_usage};
 use atli::grade::{Bound, Label};
 use atli::interp::{eval, Outcome, Rule};
@@ -12,14 +12,16 @@ fn id_lam() -> Term {
 }
 
 fn identity_handler(op_body: Term) -> Handler {
-    Handler {
-        return_var: "r".into(),
-        return_body: Box::new(Term::var("r")),
-        op_label: Label::L,
-        op_param: "p".into(),
-        op_k: "k".into(),
-        op_body: Box::new(op_body),
-    }
+    Handler::single(
+        "r".into(),
+        Box::new(Term::var("r")),
+        OpClause {
+            op_label: Label::L,
+            op_param: "p".into(),
+            op_k: "k".into(),
+            op_body: Box::new(op_body),
+        },
+    )
 }
 
 #[test]
@@ -356,4 +358,78 @@ fn checker_div_fix_exercises_widening_and_classifies_div() {
     assert_eq!(checked.witness().bound, Bound::Omega);
     assert_eq!(checked.witness().divergence, atli::core::Divergence::Div);
     assert!(checked.solver_stats().widening_fires > 0);
+}
+
+#[test]
+fn different_label_handler_is_transparent_to_outer_handler() {
+    let label_a = Label::intern("A");
+    let label_b = Label::intern("B");
+    let inner_a = Handler::single(
+        "r".into(),
+        Box::new(Term::var("r")),
+        OpClause {
+            op_label: label_a,
+            op_param: "p".into(),
+            op_k: "k".into(),
+            op_body: Box::new(Term::Resume {
+                kont: Box::new(Term::var("k")),
+                arg: Box::new(Term::var("p")),
+            }),
+        },
+    );
+    let outer_b = Handler::single(
+        "r".into(),
+        Box::new(Term::var("r")),
+        OpClause {
+            op_label: label_b,
+            op_param: "p".into(),
+            op_k: "_k".into(),
+            op_body: Box::new(Term::nat(8)),
+        },
+    );
+    let term = Term::Handle {
+        body: Box::new(Term::Handle {
+            body: Box::new(Term::Perform(label_b, Box::new(Term::nat(1)))),
+            handler: inner_a,
+        }),
+        handler: outer_b,
+    };
+    let report = eval(term, 16, false);
+    assert_eq!(report.outcome, Outcome::Value, "{report:?}");
+    assert_eq!(report.final_term, Term::nat(8));
+}
+
+#[test]
+fn same_label_inner_handler_delimits_outer_handler() {
+    let label_a = Label::intern("A");
+    let inner = Handler::single(
+        "r".into(),
+        Box::new(Term::var("r")),
+        OpClause {
+            op_label: label_a,
+            op_param: "p".into(),
+            op_k: "_k".into(),
+            op_body: Box::new(Term::nat(4)),
+        },
+    );
+    let outer = Handler::single(
+        "r".into(),
+        Box::new(Term::var("r")),
+        OpClause {
+            op_label: label_a,
+            op_param: "p".into(),
+            op_k: "_k".into(),
+            op_body: Box::new(Term::nat(9)),
+        },
+    );
+    let term = Term::Handle {
+        body: Box::new(Term::Handle {
+            body: Box::new(Term::Perform(label_a, Box::new(Term::nat(1)))),
+            handler: inner,
+        }),
+        handler: outer,
+    };
+    let report = eval(term, 16, false);
+    assert_eq!(report.outcome, Outcome::Value, "{report:?}");
+    assert_eq!(report.final_term, Term::nat(4));
 }

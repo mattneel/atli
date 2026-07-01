@@ -35,17 +35,30 @@ impl Q {
     }
 }
 
-/// The one-operation label used by the reduced core (`calculus.md §10`).
+/// Interned operation label (`calculus.md §2.2`, Sprint 08 multi-label amendment).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Label {
-    L,
+pub struct Label(&'static str);
+
+impl Label {
+    pub const L: Self = Self("L");
+
+    #[must_use]
+    pub fn intern(name: &str) -> Self {
+        if name == "L" {
+            return Self::L;
+        }
+        Self(Box::leak(name.to_string().into_boxed_str()))
+    }
+
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        self.0
+    }
 }
 
 impl fmt::Display for Label {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Label::L => f.write_str("ℓ"),
-        }
+        f.write_str(self.0)
     }
 }
 
@@ -86,6 +99,15 @@ impl Eff {
     #[must_use]
     pub fn is_subset(&self, rhs: &Self) -> bool {
         self.0.is_subset(&rhs.0)
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn labels(&self) -> impl Iterator<Item = Label> + '_ {
+        self.0.iter().copied()
     }
 }
 

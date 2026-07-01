@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::{
     ContinuationUseFacts, CoverageTag, Divergence, ExpectedOutcome, GeneratedTerm, GenerationFacts,
-    Handler, RecursionTag, Term, Type, Witness,
+    Handler, OpClause, RecursionTag, Term, Type, Witness,
 };
 use crate::grade::{Bound, Eff, Label, Region};
 
@@ -53,7 +53,7 @@ pub fn generated_from_input(input: GenInput) -> GeneratedTerm {
 #[must_use]
 pub fn generated_from_choices(choices: Vec<u8>) -> GeneratedTerm {
     let mut builder = Builder::new(ChoiceStream::new(choices));
-    let top_choice = builder.choices.next_mod(12);
+    let top_choice = builder.choices.next_mod(14);
     let mut expected = ExpectedOutcome::Safe;
     let (name, term) = match top_choice {
         0 => (
@@ -88,6 +88,14 @@ pub fn generated_from_choices(choices: Vec<u8>) -> GeneratedTerm {
             builder.gen_handle(MAX_DEPTH, false, false),
         ),
         10 => ("nested_handle", builder.gen_handle(MAX_DEPTH, true, true)),
+        11 => (
+            "multi_label_transparent",
+            builder.gen_multi_label_transparent(),
+        ),
+        12 => (
+            "multi_label_clause_set",
+            builder.gen_multi_label_clause_set(),
+        ),
         _ => {
             expected = ExpectedOutcome::UnhandledOperation;
             (
@@ -105,7 +113,7 @@ pub fn fixed_seed_inputs() -> Vec<GenInput> {
     (0..SAMPLE_SIZE)
         .map(|case| {
             let mut choices = Vec::with_capacity(MAX_CHOICES);
-            choices.push((case % 12) as u8);
+            choices.push((case % 14) as u8);
             for _ in 1..MAX_CHOICES {
                 state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
                 choices.push((state >> 32) as u8);
@@ -558,6 +566,70 @@ impl Builder {
         self.wrap_effectful_context(wrapped, depth - 1, layers - 1)
     }
 
+    fn gen_multi_label_transparent(&mut self) -> Term {
+        let label_a = Label::intern("A");
+        let label_b = Label::intern("B");
+        let inner = Handler::single(
+            "r".into(),
+            Box::new(Term::var("r")),
+            OpClause {
+                op_label: label_a,
+                op_param: "p".into(),
+                op_k: "k".into(),
+                op_body: Box::new(Term::Resume {
+                    kont: Box::new(Term::var("k")),
+                    arg: Box::new(Term::var("p")),
+                }),
+            },
+        );
+        let outer = Handler::single(
+            "r".into(),
+            Box::new(Term::var("r")),
+            OpClause {
+                op_label: label_b,
+                op_param: "p".into(),
+                op_k: "_k".into(),
+                op_body: Box::new(Term::nat(8)),
+            },
+        );
+        Term::Handle {
+            body: Box::new(Term::Handle {
+                body: Box::new(Term::Perform(label_b, Box::new(self.gen_pure_nat(1)))),
+                handler: inner,
+            }),
+            handler: outer,
+        }
+    }
+
+    fn gen_multi_label_clause_set(&mut self) -> Term {
+        let label_a = Label::intern("A");
+        let label_b = Label::intern("B");
+        Term::Handle {
+            body: Box::new(Term::Perform(label_a, Box::new(self.gen_pure_nat(2)))),
+            handler: Handler {
+                return_var: "r".into(),
+                return_body: Box::new(Term::var("r")),
+                clauses: vec![
+                    OpClause {
+                        op_label: label_a,
+                        op_param: "p".into(),
+                        op_k: "k".into(),
+                        op_body: Box::new(Term::Resume {
+                            kont: Box::new(Term::var("k")),
+                            arg: Box::new(Term::var("p")),
+                        }),
+                    },
+                    OpClause {
+                        op_label: label_b,
+                        op_param: "q".into(),
+                        op_k: "_k".into(),
+                        op_body: Box::new(Term::var("q")),
+                    },
+                ],
+            },
+        }
+    }
+
     fn gen_handler(&mut self, resume: bool) -> Handler {
         let op_body = if resume {
             let resume = Term::Resume {
@@ -576,14 +648,16 @@ impl Builder {
         } else {
             Term::var("p")
         };
-        Handler {
-            return_var: "r".into(),
-            return_body: Box::new(Term::var("r")),
-            op_label: Label::L,
-            op_param: "p".into(),
-            op_k: "k".into(),
-            op_body: Box::new(op_body),
-        }
+        Handler::single(
+            "r".into(),
+            Box::new(Term::var("r")),
+            OpClause {
+                op_label: Label::L,
+                op_param: "p".into(),
+                op_k: "k".into(),
+                op_body: Box::new(op_body),
+            },
+        )
     }
 }
 
@@ -710,7 +784,7 @@ impl Derived {
 }
 
 fn contextualize(effectful_child: &Derived) -> Bound {
-    if effectful_child.effects.contains(Label::L) {
+    if !effectful_child.effects.is_empty() {
         effectful_child.bound.sequential(Bound::finite(1))
     } else {
         effectful_child.bound
@@ -921,38 +995,56 @@ fn derive_handle(body: &Term, handler: &Handler, env: &Env) -> Derived {
         &handler.return_body,
         &env.with_var(handler.return_var.clone(), body_d.ty.clone()),
     );
-    let op_env = env
-        .with_var(handler.op_param.clone(), Type::Nat)
-        .with_cont(&handler.op_k);
-    let op_d = derive(&handler.op_body, &op_env);
-    let introduced = u32::from(body_d.effects.contains(handler.op_label));
-    let resumes = op_d.continuation_uses.resumed;
-    let dropped = introduced.saturating_sub(resumes);
-    let op_effective_bound = if resumes > 0 {
-        // Lazy `H-op-resume` (`calculus.md §5`) materializes the deep one-shot
-        // continuation, so the `Handle` rule (`§4.7`) adds the carried body `β`.
-        op_d.bound.sequential(body_d.bound)
-    } else {
-        // Lazy `H-op-drop` does not materialize `k`; dropped exception/default clauses
-        // keep `β̂ᵢ = βᵢ` (`calculus.md §4.7`).
-        op_d.bound
-    };
+    let mut handled_effects = body_d.effects.clone();
+    let mut op_effects = Eff::empty();
+    let mut op_bound = Bound::ZERO;
+    let mut op_region = Region::Arena;
+    let mut introduced = 0;
+    let mut resumes = 0;
+    let mut op_diverges = false;
+    let mut op_coverage = BTreeSet::new();
+    for clause in &handler.clauses {
+        let op_env = env
+            .with_var(clause.op_param.clone(), Type::Nat)
+            .with_cont(&clause.op_k);
+        let op_d = derive(&clause.op_body, &op_env);
+        let clause_introduced = u32::from(body_d.effects.contains(clause.op_label));
+        let clause_resumes = op_d.continuation_uses.resumed;
+        introduced += clause_introduced;
+        resumes += clause_resumes;
+        let effective = if clause_resumes > 0 {
+            // Lazy `H-op-resume` (`calculus.md §5`) materializes the deep one-shot
+            // continuation, so the `Handle` rule (`§4.7`) adds the carried body `β`.
+            op_d.bound.sequential(body_d.bound)
+        } else {
+            // Lazy `H-op-drop` does not materialize `k`; dropped exception/default clauses
+            // keep `β̂ᵢ = βᵢ` (`calculus.md §4.7`).
+            op_d.bound
+        };
+        op_bound = op_bound.join(effective);
+        op_region = op_region.meet(op_d.region);
+        op_effects = op_effects.join(&op_d.effects);
+        op_diverges |= op_d.divergence == Divergence::Div;
+        op_coverage.extend(op_d.coverage.iter().copied());
+        op_coverage.insert(if clause_resumes > 0 {
+            CoverageTag::HandleResuming
+        } else {
+            CoverageTag::HandleDropped
+        });
+        handled_effects = handled_effects.without(clause.op_label);
+    }
     let mut out = Derived::pure(ret_d.ty.clone());
-    out.effects = body_d
-        .effects
-        .without(handler.op_label)
-        .join(&ret_d.effects)
-        .join(&op_d.effects);
-    out.bound = ret_d.bound.join(op_effective_bound);
-    out.region = body_d.region.meet(ret_d.region).meet(op_d.region);
+    out.effects = handled_effects.join(&ret_d.effects).join(&op_effects);
+    out.bound = ret_d.bound.join(op_bound);
+    out.region = body_d.region.meet(ret_d.region).meet(op_region);
     out.continuation_uses = ContinuationUseFacts {
         introduced,
         resumed: resumes,
-        dropped,
+        dropped: introduced.saturating_sub(resumes),
     };
     out.divergence = if body_d.divergence == Divergence::Div
         || ret_d.divergence == Divergence::Div
-        || op_d.divergence == Divergence::Div
+        || op_diverges
     {
         Divergence::Div
     } else {
@@ -960,12 +1052,7 @@ fn derive_handle(body: &Term, handler: &Handler, env: &Env) -> Derived {
     };
     out.coverage = body_d.coverage;
     out.coverage.extend(ret_d.coverage.iter().copied());
-    out.coverage.extend(op_d.coverage.iter().copied());
-    out.coverage.insert(if resumes > 0 {
-        CoverageTag::HandleResuming
-    } else {
-        CoverageTag::HandleDropped
-    });
+    out.coverage.extend(op_coverage);
     out
 }
 
@@ -992,7 +1079,16 @@ fn term_depth(term: &Term) -> usize {
             succ_body,
             ..
         } => 1 + term_depth(scrutinee).max(term_depth(zero_body).max(term_depth(succ_body))),
-        Term::Handle { body, handler } => 1 + term_depth(body).max(term_depth(&handler.op_body)),
+        Term::Handle { body, handler } => {
+            1 + handler
+                .clauses
+                .iter()
+                .map(|clause| term_depth(&clause.op_body))
+                .fold(
+                    term_depth(body).max(term_depth(&handler.return_body)),
+                    usize::max,
+                )
+        }
         Term::Resume { kont, arg } => 1 + term_depth(kont).max(term_depth(arg)),
     }
 }
@@ -1005,7 +1101,9 @@ fn scan_handlers(term: &Term, in_handler: bool, facts: &mut GenerationFacts) {
             }
             scan_handlers(body, true, facts);
             scan_handlers(&handler.return_body, true, facts);
-            scan_handlers(&handler.op_body, true, facts);
+            for clause in &handler.clauses {
+                scan_handlers(&clause.op_body, true, facts);
+            }
         }
         Term::Succ(inner) | Term::Perform(_, inner) => scan_handlers(inner, in_handler, facts),
         Term::Lam { body, .. } | Term::Fix { body, .. } => scan_handlers(body, in_handler, facts),
@@ -1102,7 +1200,9 @@ fn scan_rec_calls(term: &Term, stack: &mut Vec<RecScan>, facts: &mut GenerationF
         Term::Handle { body, handler } => {
             scan_rec_calls(body, stack, facts);
             scan_rec_calls(&handler.return_body, stack, facts);
-            scan_rec_calls(&handler.op_body, stack, facts);
+            for clause in &handler.clauses {
+                scan_rec_calls(&clause.op_body, stack, facts);
+            }
         }
         Term::Resume { kont, arg } => {
             scan_rec_calls(kont, stack, facts);
@@ -1122,8 +1222,10 @@ fn term_obeys_continuation_usage_under(term: &Term) -> bool {
         Term::Handle { body, handler } => {
             term_obeys_continuation_usage_under(body)
                 && term_obeys_continuation_usage_under(&handler.return_body)
-                && term_obeys_continuation_usage_under(&handler.op_body)
-                && handler_clause_obeys_k_usage(&handler.op_body, &handler.op_k)
+                && handler.clauses.iter().all(|clause| {
+                    term_obeys_continuation_usage_under(&clause.op_body)
+                        && handler_clause_obeys_k_usage(&clause.op_body, &clause.op_k)
+                })
         }
         Term::Succ(inner) | Term::Perform(_, inner) => term_obeys_continuation_usage_under(inner),
         Term::Lam { body, .. } | Term::Fix { body, .. } => {
@@ -1186,8 +1288,14 @@ fn free_var_count(term: &Term, name: &str) -> usize {
             free_var_count(body, name)
                 + usize::from(handler.return_var != name)
                     * free_var_count(&handler.return_body, name)
-                + usize::from(handler.op_param != name && handler.op_k != name)
-                    * free_var_count(&handler.op_body, name)
+                + handler
+                    .clauses
+                    .iter()
+                    .map(|clause| {
+                        usize::from(clause.op_param != name && clause.op_k != name)
+                            * free_var_count(&clause.op_body, name)
+                    })
+                    .sum::<usize>()
         }
     }
 }
@@ -1230,8 +1338,14 @@ fn direct_resume_count(term: &Term, name: &str) -> usize {
             direct_resume_count(body, name)
                 + usize::from(handler.return_var != name)
                     * direct_resume_count(&handler.return_body, name)
-                + usize::from(handler.op_param != name && handler.op_k != name)
-                    * direct_resume_count(&handler.op_body, name)
+                + handler
+                    .clauses
+                    .iter()
+                    .map(|clause| {
+                        usize::from(clause.op_param != name && clause.op_k != name)
+                            * direct_resume_count(&clause.op_body, name)
+                    })
+                    .sum::<usize>()
         }
     }
 }
@@ -1283,12 +1397,15 @@ fn closed_under(term: &Term, scope: &mut Vec<String>) -> bool {
             scope.push(handler.return_var.clone());
             let ret_ok = closed_under(&handler.return_body, scope);
             scope.pop();
-            scope.push(handler.op_param.clone());
-            scope.push(handler.op_k.clone());
-            let op_ok = closed_under(&handler.op_body, scope);
-            scope.pop();
-            scope.pop();
-            body_ok && ret_ok && op_ok
+            let clauses_ok = handler.clauses.iter().all(|clause| {
+                scope.push(clause.op_param.clone());
+                scope.push(clause.op_k.clone());
+                let ok = closed_under(&clause.op_body, scope);
+                scope.pop();
+                scope.pop();
+                ok
+            });
+            body_ok && ret_ok && clauses_ok
         }
         Term::Resume { kont, arg } => closed_under(kont, scope) && closed_under(arg, scope),
     }

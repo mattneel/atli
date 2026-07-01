@@ -33,7 +33,7 @@ pub use solve::{CertifiedGrade, PendingGrade, SolverCertificate, SolverStats};
 use crate::core::{
     ContinuationUseFacts, CoverageTag, Divergence, Handler, RecursionTag, Term, Type, Witness,
 };
-use crate::grade::{Bound, Eff, Label, Region};
+use crate::grade::{Bound, Eff, Region};
 use solve::{solve, BoundExpr, ConstraintSystem, UnknownId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -472,37 +472,54 @@ impl Checker {
             &handler.return_body,
             &env.with_var(handler.return_var.clone(), body_w.ty.clone()),
         )?;
-        let op_env = env
-            .with_var(handler.op_param.clone(), Type::Nat)
-            .with_cont(&handler.op_k);
-        let op_w = self.infer(&handler.op_body, &op_env)?;
-        expect_type(&op_w.ty, &ret_w.ty, whole, "Handle", "§4.7")?;
-        let usage =
-            classify_handler_k_usage(&handler.op_body, &handler.op_k).map_err(|message| {
-                TypeError::new(
-                    "Handle",
-                    "§4.7",
-                    &handler.op_body,
-                    message.clone(),
-                    TypeErrorKind::HandlerContinuationUsage(message),
-                )
-            })?;
-        let introduced = u32::from(body_w.effects.contains(handler.op_label));
-        let resumes = u32::from(usage == KUsage::Resumed);
+        let mut handled_effects = body_w.effects.clone();
+        let mut op_effects = Eff::empty();
+        let mut op_bound = BoundExpr::constant(Bound::ZERO);
+        let mut op_region = Region::Arena;
+        let mut introduced = 0;
+        let mut resumes = 0;
+        let mut op_diverges = false;
+        let mut op_coverage = BTreeSet::new();
+        for clause in &handler.clauses {
+            let op_env = env
+                .with_var(clause.op_param.clone(), Type::Nat)
+                .with_cont(&clause.op_k);
+            let op_w = self.infer(&clause.op_body, &op_env)?;
+            expect_type(&op_w.ty, &ret_w.ty, whole, "Handle", "§4.7")?;
+            let usage =
+                classify_handler_k_usage(&clause.op_body, &clause.op_k).map_err(|message| {
+                    TypeError::new(
+                        "Handle",
+                        "§4.7",
+                        &clause.op_body,
+                        format!("label {}: {message}", clause.op_label),
+                        TypeErrorKind::HandlerContinuationUsage(message),
+                    )
+                })?;
+            introduced += u32::from(body_w.effects.contains(clause.op_label));
+            resumes += u32::from(usage == KUsage::Resumed);
+            let effective = if usage == KUsage::Resumed {
+                op_w.bound.clone().seq(body_w.bound.clone())
+            } else {
+                op_w.bound.clone()
+            };
+            op_bound = op_bound.join(effective);
+            op_region = op_region.meet(op_w.region);
+            op_effects = op_effects.join(&op_w.effects);
+            op_diverges |= op_w.divergence == Divergence::Div;
+            op_coverage.extend(op_w.coverage.iter().copied());
+            handled_effects = handled_effects.without(clause.op_label);
+            op_coverage.insert(if usage == KUsage::Resumed {
+                CoverageTag::HandleResuming
+            } else {
+                CoverageTag::HandleDropped
+            });
+        }
         let dropped = introduced.saturating_sub(resumes);
-        let op_effective_bound = if usage == KUsage::Resumed {
-            op_w.bound.clone().seq(body_w.bound.clone())
-        } else {
-            op_w.bound.clone()
-        };
         let mut out = PartialWitness::pure(ret_w.ty.clone());
-        out.effects = body_w
-            .effects
-            .without(handler.op_label)
-            .join(&ret_w.effects)
-            .join(&op_w.effects);
-        out.bound = ret_w.bound.clone().join(op_effective_bound);
-        out.region = body_w.region.meet(ret_w.region).meet(op_w.region);
+        out.effects = handled_effects.join(&ret_w.effects).join(&op_effects);
+        out.bound = ret_w.bound.clone().join(op_bound);
+        out.region = body_w.region.meet(ret_w.region).meet(op_region);
         out.continuation_uses = ContinuationUseFacts {
             introduced,
             resumed: resumes,
@@ -510,7 +527,7 @@ impl Checker {
         };
         out.divergence = if body_w.divergence == Divergence::Div
             || ret_w.divergence == Divergence::Div
-            || op_w.divergence == Divergence::Div
+            || op_diverges
         {
             Divergence::Div
         } else {
@@ -518,12 +535,7 @@ impl Checker {
         };
         out.coverage = body_w.coverage;
         out.coverage.extend(ret_w.coverage.iter().copied());
-        out.coverage.extend(op_w.coverage.iter().copied());
-        out.coverage.insert(if usage == KUsage::Resumed {
-            CoverageTag::HandleResuming
-        } else {
-            CoverageTag::HandleDropped
-        });
+        out.coverage.extend(op_coverage);
         Ok(out)
     }
 }
@@ -551,7 +563,7 @@ fn classify_handler_k_usage(term: &Term, k: &str) -> Result<KUsage, String> {
 }
 
 fn contextualize(child: &PartialWitness) -> BoundExpr {
-    if child.effects.contains(Label::L) {
+    if !child.effects.is_empty() {
         child
             .bound
             .clone()
@@ -632,8 +644,14 @@ fn free_var_count(term: &Term, name: &str) -> usize {
             free_var_count(body, name)
                 + usize::from(handler.return_var != name)
                     * free_var_count(&handler.return_body, name)
-                + usize::from(handler.op_param != name && handler.op_k != name)
-                    * free_var_count(&handler.op_body, name)
+                + handler
+                    .clauses
+                    .iter()
+                    .map(|clause| {
+                        usize::from(clause.op_param != name && clause.op_k != name)
+                            * free_var_count(&clause.op_body, name)
+                    })
+                    .sum::<usize>()
         }
     }
 }
@@ -676,8 +694,14 @@ fn direct_resume_count(term: &Term, name: &str) -> usize {
             direct_resume_count(body, name)
                 + usize::from(handler.return_var != name)
                     * direct_resume_count(&handler.return_body, name)
-                + usize::from(handler.op_param != name && handler.op_k != name)
-                    * direct_resume_count(&handler.op_body, name)
+                + handler
+                    .clauses
+                    .iter()
+                    .map(|clause| {
+                        usize::from(clause.op_param != name && clause.op_k != name)
+                            * direct_resume_count(&clause.op_body, name)
+                    })
+                    .sum::<usize>()
         }
     }
 }

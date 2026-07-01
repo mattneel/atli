@@ -75,6 +75,7 @@ enum Frame {
         succ_var: String,
         succ_body: Box<Term>,
     },
+    Handle(Handler),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -293,31 +294,32 @@ impl Machine {
         }
 
         if let Some(captured) = decompose_perform(&body) {
-            assert_eq!(
-                captured.label, handler.op_label,
-                "Sprint 01 has one operation label"
-            );
-            let with_param = handler.op_body.subst(&handler.op_param, &captured.arg);
-            if !term_mentions_var(&handler.op_body, &handler.op_k) {
-                // Lazy `H-op-drop` (`calculus.md §5`): a clause that does not use `k`
-                // receives the operation parameter without materializing the delimited
-                // continuation, so dropped/default handlers allocate no captured frame.
+            if let Some(clause) = handler.clause_for(captured.label) {
+                // Multi-label `H-op` (`calculus.md §5`, Sprint 08): dispatch to the
+                // clause whose label matches the captured operation.
+                let with_param = clause.op_body.subst(&clause.op_param, &captured.arg);
+                if !term_mentions_var(&clause.op_body, &clause.op_k) {
+                    // Lazy `H-op-drop` (`calculus.md §5`): a clause that does not use `k`
+                    // receives the operation parameter without materializing the delimited
+                    // continuation, so dropped/default handlers allocate no captured frame.
+                    return StepResult::Stepped {
+                        term: with_param,
+                        rule: Rule::HOp,
+                    };
+                }
+
+                let frame_size =
+                    u32::try_from(captured.frames.len()).expect("frame depth fits u32");
+                self.max_frame = self.max_frame.max(frame_size);
+                let id = self.alloc_continuation(captured.frames, handler.clone(), frame_size);
+                let with_k = with_param.subst(&clause.op_k, &Term::Cont(id));
+                // Lazy `H-op-resume` (`calculus.md §5`): only clauses that use `k`
+                // materialize deep `κ = λy. handle E[y] with H`, marked ONE-SHOT.
                 return StepResult::Stepped {
-                    term: with_param,
+                    term: with_k,
                     rule: Rule::HOp,
                 };
             }
-
-            let frame_size = u32::try_from(captured.frames.len()).expect("frame depth fits u32");
-            self.max_frame = self.max_frame.max(frame_size);
-            let id = self.alloc_continuation(captured.frames, handler.clone(), frame_size);
-            let with_k = with_param.subst(&handler.op_k, &Term::Cont(id));
-            // Lazy `H-op-resume` (`calculus.md §5`): only clauses that use `k`
-            // materialize deep `κ = λy. handle E[y] with H`, marked ONE-SHOT.
-            return StepResult::Stepped {
-                term: with_k,
-                rule: Rule::HOp,
-            };
         }
 
         self.step_nested(body, |term| Term::Handle {
@@ -445,9 +447,11 @@ fn term_mentions_var(term: &Term, name: &str) -> bool {
         Term::Handle { body, handler } => {
             term_mentions_var(body, name)
                 || (handler.return_var != name && term_mentions_var(&handler.return_body, name))
-                || (handler.op_param != name
-                    && handler.op_k != name
-                    && term_mentions_var(&handler.op_body, name))
+                || handler.clauses.iter().any(|clause| {
+                    clause.op_param != name
+                        && clause.op_k != name
+                        && term_mentions_var(&clause.op_body, name)
+                })
         }
         Term::Resume { kont, arg } => term_mentions_var(kont, name) || term_mentions_var(arg, name),
     }
@@ -522,9 +526,19 @@ fn decompose(term: &Term, frames: Vec<Frame>) -> Option<CapturedPerform> {
             next.push(Frame::ResumeArg(kont.clone()));
             decompose(arg, next)
         }
-        // A nested handler is a delimiter for `H-op` (`calculus.md §5` evaluation context
-        // excludes handle frames), so do not inspect inside it here.
-        Term::Handle { .. } => None,
+        // Multi-label `H-op` (`calculus.md §5`, Sprint 08): a nested handler is a
+        // delimiter only for labels it handles. Handlers over other labels are transparent
+        // to the search and become part of the captured context.
+        Term::Handle { body, handler } => {
+            let mut next = frames;
+            next.push(Frame::Handle(handler.clone()));
+            let captured = decompose(body, next)?;
+            if handler.clause_for(captured.label).is_some() {
+                None
+            } else {
+                Some(captured)
+            }
+        }
         _ => None,
     }
 }
@@ -558,6 +572,10 @@ fn plug(mut term: Term, frames: &[Frame]) -> Term {
                 zero_body: zero_body.clone(),
                 succ_var: succ_var.clone(),
                 succ_body: succ_body.clone(),
+            },
+            Frame::Handle(handler) => Term::Handle {
+                body: Box::new(term),
+                handler: handler.clone(),
             },
         };
     }

@@ -192,16 +192,11 @@ impl Parser {
 
     fn effect_row(&mut self) -> Result<(), ParseError> {
         if self.eat(&TokenKind::LBrace).is_some() {
-            let first = self.expect_ident("expected effect label")?;
-            if first.node != "L" {
-                return Err(ParseError {
-                    span: first.span,
-                    message: "reduced core supports one effect label: `L`".into(),
-                });
-            }
-            if self.eat(&TokenKind::Comma).is_some() {
-                return Err(self
-                    .error_previous("multiple effect labels are not yet in the reduced surface"));
+            // Surface multi-label rows (`docs/syntax.md §3`, §6) parse as finite label lists;
+            // the reduced elaborator/checker carry the actual set in core effects.
+            self.expect_ident("expected effect label")?;
+            while self.eat(&TokenKind::Comma).is_some() {
+                self.expect_ident("expected effect label after `,`")?;
             }
             self.expect(&TokenKind::RBrace, "expected `}` after effect row")?;
             Ok(())
@@ -290,8 +285,7 @@ impl Parser {
                     _ => {
                         return Err(ParseError {
                             span: expr.span,
-                            message: "only `L.op(...)` effect calls are in the reduced surface"
-                                .into(),
+                            message: "effect calls must be written as `Effect.op(...)`".into(),
                         })
                     }
                 };

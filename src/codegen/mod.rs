@@ -26,6 +26,7 @@ use crate::surface::ast::{
 };
 
 const BUILD_DIR: &str = "target/atli";
+const GROWABLE_INITIAL_SLOTS: u32 = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodegenError {
@@ -61,9 +62,7 @@ impl CertifiedArena {
         let certified = checked.certified_bound();
         match certified.get() {
             Bound::Finite(_) => Ok(Self { certified }),
-            Bound::Omega => Err(CodegenError::new(
-                "Div functions require the growable backend — tier 2",
-            )),
+            Bound::Omega => Ok(Self { certified }),
         }
     }
 
@@ -71,7 +70,7 @@ impl CertifiedArena {
     pub fn slots(self) -> u32 {
         match self.certified.get() {
             Bound::Finite(slots) => slots,
-            Bound::Omega => unreachable!("CertifiedArena rejects omega"),
+            Bound::Omega => GROWABLE_INITIAL_SLOTS,
         }
     }
 }
@@ -105,7 +104,9 @@ pub struct BuildOutput {
 pub fn emit(input: EmitInput<'_>) -> Result<Emission, CodegenError> {
     ensure_fragment(input.elaborated, input.checked)?;
     let arena_slots = input.arena.slots();
-    let mut module = MlirModule::new(input.program, arena_slots);
+    let growable = matches!(input.checked.witness().bound, Bound::Omega)
+        || input.checked.witness().divergence == Divergence::Div;
+    let mut module = MlirModule::new(input.program, arena_slots, growable);
     let mlir = module.emit_module()?;
     Ok(Emission {
         mlir,
@@ -211,13 +212,10 @@ pub fn contains_effect_syntax(term: &Term) -> bool {
 
 fn ensure_fragment(
     _elaborated: &ElaboratedProgram,
-    checked: &CheckedWitness,
+    _checked: &CheckedWitness,
 ) -> Result<(), CodegenError> {
-    if checked.witness().divergence == Divergence::Div || checked.witness().bound == Bound::Omega {
-        return Err(CodegenError::new(
-            "Div functions require the growable backend — tier 2",
-        ));
-    }
+    // Sprint 08 growable backend: finite-β programs keep exact certified arenas;
+    // β = ω programs take the growable/test-bounded path (`docs/calculus.md §9.1`).
     Ok(())
 }
 
@@ -267,6 +265,17 @@ fn runtime_shim() -> String {
      extern int64_t atli_program_main(void);\n\
      extern int64_t atli_high_water_value(void);\n\
      extern int64_t atli_beta_slots(void);\n\
+     void atli_tick(void) {\n\
+       const char *limit_s = getenv(\"ATLI_MAX_ITERS\");\n\
+       if (!limit_s || !*limit_s) return;\n\
+       static long long ticks = 0;\n\
+       long long limit = atoll(limit_s);\n\
+       ticks++;\n\
+       if (limit >= 0 && ticks >= limit) {\n\
+         fprintf(stderr, \"ATLI_MAX_ITERS exhausted after %lld iterations; ATLI_GROWABLE_SEGMENT=64\\n\", ticks);\n\
+         exit(0);\n\
+       }\n\
+     }\n\
      void atli_trap_overflow(void) {\n\
        fprintf(stderr, \"ATLI ARENA OVERFLOW: certified beta violated\\n\");\n\
        exit(86);\n\
@@ -288,11 +297,12 @@ fn runtime_shim() -> String {
 struct MlirModule<'a> {
     program: &'a Program,
     arena_slots: u32,
+    growable: bool,
     functions: BTreeMap<String, usize>,
 }
 
 impl<'a> MlirModule<'a> {
-    fn new(program: &'a Program, arena_slots: u32) -> Self {
+    fn new(program: &'a Program, arena_slots: u32, growable: bool) -> Self {
         let functions = program
             .decls
             .iter()
@@ -304,6 +314,7 @@ impl<'a> MlirModule<'a> {
         Self {
             program,
             arena_slots,
+            growable,
             functions,
         }
     }
@@ -317,13 +328,14 @@ impl<'a> MlirModule<'a> {
         ));
         out.push_str("module attributes {");
         out.push_str(&format!(
-            "atli.certified_beta_slots = {} : i64, atli.arena_overhead_slots = 0 : i64",
-            self.arena_slots
+            "atli.certified_beta_slots = {} : i64, atli.arena_overhead_slots = 0 : i64, atli.growable = {}",
+            self.arena_slots, if self.growable { "true" } else { "false" }
         ));
         out.push_str("} {\n");
         out.push_str("  memref.global \"private\" @atli_high_water : memref<1xi64> = dense<0>\n");
         out.push_str("  func.func private @atli_trap_overflow() -> ()\n");
         out.push_str("  func.func private @atli_trap_one_shot() -> ()\n");
+        out.push_str("  func.func private @atli_tick() -> ()\n");
         self.emit_runtime_helpers(&mut out);
         for decl in &self.program.decls {
             match decl {
@@ -397,6 +409,9 @@ impl<'a> MlirModule<'a> {
             mlir_func_name(&func.name.node),
             params.join(", ")
         );
+        if matches!(func.boundedness, Boundedness::Div(_)) {
+            out.push_str("    func.call @atli_tick() : () -> ()\n");
+        }
         if expr_mentions_fn(&func.body, &func.name.node)
             || !matches!(func.boundedness, Boundedness::Structural)
         {
@@ -497,11 +512,15 @@ impl<'a> Builder<'a> {
         cont: Continuation<'_>,
     ) -> Result<Value, CodegenError> {
         match &expr.kind {
-            ExprKind::QualifiedCall { effect, op, args } if effect == "L" && op == "op" => {
+            ExprKind::QualifiedCall { effect, op, args }
+                if op == "op" && ctx.clause_for(effect).is_some() =>
+            {
                 if args.len() != 1 {
-                    return Err(CodegenError::new("`L.op` expects one argument"));
+                    return Err(CodegenError::new(
+                        "effect operation `op` expects one argument",
+                    ));
                 }
-                self.handle_perform(&args[0], ctx, env, indent, cont)
+                self.handle_perform(effect, &args[0], ctx, env, indent, cont)
             }
             ExprKind::Block { bindings, result } => {
                 self.handled_block(bindings, result, ctx, env, indent, cont)
@@ -553,6 +572,16 @@ impl<'a> Builder<'a> {
                 self.line(indent, "}");
                 Ok(Value { name: out })
             }
+            ExprKind::Handle { body, clauses } => {
+                let inner = HandlerCtx::new(clauses)?;
+                if expr_mentions_outer_only_effect(body, ctx, &inner) {
+                    // Multi-label `H-op` transparency (`calculus.md §5`, Sprint 08):
+                    // a nested handler for other labels is transparent to the outer search.
+                    self.handled_expr(body, ctx, env, indent, cont)
+                } else {
+                    self.handle(body, clauses, env, indent)
+                }
+            }
             _ => {
                 let value = self.expr(expr, env, indent)?;
                 self.apply_cont(value, ctx, env, indent, cont)
@@ -593,45 +622,63 @@ impl<'a> Builder<'a> {
 
     fn handle_perform(
         &mut self,
+        effect: &str,
         arg: &Expr,
         ctx: &HandlerCtx<'_>,
         env: &BTreeMap<String, String>,
         indent: usize,
         cont: Continuation<'_>,
     ) -> Result<Value, CodegenError> {
+        let clause = ctx.clause_for(effect).ok_or_else(|| {
+            CodegenError::new(format!("unhandled effect `{effect}.op` in native lowering"))
+        })?;
         let arg = self.expr(arg, env, indent)?;
         let mut op_env = env.clone();
-        if let Some(param) = ctx.op_param {
+        if let Some(param) = clause.op_param {
             op_env.insert(param.to_string(), arg.name);
         }
-        if ctx.op_k.is_none() {
+        if clause.op_k.is_none() {
+            if effect == "L" {
+                self.line(
+                    indent,
+                    "// H-op-drop, calculus.md §5: dropped k allocates no continuation frame",
+                );
+            } else {
+                self.line(
+                    indent,
+                    &format!("// H-op-drop for {effect}.op, calculus.md §5: dropped k allocates no continuation frame"),
+                );
+            }
+            return self.expr(clause.op_body, &op_env, indent);
+        }
+        if effect == "L" {
             self.line(
                 indent,
-                "// H-op-drop, calculus.md §5: dropped k allocates no continuation frame",
+                "// H-op-resume, calculus.md §5; static dispatch licensed by L5_mentions_iff_resume",
             );
-            return self.expr(ctx.op_body, &op_env, indent);
+        } else {
+            self.line(
+                indent,
+                &format!("// H-op-resume for {effect}.op, calculus.md §5; static dispatch licensed by L5_mentions_iff_resume"),
+            );
         }
-        self.line(
-            indent,
-            "// H-op-resume, calculus.md §5; static dispatch licensed by L5_mentions_iff_resume",
-        );
-        self.resume_body(ctx.op_body, ctx, &op_env, indent, cont)
+        self.resume_body(clause, ctx, &op_env, indent, cont)
     }
 
     fn resume_body(
         &mut self,
-        body: &Expr,
+        clause: &ClauseCtx<'_>,
         ctx: &HandlerCtx<'_>,
         env: &BTreeMap<String, String>,
         indent: usize,
         cont: Continuation<'_>,
     ) -> Result<Value, CodegenError> {
-        let Some(k_name) = ctx.op_k else {
+        let Some(k_name) = clause.op_k else {
             return Err(CodegenError::new(
                 "internal resume body without continuation",
             ));
         };
-        match &body.kind {
+        match &clause.op_body.kind {
             ExprKind::Call { callee, args } if matches!(&callee.kind, ExprKind::Var(name) if name == k_name) =>
             {
                 if args.len() != 1 {
@@ -654,7 +701,13 @@ impl<'a> Builder<'a> {
                     let value = self.expr(&binding.expr, &local, indent)?;
                     local.insert(binding.name.node.clone(), value.name);
                 }
-                self.resume_body(result, ctx, &local, indent, cont)
+                let nested = ClauseCtx {
+                    effect: clause.effect,
+                    op_param: clause.op_param,
+                    op_k: clause.op_k,
+                    op_body: result,
+                };
+                self.resume_body(&nested, ctx, &local, indent, cont)
             }
             _ => Err(CodegenError::new(
                 "tier-1 resuming handlers require a direct `k(v)` resume",
@@ -872,6 +925,12 @@ enum Continuation<'a> {
 struct HandlerCtx<'a> {
     return_var: &'a str,
     return_body: &'a Expr,
+    clauses: Vec<ClauseCtx<'a>>,
+}
+
+#[derive(Clone, Copy)]
+struct ClauseCtx<'a> {
+    effect: &'a str,
     op_param: Option<&'a str>,
     op_k: Option<&'a str>,
     op_body: &'a Expr,
@@ -881,9 +940,7 @@ impl<'a> HandlerCtx<'a> {
     fn new(clauses: &'a [HandleClause]) -> Result<Self, CodegenError> {
         let mut return_var = None;
         let mut return_body = None;
-        let mut op_param = None;
-        let mut op_k = None;
-        let mut op_body = None;
+        let mut op_clauses = Vec::new();
         for clause in clauses {
             match clause {
                 HandleClause::Return { var, body, .. } => {
@@ -898,27 +955,75 @@ impl<'a> HandlerCtx<'a> {
                     body,
                     ..
                 } => {
-                    if effect.node != "L" || op.node != "op" {
+                    if op.node != "op" {
                         return Err(CodegenError::new(
-                            "tier-1 supports only handler clause `L.op`",
+                            "tier-2 supports only operation name `op`",
                         ));
                     }
-                    op_param = pattern_name(param);
-                    op_k = pattern_name(kont);
-                    op_body = Some(body);
+                    op_clauses.push(ClauseCtx {
+                        effect: effect.node.as_str(),
+                        op_param: pattern_name(param),
+                        op_k: pattern_name(kont),
+                        op_body: body,
+                    });
                 }
             }
+        }
+        if op_clauses.is_empty() {
+            return Err(CodegenError::new("handler missing operation clause"));
         }
         Ok(Self {
             return_var: return_var
                 .ok_or_else(|| CodegenError::new("handler missing return clause"))?,
             return_body: return_body
                 .ok_or_else(|| CodegenError::new("handler missing return body"))?,
-            op_param,
-            op_k,
-            op_body: op_body
-                .ok_or_else(|| CodegenError::new("handler missing operation clause"))?,
+            clauses: op_clauses,
         })
+    }
+
+    fn clause_for(&self, effect: &str) -> Option<&ClauseCtx<'a>> {
+        self.clauses.iter().find(|clause| clause.effect == effect)
+    }
+}
+
+fn expr_mentions_outer_only_effect(
+    expr: &Expr,
+    outer: &HandlerCtx<'_>,
+    inner: &HandlerCtx<'_>,
+) -> bool {
+    match &expr.kind {
+        ExprKind::QualifiedCall { effect, op, .. } => {
+            op == "op" && outer.clause_for(effect).is_some() && inner.clause_for(effect).is_none()
+        }
+        ExprKind::Block { bindings, result } => {
+            bindings
+                .iter()
+                .any(|binding| expr_mentions_outer_only_effect(&binding.expr, outer, inner))
+                || expr_mentions_outer_only_effect(result, outer, inner)
+        }
+        ExprKind::CaseNat { scrutinee, arms } => {
+            expr_mentions_outer_only_effect(scrutinee, outer, inner)
+                || arms
+                    .iter()
+                    .any(|arm| expr_mentions_outer_only_effect(&arm.body, outer, inner))
+        }
+        ExprKind::Call { callee, args } => {
+            expr_mentions_outer_only_effect(callee, outer, inner)
+                || args
+                    .iter()
+                    .any(|arg| expr_mentions_outer_only_effect(arg, outer, inner))
+        }
+        ExprKind::Binary { lhs, rhs, .. } | ExprKind::Pipe { lhs, rhs } => {
+            expr_mentions_outer_only_effect(lhs, outer, inner)
+                || expr_mentions_outer_only_effect(rhs, outer, inner)
+        }
+        ExprKind::Handle { body, clauses } => {
+            let Ok(nested) = HandlerCtx::new(clauses) else {
+                return false;
+            };
+            expr_mentions_outer_only_effect(body, outer, &nested)
+        }
+        ExprKind::Unit | ExprKind::Nat(_) | ExprKind::Var(_) => false,
     }
 }
 
