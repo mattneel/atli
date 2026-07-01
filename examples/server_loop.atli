@@ -1,0 +1,4 @@
+// Deliberately divergent loop.
+fn server_loop(n: Nat) -> Nat div = server_loop(n)
+
+fn main() -> Nat = server_loop(0)

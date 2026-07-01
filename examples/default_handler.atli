@@ -1,0 +1,6 @@
+effect L { op(x: Nat) -> Nat }
+
+fn main() -> Nat = handle L.op(1) {
+  return(x) -> x
+  L.op(p), _ -> 9
+}

@@ -1,8 +1,10 @@
-//! Sprint 01 executable reference for the reduced Atli core calculus.
+//! Executable reference implementation for the reduced Atli core plus the Sprint 05
+//! surface front end.
 //!
-//! Scope is intentionally limited to `docs/calculus.md §10`: grade algebra, an internal
-//! AST, a reference interpreter, a well-typed-by-construction generator, and properties.
-//! There is no parser, type checker, MLIR/codegen, or surface-language implementation.
+//! The verified back end remains scoped to `docs/calculus.md §10`: grade algebra, core AST,
+//! reference interpreter, generator, checker, and properties. The surface parser/elaborator
+//! consumes `docs/syntax.md`'s reduced subset and targets that core; there is still no
+//! MLIR/codegen or byte-level frame layout.
 
 pub mod check;
 pub mod core;
@@ -10,3 +12,7 @@ pub mod gen;
 pub mod grade;
 pub mod interp;
 pub mod props;
+
+pub mod diagnostics;
+pub mod elaborate;
+pub mod surface;

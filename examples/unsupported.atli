@@ -1,0 +1,3 @@
+fn bad(x: ^Nat) -> Nat = x
+
+fn main() -> Nat = bad(0)

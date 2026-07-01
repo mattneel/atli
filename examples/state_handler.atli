@@ -1,0 +1,6 @@
+effect L { op(x: Nat) -> Nat }
+
+fn main() -> Nat = handle L.op(7) {
+  return(x) -> x
+  L.op(p), k -> k(p)
+}

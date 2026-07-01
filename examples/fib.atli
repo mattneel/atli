@@ -1,0 +1,7 @@
+// Structural unary Fibonacci seed accepted by the reduced Nat-only core: fib(0) = 0.
+fn fib(n: Nat) -> Nat = case n {
+  0 -> 0
+  p -> fib(p)
+}
+
+fn main() -> Nat = fib(0)

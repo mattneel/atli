@@ -1,0 +1,7 @@
+// Measure-tagged recursion; the reduced core trusts the measure tag.
+fn log2(n: Nat) -> Nat measure n = case n {
+  0 -> 0
+  p -> log2(p)
+}
+
+fn main() -> Nat = log2(3)
