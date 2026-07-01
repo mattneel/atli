@@ -44,6 +44,7 @@ fn pretty_reparse_elaboration_is_stable_for_examples() {
         "examples/fib.atli",
         "examples/log2.atli",
         "examples/server_loop.atli",
+        "examples/arith.atli",
         "examples/state_handler.atli",
         "examples/default_handler.atli",
         "examples/wedge.atli",
@@ -111,8 +112,9 @@ fn surface_handler_examples_match_hand_built_core() {
 #[test]
 fn cli_runs_examples_and_surfaces_witnesses() {
     let cases = [
-        ("examples/fib.atli", "0\n"),
+        ("examples/fib.atli", "55\n"),
         ("examples/log2.atli", "0\n"),
+        ("examples/arith.atli", "14\n"),
         ("examples/state_handler.atli", "7\n"),
         ("examples/default_handler.atli", "9\n"),
     ];
@@ -156,6 +158,25 @@ fn cli_unsupported_construct_exits_one_with_clear_diagnostic() {
     assert_eq!(code, 1);
     assert!(stderr.contains("uniqueness `^` is not yet in the reduced surface"));
     assert!(stderr.contains("examples/unsupported.atli:1:11"));
+}
+
+#[test]
+fn arithmetic_prelude_injects_only_used_functions() {
+    let default_src = fs::read_to_string("examples/default_handler.atli").unwrap();
+    let default = elaborate_program(&parse_program(&default_src).unwrap()).unwrap();
+    assert!(default.prelude.is_empty());
+    assert!(!default.term.to_string().contains("__atli_add"));
+
+    let arith_src = fs::read_to_string("examples/arith.atli").unwrap();
+    let arith = elaborate_program(&parse_program(&arith_src).unwrap()).unwrap();
+    assert_eq!(
+        arith.prelude,
+        vec!["__atli_pred", "__atli_add", "__atli_sub", "__atli_mul"]
+    );
+    let core = arith.term.to_string();
+    assert!(core.contains("__atli_add"));
+    assert!(core.contains("__atli_sub"));
+    assert!(core.contains("__atli_mul"));
 }
 
 #[test]

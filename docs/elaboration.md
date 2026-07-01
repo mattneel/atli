@@ -29,3 +29,21 @@ core in `docs/calculus.md §10`.
   `inplace`, `move`, `freeze`, `spawn`, `scope`, `if`, type parameters, strings/chars/
   floats, `use`/modules, multiple effect labels) diagnose as "not yet in the reduced
   surface" rather than silently elaborating.
+
+## Arithmetic prelude (Sprint 06)
+
+`+`, `-`, and `*` parse as left-associative binary operators with `*` binding tighter than
+`+`/`-`, matching `docs/syntax.md §1`. They elaborate to injected library functions over
+unary `Nat` only when used:
+
+- `a + b` ⇒ `__atli_add(a, b)`
+- `a - b` ⇒ `__atli_sub(a, b)`, with **monus** semantics: subtraction truncates at zero
+  because reduced `Nat` has no negatives. Surface `Int` remains future work.
+- `a * b` ⇒ `__atli_mul(a, b)`
+
+The injected definitions are higher-order library recursion rather than core primitives.
+Each closes over the first argument and uses a unary structural `fix` over the second
+argument, which matches the current strict-descent checker. `sub` uses an injected private
+`__atli_pred` helper; `mul` depends on `add`. Backends may recognize these injected
+identities and lower them to native arithmetic as a performance decision, while the oracle
+continues to run their unary core definitions.

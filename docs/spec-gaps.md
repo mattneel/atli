@@ -54,17 +54,13 @@ semantics.
   finite `β` for recursive calls on that predecessor and `ω` for non-strict structural
   recursion.
 
-- SPEC-GAP(surface-arithmetic-reduced-core-gap): `docs/syntax.md §1/§4/§5` includes
-  arithmetic operators and uses real Fibonacci-style arithmetic in examples, but the
-  Sprint 05 reduced core has only unary `Nat`, `succ`, and `case` and no primitive
-  addition/subtraction/multiplication. The Sprint 05 parser diagnoses arithmetic tokens
-  as not yet in the reduced surface; `examples/fib.atli` is therefore a structural Nat
-  recursion seed (`fib(0) = 0`) rather than a full Fibonacci implementation. A later
-  surface/core extension must decide whether arithmetic is primitive, elaborated to
-  library recursion, or introduced through a standard prelude.
-
 - SPEC-GAP(surface-measure-typecheck-without-surface-checker): `docs/syntax.md §8` says
   the `measure e` expression should be meaningful at type `Nat`, but Sprint 05 still has
   no surface type checker. The elaborator conservatively accepts only a Nat literal or the
   unary Nat parameter as a measure expression before trusting the existing reduced-core
   `Measure` tag (`SPEC-GAP(measure-tag-trusted-reduced-core)`).
+
+- RESOLVED(surface-arithmetic-reduced-core-gap): Sprint 06 implements `+`, `-`, and `*`
+  as elaborator-injected library recursion over unary `Nat`, not core primitives. `-` is
+  monus (truncated subtraction). Prelude functions are injected only when used; native
+  primitive arithmetic is a backend performance decision, not a core semantic extension.

@@ -43,6 +43,9 @@ pub enum TokenKind {
     Arrow,
     PipeGt,
     Semi,
+    Plus,
+    Minus,
+    Star,
     Eof,
 }
 
@@ -127,6 +130,8 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
             '^' => push_one(&mut out, TokenKind::Caret, idx, &mut idx),
             '=' => push_one(&mut out, TokenKind::Eq, idx, &mut idx),
             ';' => push_one(&mut out, TokenKind::Semi, idx, &mut idx),
+            '+' => push_one(&mut out, TokenKind::Plus, idx, &mut idx),
+            '*' => push_one(&mut out, TokenKind::Star, idx, &mut idx),
             '-' if bytes.get(idx + 1) == Some(&b'>') => {
                 out.push(Token {
                     kind: TokenKind::Arrow,
@@ -141,7 +146,8 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
                 });
                 idx += 2;
             }
-            '+' | '-' | '*' | '/' | '%' | '<' | '>' | '"' | '\'' => {
+            '-' => push_one(&mut out, TokenKind::Minus, idx, &mut idx),
+            '/' | '%' | '<' | '>' | '"' | '\'' => {
                 return Err(LexError {
                     span: Span::new(idx, idx + ch.len_utf8()),
                     message: format!("`{ch}` is not yet in the reduced surface"),

@@ -7,7 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::core::{Handler, RecursionTag, Term, Type};
 use crate::grade::Label;
 use crate::surface::ast::{
-    Boundedness, Decl, Expr, ExprKind, FnDecl, HandleClause, Pattern, Program, Span, TypeExpr,
+    BinaryOp, Boundedness, Decl, Expr, ExprKind, FnDecl, HandleClause, Pattern, Program, Span,
+    TypeExpr,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +16,7 @@ pub struct ElaboratedProgram {
     pub term: Term,
     pub main: Term,
     pub spans: SpanTable,
+    pub prelude: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -73,6 +75,15 @@ struct Elaborator<'a> {
     program: &'a Program,
     functions: BTreeMap<String, FunctionSig>,
     spans: SpanTable,
+    prelude: BTreeSet<PreludeFn>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PreludeFn {
+    Pred,
+    Add,
+    Sub,
+    Mul,
 }
 
 impl<'a> Elaborator<'a> {
@@ -121,6 +132,7 @@ impl<'a> Elaborator<'a> {
             program,
             functions,
             spans: SpanTable::default(),
+            prelude: BTreeSet::new(),
         })
     }
 
@@ -164,10 +176,22 @@ impl<'a> Elaborator<'a> {
                             func.span,
                         );
                     }
+                    let injected = self.prelude_with_dependencies();
+                    for prelude in injected.iter().rev().copied() {
+                        term = self.record(
+                            Term::Let {
+                                var: prelude_name(prelude).into(),
+                                expr: Box::new(prelude_term(prelude)),
+                                body: Box::new(term),
+                            },
+                            func.span,
+                        );
+                    }
                     return Ok(ElaboratedProgram {
                         term,
                         main,
                         spans: self.spans.clone(),
+                        prelude: injected.into_iter().map(prelude_name).collect(),
                     });
                 }
                 let core = self.function_value(&func, &env)?;
@@ -267,6 +291,21 @@ impl<'a> Elaborator<'a> {
                 Term::var(name)
             }
             ExprKind::Call { callee, args } => self.call(callee, args, env, expr.span)?,
+            ExprKind::Binary { op, lhs, rhs } => {
+                let (prelude, name) = match op {
+                    BinaryOp::Add => (PreludeFn::Add, "__atli_add"),
+                    BinaryOp::Sub => (PreludeFn::Sub, "__atli_sub"),
+                    BinaryOp::Mul => (PreludeFn::Mul, "__atli_mul"),
+                };
+                self.prelude.insert(prelude);
+                Term::App(
+                    Box::new(Term::App(
+                        Box::new(Term::var(name)),
+                        Box::new(self.expr(lhs, env)?),
+                    )),
+                    Box::new(self.expr(rhs, env)?),
+                )
+            }
             ExprKind::QualifiedCall { effect, op, args } => {
                 if effect != "L" || op != "op" {
                     return Err(ElaborateError {
@@ -311,6 +350,25 @@ impl<'a> Elaborator<'a> {
             ExprKind::Handle { body, clauses } => self.handle(body, clauses, env, expr.span)?,
         };
         Ok(self.record(term, expr.span))
+    }
+
+    fn prelude_with_dependencies(&self) -> Vec<PreludeFn> {
+        let mut needed = self.prelude.clone();
+        if needed.contains(&PreludeFn::Sub) {
+            needed.insert(PreludeFn::Pred);
+        }
+        if needed.contains(&PreludeFn::Mul) {
+            needed.insert(PreludeFn::Add);
+        }
+        [
+            PreludeFn::Pred,
+            PreludeFn::Add,
+            PreludeFn::Sub,
+            PreludeFn::Mul,
+        ]
+        .into_iter()
+        .filter(|prelude| needed.contains(prelude))
+        .collect()
     }
 
     fn call(
@@ -463,6 +521,100 @@ struct Env {
     cont_vars: BTreeSet<String>,
 }
 
+fn prelude_name(prelude: PreludeFn) -> &'static str {
+    match prelude {
+        PreludeFn::Pred => "__atli_pred",
+        PreludeFn::Add => "__atli_add",
+        PreludeFn::Sub => "__atli_sub",
+        PreludeFn::Mul => "__atli_mul",
+    }
+}
+
+fn prelude_term(prelude: PreludeFn) -> Term {
+    match prelude {
+        PreludeFn::Pred => lam(
+            "n",
+            Term::CaseNat {
+                scrutinee: Box::new(Term::var("n")),
+                zero_body: Box::new(Term::zero()),
+                succ_var: "p".into(),
+                succ_body: Box::new(Term::var("p")),
+            },
+        ),
+        PreludeFn::Add => lam(
+            "a",
+            Term::Fix {
+                func: "__atli_add_loop".into(),
+                param: "b".into(),
+                param_ty: Type::Nat,
+                body: Box::new(Term::CaseNat {
+                    scrutinee: Box::new(Term::var("b")),
+                    zero_body: Box::new(Term::var("a")),
+                    succ_var: "q".into(),
+                    succ_body: Box::new(Term::Succ(Box::new(Term::App(
+                        Box::new(Term::var("__atli_add_loop")),
+                        Box::new(Term::var("q")),
+                    )))),
+                }),
+                tag: RecursionTag::Structural,
+            },
+        ),
+        PreludeFn::Sub => lam(
+            "a",
+            Term::Fix {
+                func: "__atli_sub_loop".into(),
+                param: "b".into(),
+                param_ty: Type::Nat,
+                body: Box::new(Term::CaseNat {
+                    scrutinee: Box::new(Term::var("b")),
+                    zero_body: Box::new(Term::var("a")),
+                    succ_var: "q".into(),
+                    succ_body: Box::new(Term::App(
+                        Box::new(Term::var("__atli_pred")),
+                        Box::new(Term::App(
+                            Box::new(Term::var("__atli_sub_loop")),
+                            Box::new(Term::var("q")),
+                        )),
+                    )),
+                }),
+                tag: RecursionTag::Structural,
+            },
+        ),
+        PreludeFn::Mul => lam(
+            "a",
+            Term::Fix {
+                func: "__atli_mul_loop".into(),
+                param: "b".into(),
+                param_ty: Type::Nat,
+                body: Box::new(Term::CaseNat {
+                    scrutinee: Box::new(Term::var("b")),
+                    zero_body: Box::new(Term::zero()),
+                    succ_var: "q".into(),
+                    succ_body: Box::new(Term::App(
+                        Box::new(Term::App(
+                            Box::new(Term::var("__atli_add")),
+                            Box::new(Term::var("a")),
+                        )),
+                        Box::new(Term::App(
+                            Box::new(Term::var("__atli_mul_loop")),
+                            Box::new(Term::var("q")),
+                        )),
+                    )),
+                }),
+                tag: RecursionTag::Structural,
+            },
+        ),
+    }
+}
+
+fn lam(param: &str, body: Term) -> Term {
+    Term::Lam {
+        param: param.into(),
+        param_ty: Type::Nat,
+        body: Box::new(body),
+    }
+}
+
 fn lower_type(ty: &TypeExpr) -> Result<Type, ElaborateError> {
     match ty {
         TypeExpr::Unit(_) => Ok(Type::Unit),
@@ -514,6 +666,7 @@ fn expr_mentions(expr: &Expr, name: &str) -> bool {
             expr_mentions(callee, name) || args.iter().any(|arg| expr_mentions(arg, name))
         }
         ExprKind::QualifiedCall { args, .. } => args.iter().any(|arg| expr_mentions(arg, name)),
+        ExprKind::Binary { lhs, rhs, .. } => expr_mentions(lhs, name) || expr_mentions(rhs, name),
         ExprKind::Pipe { lhs, rhs } => expr_mentions(lhs, name) || expr_mentions(rhs, name),
         ExprKind::Block { bindings, result } => {
             bindings

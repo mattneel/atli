@@ -518,5 +518,7 @@ record_lit  ::= '.{' (NAME '=' expr)* '}'
 - **Concurrency spelling.** `spawn`/`scope`/`await`/`loop` as keywords vs library forms
   over an `Async` effect.
 - **Module system** in full (§10).
+- **Surface `Int` semantics.** Sprint 06 gives `Nat` subtraction monus semantics; signed
+  `Int` arithmetic remains future work.
 - **`freeze` necessity.** Whether it stays as explicit intent or is dropped entirely in
   favor of silent subsumption.

@@ -1,7 +1,11 @@
-// Structural unary Fibonacci seed accepted by the reduced Nat-only core: fib(0) = 0.
-fn fib(n: Nat) -> Nat = case n {
+// Real Fibonacci under the reduced checker: arithmetic arguments are non-strict, so this
+// algorithm uses the annotated measure rung. In the successor arm, m is n - 1.
+fn fib(n: Nat) -> Nat measure n = case n {
   0 -> 0
-  p -> fib(p)
+  m -> case m {
+    0 -> 1
+    p -> fib(m) + fib(m - 1)
+  }
 }
 
-fn main() -> Nat = fib(0)
+fn main() -> Nat = fib(10)

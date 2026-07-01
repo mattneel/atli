@@ -1,6 +1,6 @@
 use crate::surface::ast::{
-    Binding, Boundedness, CaseArm, Decl, EffectDecl, Expr, ExprKind, FnDecl, HandleClause, Name,
-    Param, Pattern, Program, Span, Spanned, TypeExpr,
+    BinaryOp, Binding, Boundedness, CaseArm, Decl, EffectDecl, Expr, ExprKind, FnDecl,
+    HandleClause, Name, Param, Pattern, Program, Span, Spanned, TypeExpr,
 };
 use crate::surface::lexer::{lex, LexError, Token, TokenKind};
 
@@ -219,12 +219,55 @@ impl Parser {
     }
 
     fn pipe_expr(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.call_expr()?;
+        let mut lhs = self.add_expr()?;
         while self.eat(&TokenKind::PipeGt).is_some() {
-            let rhs = self.call_expr()?;
+            let rhs = self.add_expr()?;
             let span = lhs.span.join(rhs.span);
             lhs = Expr::new(
                 ExprKind::Pipe {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                span,
+            );
+        }
+        Ok(lhs)
+    }
+
+    fn add_expr(&mut self) -> Result<Expr, ParseError> {
+        let mut lhs = self.mul_expr()?;
+        loop {
+            let op = if self.eat(&TokenKind::Plus).is_some() {
+                Some(BinaryOp::Add)
+            } else if self.eat(&TokenKind::Minus).is_some() {
+                Some(BinaryOp::Sub)
+            } else {
+                None
+            };
+            let Some(op) = op else {
+                return Ok(lhs);
+            };
+            let rhs = self.mul_expr()?;
+            let span = lhs.span.join(rhs.span);
+            lhs = Expr::new(
+                ExprKind::Binary {
+                    op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+                span,
+            );
+        }
+    }
+
+    fn mul_expr(&mut self) -> Result<Expr, ParseError> {
+        let mut lhs = self.call_expr()?;
+        while self.eat(&TokenKind::Star).is_some() {
+            let rhs = self.call_expr()?;
+            let span = lhs.span.join(rhs.span);
+            lhs = Expr::new(
+                ExprKind::Binary {
+                    op: BinaryOp::Mul,
                     lhs: Box::new(lhs),
                     rhs: Box::new(rhs),
                 },
@@ -299,10 +342,20 @@ impl Parser {
             TokenKind::Number(value) => Ok(Expr::new(ExprKind::Nat(value), tok.span)),
             TokenKind::Ident(name) => Ok(Expr::new(ExprKind::Var(name), tok.span)),
             TokenKind::Underscore => Ok(Expr::new(ExprKind::Var("_".into()), tok.span)),
-            TokenKind::LParen if self.eat(&TokenKind::RParen).is_some() => Ok(Expr::new(
-                ExprKind::Unit,
-                tok.span.join(self.previous().span),
-            )),
+            TokenKind::LParen => {
+                if self.eat(&TokenKind::RParen).is_some() {
+                    Ok(Expr::new(
+                        ExprKind::Unit,
+                        tok.span.join(self.previous().span),
+                    ))
+                } else {
+                    let inner = self.expr()?;
+                    let end = self
+                        .expect(&TokenKind::RParen, "expected `)` after expression")?
+                        .span;
+                    Ok(Expr::new(inner.kind, tok.span.join(end)))
+                }
+            }
             TokenKind::LBrace => self.block_after_lbrace(tok.span),
             TokenKind::Case => self.case_after_keyword(tok.span),
             TokenKind::Handle => self.handle_after_keyword(tok.span),

@@ -124,6 +124,11 @@ pub enum ExprKind {
         op: Name,
         args: Vec<Expr>,
     },
+    Binary {
+        op: BinaryOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
     Pipe {
         lhs: Box<Expr>,
         rhs: Box<Expr>,
@@ -140,6 +145,13 @@ pub enum ExprKind {
         body: Box<Expr>,
         clauses: Vec<HandleClause>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
