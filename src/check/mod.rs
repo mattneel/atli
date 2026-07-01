@@ -1,0 +1,671 @@
+//! Graded checker for the reduced Atli core.
+//!
+//! The checker implements the executable Sprint 03 version of `docs/calculus.md §4` and
+//! emits boundedness constraints for the `§7` solver. It deliberately does not call
+//! `gen::derive_witness`; differential tests compare these independent implementations.
+//!
+//! Phase gate (`docs/calculus.md §7.3`, with §2.3's under-allocation warning):
+//! `CheckedWitness` is constructible only from `CertifiedGrade`, never from
+//! `PendingGrade`.
+//!
+//! ```compile_fail
+//! use atli::check::{CheckedWitness, PendingGrade};
+//! use atli::check::solve::BoundExpr;
+//! use atli::grade::Bound;
+//! let pending: PendingGrade<()> = PendingGrade::new(BoundExpr::constant(Bound::ZERO));
+//! let _ = CheckedWitness::from_pending_for_doctest(pending);
+//! ```
+
+mod error;
+pub mod solve;
+
+use std::collections::BTreeSet;
+
+pub use error::{TypeError, TypeErrorKind};
+pub use solve::{CertifiedGrade, PendingGrade, SolverStats};
+
+use crate::core::{
+    ContinuationUseFacts, CoverageTag, Divergence, Handler, RecursionTag, Term, Type, Witness,
+};
+use crate::grade::{Bound, Eff, Label, Region};
+use solve::{solve, BoundExpr, ConstraintSystem, UnknownId};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedWitness {
+    witness: Witness,
+    stats: SolverStats,
+    certified_bound: CertifiedGrade,
+}
+
+impl CheckedWitness {
+    #[must_use]
+    pub fn witness(&self) -> &Witness {
+        &self.witness
+    }
+
+    #[must_use]
+    pub fn solver_stats(&self) -> &SolverStats {
+        &self.stats
+    }
+
+    fn new(mut partial: PartialWitness, certified: CertifiedGrade, stats: SolverStats) -> Self {
+        partial.bound = BoundExpr::constant(certified.get());
+        let witness = partial.into_witness(certified.get());
+        Self {
+            witness,
+            stats,
+            certified_bound: certified,
+        }
+    }
+}
+
+pub fn check(term: &Term) -> Result<CheckedWitness, TypeError> {
+    let mut checker = Checker {
+        system: ConstraintSystem::new(),
+    };
+    let partial = checker.infer(term, &Env::default())?;
+    let output = solve(&checker.system);
+    let pending = PendingGrade::<CheckedWitness>::new(partial.bound.clone());
+    let certified = pending.certify(&output.values);
+    Ok(CheckedWitness::new(partial, certified, output.stats))
+}
+
+#[derive(Debug, Clone)]
+struct PartialWitness {
+    ty: Type,
+    effects: Eff,
+    bound: BoundExpr,
+    region: Region,
+    continuation_uses: ContinuationUseFacts,
+    divergence: Divergence,
+    coverage: BTreeSet<CoverageTag>,
+}
+
+impl PartialWitness {
+    fn pure(ty: Type) -> Self {
+        Self {
+            ty,
+            effects: Eff::empty(),
+            bound: BoundExpr::constant(Bound::ZERO),
+            region: Region::Arena,
+            continuation_uses: ContinuationUseFacts {
+                introduced: 0,
+                resumed: 0,
+                dropped: 0,
+            },
+            divergence: Divergence::Terminates,
+            coverage: BTreeSet::new(),
+        }
+    }
+
+    fn combine(mut self, rhs: &Self) -> Self {
+        self.effects = self.effects.join(&rhs.effects);
+        self.bound = self.bound.seq(rhs.bound.clone());
+        self.region = self.region.meet(rhs.region);
+        self.continuation_uses.introduced += rhs.continuation_uses.introduced;
+        self.continuation_uses.resumed += rhs.continuation_uses.resumed;
+        self.continuation_uses.dropped += rhs.continuation_uses.dropped;
+        if rhs.divergence == Divergence::Div {
+            self.divergence = Divergence::Div;
+        }
+        self.coverage.extend(rhs.coverage.iter().copied());
+        self
+    }
+
+    fn into_witness(self, bound: Bound) -> Witness {
+        Witness {
+            ty: self.ty,
+            effects: self.effects,
+            bound,
+            region: self.region,
+            continuation_uses: self.continuation_uses,
+            divergence: self.divergence,
+            coverage: self.coverage,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct Env {
+    vars: Vec<(String, Type)>,
+    cont_vars: BTreeSet<String>,
+    rec: Option<RecContext>,
+}
+
+impl Env {
+    fn with_var(&self, name: String, ty: Type) -> Self {
+        let mut next = self.clone();
+        next.vars.push((name, ty));
+        next
+    }
+
+    fn with_cont(&self, name: &str) -> Self {
+        let mut next = self.with_var(
+            name.into(),
+            Type::Cont(Box::new(Type::Nat), Box::new(Type::Nat)),
+        );
+        next.cont_vars.insert(name.into());
+        next
+    }
+
+    fn with_rec(&self, rec: RecContext) -> Self {
+        let mut next = self.clone();
+        next.vars.push((
+            rec.func.clone(),
+            Type::Arrow(Box::new(Type::Nat), Box::new(Type::Nat)),
+        ));
+        next.vars.push((rec.param.clone(), Type::Nat));
+        next.rec = Some(rec);
+        next
+    }
+
+    fn with_strict_var(&self, strict_var: &str) -> Self {
+        let mut next = self.clone();
+        if let Some(rec) = &mut next.rec {
+            rec.strict_var = Some(strict_var.into());
+        }
+        next
+    }
+
+    fn lookup(&self, name: &str) -> Option<Type> {
+        self.vars
+            .iter()
+            .rev()
+            .find(|(found, _)| found == name)
+            .map(|(_, ty)| ty.clone())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RecContext {
+    func: String,
+    param: String,
+    tag: RecursionTag,
+    strict_var: Option<String>,
+    unknown: UnknownId,
+}
+
+struct Checker {
+    system: ConstraintSystem,
+}
+
+impl Checker {
+    fn infer(&mut self, term: &Term, env: &Env) -> Result<PartialWitness, TypeError> {
+        match term {
+            Term::Unit => Ok(PartialWitness::pure(Type::Unit)),
+            Term::Zero => Ok(PartialWitness::pure(Type::Nat)),
+            Term::Succ(inner) => {
+                let mut out = self.infer(inner, env)?;
+                expect_type(&out.ty, &Type::Nat, term, "Succ", "§4.2")?;
+                out.ty = Type::Nat;
+                out.bound = contextualize(&out);
+                Ok(out)
+            }
+            Term::Var(name) => env.lookup(name).map(PartialWitness::pure).ok_or_else(|| {
+                TypeError::new(
+                    "Var",
+                    "§4.1",
+                    term,
+                    format!("unbound variable `{name}`"),
+                    TypeErrorKind::UnboundVariable(name.clone()),
+                )
+            }),
+            Term::Lam {
+                param,
+                param_ty,
+                body,
+            } => {
+                let body = self.infer(body, &env.with_var(param.clone(), param_ty.clone()))?;
+                Ok(PartialWitness::pure(Type::Arrow(
+                    Box::new(param_ty.clone()),
+                    Box::new(body.ty),
+                )))
+            }
+            Term::App(fun, arg) => self.infer_app(fun, arg, env, term),
+            Term::Let { var, expr, body } => {
+                let expr_w = self.infer(expr, env)?;
+                let body_w = self.infer(body, &env.with_var(var.clone(), expr_w.ty.clone()))?;
+                let result_ty = body_w.ty.clone();
+                let expr_bound = contextualize(&expr_w);
+                let mut out = expr_w.combine(&body_w);
+                out.ty = result_ty;
+                out.bound = expr_bound.seq(body_w.bound);
+                out.coverage.insert(CoverageTag::Let);
+                Ok(out)
+            }
+            Term::CaseNat {
+                scrutinee,
+                zero_body,
+                succ_var,
+                succ_body,
+            } => self.infer_case(scrutinee, zero_body, succ_var, succ_body, env, term),
+            Term::Fix { .. } => self.infer_fix(term, env),
+            Term::Perform(label, arg) => {
+                let mut out = self.infer(arg, env)?;
+                expect_type(&out.ty, &Type::Nat, term, "Perform", "§4.6")?;
+                out.ty = Type::Nat;
+                out.effects = out.effects.join(&Eff::singleton(*label));
+                out.coverage.insert(CoverageTag::Perform);
+                Ok(out)
+            }
+            Term::Handle { body, handler } => self.infer_handle(body, handler, env, term),
+            Term::Resume { kont, arg } => {
+                let arg_w = self.infer(arg, env)?;
+                let kont_resumes =
+                    matches!(&**kont, Term::Var(name) if env.cont_vars.contains(name));
+                let kont_ty = if kont_resumes {
+                    Type::Cont(Box::new(Type::Nat), Box::new(Type::Nat))
+                } else {
+                    self.infer(kont, env)?.ty
+                };
+                if !matches!(kont_ty, Type::Cont(_, _)) {
+                    return Err(TypeError::new(
+                        "Resume",
+                        "§4.7/§5",
+                        term,
+                        format!("expected continuation, found {kont_ty}"),
+                        TypeErrorKind::ExpectedContinuation(kont_ty),
+                    ));
+                }
+                let mut out = arg_w;
+                expect_type(&out.ty, &Type::Nat, term, "Resume", "§4.7/§5")?;
+                out.ty = Type::Nat;
+                if kont_resumes {
+                    out.continuation_uses.resumed += 1;
+                }
+                Ok(out)
+            }
+            Term::Cont(_) => Ok(PartialWitness::pure(Type::Cont(
+                Box::new(Type::Nat),
+                Box::new(Type::Nat),
+            ))),
+        }
+    }
+
+    fn infer_app(
+        &mut self,
+        fun: &Term,
+        arg: &Term,
+        env: &Env,
+        whole: &Term,
+    ) -> Result<PartialWitness, TypeError> {
+        if let (Term::Var(func), Some(rec)) = (fun, env.rec.as_ref()) {
+            if func == &rec.func {
+                let arg_w = self.infer(arg, env)?;
+                expect_type(&arg_w.ty, &Type::Nat, whole, "App/Fix", "§4.8/§7.1")?;
+                let strict =
+                    matches!(arg, Term::Var(name) if rec.strict_var.as_ref() == Some(name));
+                let mut out = arg_w;
+                out.ty = Type::Nat;
+                out.bound = match rec.tag {
+                    RecursionTag::Structural if strict => BoundExpr::constant(Bound::finite(1)),
+                    RecursionTag::Structural => {
+                        return Err(TypeError::new(
+                            "Fix-Structural",
+                            "§4.8/§7.1",
+                            whole,
+                            "recursive call argument is not the peeled predecessor",
+                            TypeErrorKind::NonStrictStructuralRecursion,
+                        ));
+                    }
+                    RecursionTag::Measure => BoundExpr::constant(Bound::finite(1)),
+                    RecursionTag::Div => {
+                        BoundExpr::unknown(rec.unknown).seq(BoundExpr::constant(Bound::finite(1)))
+                    }
+                };
+                if rec.tag == RecursionTag::Div {
+                    out.divergence = Divergence::Div;
+                }
+                return Ok(out);
+            }
+        }
+
+        if let Term::Lam {
+            param,
+            param_ty,
+            body,
+        } = fun
+        {
+            let arg_w = self.infer(arg, env)?;
+            expect_type(&arg_w.ty, param_ty, whole, "App", "§4.3")?;
+            let body_w = self.infer(body, &env.with_var(param.clone(), param_ty.clone()))?;
+            let result_ty = body_w.ty.clone();
+            let arg_bound = contextualize(&arg_w);
+            let mut out = arg_w.combine(&body_w);
+            out.ty = result_ty;
+            out.bound = arg_bound.seq(body_w.bound);
+            out.coverage.insert(CoverageTag::LambdaApp);
+            return Ok(out);
+        }
+
+        let fun_w = self.infer(fun, env)?;
+        let arg_w = self.infer(arg, env)?;
+        let result_ty = match &fun_w.ty {
+            Type::Arrow(arg_ty, ret_ty) => {
+                expect_type(&arg_w.ty, arg_ty, whole, "App", "§4.3")?;
+                (**ret_ty).clone()
+            }
+            other => {
+                return Err(TypeError::new(
+                    "App",
+                    "§4.3",
+                    whole,
+                    format!("expected function, found {other}"),
+                    TypeErrorKind::ExpectedFunction(other.clone()),
+                ));
+            }
+        };
+        let fun_bound = contextualize(&fun_w);
+        let arg_bound = contextualize(&arg_w);
+        let mut out = fun_w.combine(&arg_w);
+        out.ty = result_ty;
+        out.bound = fun_bound.seq(arg_bound);
+        Ok(out)
+    }
+
+    fn infer_case(
+        &mut self,
+        scrutinee: &Term,
+        zero_body: &Term,
+        succ_var: &str,
+        succ_body: &Term,
+        env: &Env,
+        whole: &Term,
+    ) -> Result<PartialWitness, TypeError> {
+        let scrut_w = self.infer(scrutinee, env)?;
+        expect_type(&scrut_w.ty, &Type::Nat, whole, "Case-Nat", "§4.2")?;
+        let zero_w = self.infer(zero_body, env)?;
+        let succ_env = env.with_var(succ_var.into(), Type::Nat);
+        let succ_env = if matches!(scrutinee, Term::Var(name) if env.rec.as_ref().is_some_and(|rec| rec.param == *name))
+        {
+            succ_env.with_strict_var(succ_var)
+        } else {
+            succ_env
+        };
+        let succ_w = self.infer(succ_body, &succ_env)?;
+        expect_type(&succ_w.ty, &zero_w.ty, whole, "Case-Nat", "§4.2")?;
+        let scrut_bound = contextualize(&scrut_w);
+        let result_ty = zero_w.ty.clone();
+        let branch_bound = zero_w.bound.clone().join(succ_w.bound.clone());
+        let divergence = case_divergence(scrutinee, &scrut_w, &zero_w, &succ_w);
+        let mut out = scrut_w.combine(&zero_w).combine(&succ_w);
+        out.ty = result_ty;
+        out.bound = scrut_bound.seq(branch_bound);
+        out.divergence = divergence;
+        Ok(out)
+    }
+
+    fn infer_fix(&mut self, whole: &Term, env: &Env) -> Result<PartialWitness, TypeError> {
+        let Term::Fix {
+            func,
+            param,
+            param_ty,
+            body,
+            tag,
+        } = whole
+        else {
+            unreachable!("infer_fix is only called for fix terms")
+        };
+        expect_type(param_ty, &Type::Nat, whole, "Fix", "§4.8")?;
+        let unknown = self.system.fresh_unknown();
+        let rec = RecContext {
+            func: func.clone(),
+            param: param.clone(),
+            tag: *tag,
+            strict_var: None,
+            unknown,
+        };
+        let body_w = self.infer(body, &env.with_rec(rec))?;
+        let body_expr = body_w.bound.clone();
+        let constraint = if *tag == RecursionTag::Div {
+            BoundExpr::unknown(unknown).seq(BoundExpr::constant(Bound::finite(1)))
+        } else {
+            body_expr.clone()
+        };
+        self.system.constrain(unknown, constraint);
+        let mut out = PartialWitness::pure(Type::Arrow(Box::new(Type::Nat), Box::new(body_w.ty)));
+        out.coverage = body_w.coverage;
+        out.bound = match tag {
+            RecursionTag::Structural => BoundExpr::unknown(unknown),
+            RecursionTag::Measure => {
+                BoundExpr::unknown(unknown).join(BoundExpr::constant(Bound::finite(1)))
+            }
+            RecursionTag::Div => BoundExpr::unknown(unknown),
+        };
+        out.divergence = match tag {
+            RecursionTag::Div => Divergence::Div,
+            RecursionTag::Structural | RecursionTag::Measure => body_w.divergence,
+        };
+        match tag {
+            RecursionTag::Structural => {
+                out.coverage.insert(CoverageTag::FixStructural);
+            }
+            RecursionTag::Measure => {
+                out.coverage.insert(CoverageTag::FixMeasure);
+            }
+            RecursionTag::Div => {}
+        }
+        Ok(out)
+    }
+
+    fn infer_handle(
+        &mut self,
+        body: &Term,
+        handler: &Handler,
+        env: &Env,
+        whole: &Term,
+    ) -> Result<PartialWitness, TypeError> {
+        let body_w = self.infer(body, env)?;
+        let ret_w = self.infer(
+            &handler.return_body,
+            &env.with_var(handler.return_var.clone(), body_w.ty.clone()),
+        )?;
+        let op_env = env
+            .with_var(handler.op_param.clone(), Type::Nat)
+            .with_cont(&handler.op_k);
+        let op_w = self.infer(&handler.op_body, &op_env)?;
+        expect_type(&op_w.ty, &ret_w.ty, whole, "Handle", "§4.7")?;
+        let usage =
+            classify_handler_k_usage(&handler.op_body, &handler.op_k).map_err(|message| {
+                TypeError::new(
+                    "Handle",
+                    "§4.7",
+                    &handler.op_body,
+                    message.clone(),
+                    TypeErrorKind::HandlerContinuationUsage(message),
+                )
+            })?;
+        let introduced = u32::from(body_w.effects.contains(handler.op_label));
+        let resumes = u32::from(usage == KUsage::Resumed);
+        let dropped = introduced.saturating_sub(resumes);
+        let op_effective_bound = if usage == KUsage::Resumed {
+            op_w.bound.clone().seq(body_w.bound.clone())
+        } else {
+            op_w.bound.clone()
+        };
+        let mut out = PartialWitness::pure(ret_w.ty.clone());
+        out.effects = body_w
+            .effects
+            .without(handler.op_label)
+            .join(&ret_w.effects)
+            .join(&op_w.effects);
+        out.bound = ret_w.bound.clone().join(op_effective_bound);
+        out.region = body_w.region.meet(ret_w.region).meet(op_w.region);
+        out.continuation_uses = ContinuationUseFacts {
+            introduced,
+            resumed: resumes,
+            dropped,
+        };
+        out.divergence = if body_w.divergence == Divergence::Div
+            || ret_w.divergence == Divergence::Div
+            || op_w.divergence == Divergence::Div
+        {
+            Divergence::Div
+        } else {
+            Divergence::Terminates
+        };
+        out.coverage = body_w.coverage;
+        out.coverage.extend(ret_w.coverage.iter().copied());
+        out.coverage.extend(op_w.coverage.iter().copied());
+        out.coverage.insert(if usage == KUsage::Resumed {
+            CoverageTag::HandleResuming
+        } else {
+            CoverageTag::HandleDropped
+        });
+        Ok(out)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KUsage {
+    Dropped,
+    Resumed,
+}
+
+fn classify_handler_k_usage(term: &Term, k: &str) -> Result<KUsage, String> {
+    let mentions = free_var_count(term, k);
+    let direct_resumes = direct_resume_count(term, k);
+    match (mentions, direct_resumes) {
+        (0, 0) => Ok(KUsage::Dropped),
+        (1, 1) => Ok(KUsage::Resumed),
+        (0, _) => Err("resume count impossible without k mention".into()),
+        (_, 0) => Err(format!(
+            "extra-mention: `{k}` appears free but is never directly resumed"
+        )),
+        _ => Err(format!(
+            "one-resume-required: `{k}` has {mentions} free mentions and {direct_resumes} direct resumes"
+        )),
+    }
+}
+
+fn contextualize(child: &PartialWitness) -> BoundExpr {
+    if child.effects.contains(Label::L) {
+        child
+            .bound
+            .clone()
+            .seq(BoundExpr::constant(Bound::finite(1)))
+    } else {
+        child.bound.clone()
+    }
+}
+
+fn case_divergence(
+    scrutinee: &Term,
+    scrut_w: &PartialWitness,
+    zero_w: &PartialWitness,
+    succ_w: &PartialWitness,
+) -> Divergence {
+    if scrut_w.divergence == Divergence::Div {
+        return Divergence::Div;
+    }
+    match scrutinee {
+        Term::Zero => zero_w.divergence,
+        Term::Succ(_) => succ_w.divergence,
+        _ if zero_w.divergence == Divergence::Div && succ_w.divergence == Divergence::Div => {
+            Divergence::Div
+        }
+        _ => Divergence::Terminates,
+    }
+}
+
+fn expect_type(
+    found: &Type,
+    expected: &Type,
+    term: &Term,
+    rule: &'static str,
+    section: &'static str,
+) -> Result<(), TypeError> {
+    if found == expected {
+        Ok(())
+    } else {
+        Err(TypeError::new(
+            rule,
+            section,
+            term,
+            format!("expected {expected}, found {found}"),
+            TypeErrorKind::TypeMismatch {
+                expected: expected.clone(),
+                found: found.clone(),
+            },
+        ))
+    }
+}
+
+fn free_var_count(term: &Term, name: &str) -> usize {
+    match term {
+        Term::Var(var) => usize::from(var == name),
+        Term::Unit | Term::Zero | Term::Cont(_) => 0,
+        Term::Succ(inner) | Term::Perform(_, inner) => free_var_count(inner, name),
+        Term::Lam { param, body, .. } => usize::from(param != name) * free_var_count(body, name),
+        Term::App(fun, arg) | Term::Resume { kont: fun, arg } => {
+            free_var_count(fun, name) + free_var_count(arg, name)
+        }
+        Term::Let { var, expr, body } => {
+            free_var_count(expr, name) + usize::from(var != name) * free_var_count(body, name)
+        }
+        Term::Fix {
+            func, param, body, ..
+        } => usize::from(func != name && param != name) * free_var_count(body, name),
+        Term::CaseNat {
+            scrutinee,
+            zero_body,
+            succ_var,
+            succ_body,
+        } => {
+            free_var_count(scrutinee, name)
+                + free_var_count(zero_body, name)
+                + usize::from(succ_var != name) * free_var_count(succ_body, name)
+        }
+        Term::Handle { body, handler } => {
+            free_var_count(body, name)
+                + usize::from(handler.return_var != name)
+                    * free_var_count(&handler.return_body, name)
+                + usize::from(handler.op_param != name && handler.op_k != name)
+                    * free_var_count(&handler.op_body, name)
+        }
+    }
+}
+
+fn direct_resume_count(term: &Term, name: &str) -> usize {
+    match term {
+        Term::Resume { kont, arg } => {
+            let here = usize::from(matches!(&**kont, Term::Var(var) if var == name));
+            let nested = if here == 0 {
+                direct_resume_count(kont, name)
+            } else {
+                0
+            };
+            here + nested + direct_resume_count(arg, name)
+        }
+        Term::Var(_) | Term::Unit | Term::Zero | Term::Cont(_) => 0,
+        Term::Succ(inner) | Term::Perform(_, inner) => direct_resume_count(inner, name),
+        Term::Lam { param, body, .. } => {
+            usize::from(param != name) * direct_resume_count(body, name)
+        }
+        Term::App(fun, arg) => direct_resume_count(fun, name) + direct_resume_count(arg, name),
+        Term::Let { var, expr, body } => {
+            direct_resume_count(expr, name)
+                + usize::from(var != name) * direct_resume_count(body, name)
+        }
+        Term::Fix {
+            func, param, body, ..
+        } => usize::from(func != name && param != name) * direct_resume_count(body, name),
+        Term::CaseNat {
+            scrutinee,
+            zero_body,
+            succ_var,
+            succ_body,
+        } => {
+            direct_resume_count(scrutinee, name)
+                + direct_resume_count(zero_body, name)
+                + usize::from(succ_var != name) * direct_resume_count(succ_body, name)
+        }
+        Term::Handle { body, handler } => {
+            direct_resume_count(body, name)
+                + usize::from(handler.return_var != name)
+                    * direct_resume_count(&handler.return_body, name)
+                + usize::from(handler.op_param != name && handler.op_k != name)
+                    * direct_resume_count(&handler.op_body, name)
+        }
+    }
+}

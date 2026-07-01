@@ -4,6 +4,7 @@
 //! AST, a reference interpreter, a well-typed-by-construction generator, and properties.
 //! There is no parser, type checker, MLIR/codegen, or surface-language implementation.
 
+pub mod check;
 pub mod core;
 pub mod gen;
 pub mod grade;

@@ -258,3 +258,102 @@ fn divergent_fix_exhausts_budget_when_tagged_div() {
     assert_eq!(report.outcome, Outcome::BudgetExhaustedDiv);
     assert!(report.trace.contains(&Rule::Unfold));
 }
+
+#[test]
+fn checker_rejects_mention_without_resume_wedge() {
+    let body = Term::Let {
+        var: "a".into(),
+        expr: Box::new(Term::Perform(Label::L, Box::new(Term::nat(1)))),
+        body: Box::new(Term::var("a")),
+    };
+    let op_body = Term::Let {
+        var: "z".into(),
+        expr: Box::new(Term::var("k")),
+        body: Box::new(Term::nat(9)),
+    };
+    let term = Term::Handle {
+        body: Box::new(body),
+        handler: identity_handler(op_body),
+    };
+    let err = atli::check::check(&term).expect_err("checker must reject the wedge");
+    assert_eq!(err.rule, "Handle");
+    assert_eq!(err.section, "§4.7");
+    assert!(err.message.contains("extra-mention"), "{err}");
+}
+
+#[test]
+fn checker_rejects_non_strict_structural_recursion() {
+    let fix = Term::Fix {
+        func: "f".into(),
+        param: "x".into(),
+        param_ty: Type::Nat,
+        body: Box::new(Term::App(
+            Box::new(Term::var("f")),
+            Box::new(Term::var("x")),
+        )),
+        tag: RecursionTag::Structural,
+    };
+    let err = atli::check::check(&fix).expect_err("checker must reject non-strict structural fix");
+    assert_eq!(err.rule, "Fix-Structural");
+    assert_eq!(err.section, "§4.8/§7.1");
+    assert!(err.message.contains("peeled predecessor"), "{err}");
+}
+
+#[test]
+fn checker_reports_plain_type_mismatch() {
+    let term = Term::Succ(Box::new(Term::unit()));
+    let err = atli::check::check(&term).expect_err("succ unit is ill typed");
+    assert_eq!(err.rule, "Succ");
+    assert_eq!(err.section, "§4.2");
+    assert!(err.message.contains("expected Nat"), "{err}");
+}
+
+#[test]
+fn solver_golden_multi_node_scc_converges() {
+    use atli::check::solve::{solve, BoundExpr, ConstraintSystem};
+    let mut system = ConstraintSystem::new();
+    let a = system.fresh_unknown();
+    let b = system.fresh_unknown();
+    system.constrain(
+        a,
+        BoundExpr::unknown(b).join(BoundExpr::constant(Bound::finite(2))),
+    );
+    system.constrain(b, BoundExpr::unknown(a));
+    let solved = solve(&system);
+    assert_eq!(solved.values[&a], Bound::finite(2));
+    assert_eq!(solved.values[&b], Bound::finite(2));
+    assert!(solved.stats.scc_sizes.contains(&2));
+}
+
+#[test]
+fn solver_golden_widening_fires_for_growing_cycle() {
+    use atli::check::solve::{solve, BoundExpr, ConstraintSystem};
+    let mut system = ConstraintSystem::new();
+    let a = system.fresh_unknown();
+    system.constrain(
+        a,
+        BoundExpr::unknown(a).seq(BoundExpr::constant(Bound::finite(1))),
+    );
+    let solved = solve(&system);
+    assert_eq!(solved.values[&a], Bound::Omega);
+    assert!(solved.stats.widening_fires > 0);
+}
+
+#[test]
+fn checker_div_fix_exercises_widening_and_classifies_div() {
+    let fix = Term::Fix {
+        func: "f".into(),
+        param: "x".into(),
+        param_ty: Type::Nat,
+        body: Box::new(Term::App(
+            Box::new(Term::var("f")),
+            Box::new(Term::var("x")),
+        )),
+        tag: RecursionTag::Div,
+    };
+    let checked = atli::check::check(&Term::App(Box::new(fix), Box::new(Term::zero())))
+        .expect("div-tagged recursion is accepted at ω");
+    assert_eq!(checked.witness().bound, Bound::Omega);
+    assert_eq!(checked.witness().divergence, atli::core::Divergence::Div);
+    assert!(checked.solver_stats().widening_fires > 0);
+}

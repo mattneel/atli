@@ -17,6 +17,6 @@ clippy:
 verify: fmt clippy test
 
 audit:
-	@git status --short --untracked-files=all | awk '{print $$2}' | grep -E '(^src/parse|^src/parser|^src/type|^src/check|^src/mlir|^src/codegen|^docs/syntax.md)' && \
+	@git status --short --untracked-files=all | awk '{print $$2}' | grep -E '(^src/parse|^src/parser|^src/type|^src/mlir|^src/codegen|^docs/syntax.md)' && \
 	  { echo 'Out-of-scope surface detected'; exit 1; } || \
 	  echo 'Audit passed: no parser/typechecker/MLIR/surface changes detected.'

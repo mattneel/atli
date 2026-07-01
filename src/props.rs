@@ -1,6 +1,6 @@
 //! Differential property harness for generated reduced-core terms.
 //!
-//! These tests are the Sprint 02 empirical checks for `docs/calculus.md §8`: generated
+//! These tests are the Sprint 02/Sprint 03 empirical checks for `docs/calculus.md §8`: generated
 //! terms are built by a type-directed choice-sequence generator, witnesses are re-derived
 //! structurally, and the interpreter independently measures realized behavior.
 
@@ -9,6 +9,7 @@ mod tests {
     use proptest::prelude::*;
     use proptest::test_runner::{Config, RngSeed, TestRunner};
 
+    use crate::check::check;
     use crate::core::{CoverageTag, Divergence, ExpectedOutcome, GeneratedTerm};
     use crate::gen::{
         coverage_counts, derive_witness, distribution, fixed_seed_sample, generated_from_choices,
@@ -63,6 +64,20 @@ mod tests {
             return;
         }
 
+        let checked = check(&generated.term).unwrap_or_else(|err| {
+            panic!(
+                "seed {seed:#x}: checker rejected safe generated term {}: {err}: {}",
+                generated.name, generated.term
+            )
+        });
+        assert_eq!(
+            checked.witness(),
+            &generated.witness,
+            "seed {seed:#x}: checker/derive witness disagreement for {}: {}",
+            generated.name,
+            generated.term
+        );
+
         let progress = classify_progress(generated.term.clone());
         assert!(
             matches!(progress, Outcome::Value | Outcome::Stepable),
@@ -109,10 +124,10 @@ mod tests {
             ),
         }
 
-        if let Bound::Finite(bound) = generated.witness.bound {
+        if let Bound::Finite(bound) = checked.witness().bound {
             assert!(
                 first.max_frame <= bound,
-                "seed {seed:#x}: boundedness failed for {}: max_frame {} > β {}: {}",
+                "seed {seed:#x}: checker-certified boundedness failed for {}: max_frame {} > β {}: {}",
                 generated.name,
                 first.max_frame,
                 bound,
