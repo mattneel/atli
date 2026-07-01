@@ -134,11 +134,27 @@ pub struct Witness {
     pub coverage: BTreeSet<CoverageTag>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpectedOutcome {
+    Safe,
+    UnhandledOperation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GenerationFacts {
+    pub depth: usize,
+    pub nested_handlers: bool,
+    pub strict_rec_calls: usize,
+    pub non_strict_rec_calls: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratedTerm {
     pub term: Term,
     pub witness: Witness,
     pub name: &'static str,
+    pub expected: ExpectedOutcome,
+    pub facts: GenerationFacts,
 }
 
 impl Term {

@@ -1,29 +1,38 @@
-//! Property harness for generated reduced-core terms.
+//! Differential property harness for generated reduced-core terms.
 //!
-//! These tests are the Sprint 01 empirical checks for `docs/calculus.md §8` obligations.
+//! These tests are the Sprint 02 empirical checks for `docs/calculus.md §8`: generated
+//! terms are built by a type-directed choice-sequence generator, witnesses are re-derived
+//! structurally, and the interpreter independently measures realized behavior.
 
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
     use proptest::test_runner::{Config, RngSeed, TestRunner};
 
-    use crate::core::{CoverageTag, Divergence, GeneratedTerm};
+    use crate::core::{CoverageTag, Divergence, ExpectedOutcome, GeneratedTerm};
     use crate::gen::{
-        coverage_counts, fixed_seed_sample, generated_case, FIXED_SEED, REQUIRED_COVERAGE,
-        SAMPLE_SIZE, STEP_BUDGET,
+        coverage_counts, derive_witness, distribution, fixed_seed_sample, generated_from_choices,
+        FIXED_SEED, MAX_CHOICES, REQUIRED_COVERAGE, SAMPLE_SIZE, STEP_BUDGET,
     };
     use crate::grade::Bound;
     use crate::interp::{classify_progress, eval, Outcome};
 
     fn generated_strategy() -> impl Strategy<Value = GeneratedTerm> {
-        any::<u8>().prop_map(generated_case)
+        prop::collection::vec(any::<u8>(), 1..=MAX_CHOICES).prop_map(generated_from_choices)
     }
 
     fn assert_acceptance(generated: GeneratedTerm) {
-        let progress = classify_progress(generated.term.clone());
+        let seed = FIXED_SEED;
+        let rederived = derive_witness(&generated.term);
+        assert_eq!(
+            generated.witness, rederived,
+            "seed {seed:#x}: stale witness for {}: {}",
+            generated.name, generated.term
+        );
         assert!(
-            matches!(progress, Outcome::Value | Outcome::Stepable),
-            "progress failed for {}: {progress:?}: {}",
+            generated.witness.continuation_uses.resumed
+                <= generated.witness.continuation_uses.introduced,
+            "seed {seed:#x}: affine witness violation for {}: {}",
             generated.name,
             generated.term
         );
@@ -34,63 +43,86 @@ mod tests {
         assert_eq!(
             first.normalized_for_determinism(),
             second.normalized_for_determinism(),
-            "determinism failed for {}",
-            generated.name
+            "seed {seed:#x}: determinism failed for {}: {}",
+            generated.name,
+            generated.term
+        );
+
+        if generated.expected == ExpectedOutcome::UnhandledOperation {
+            assert_eq!(
+                classify_progress(generated.term.clone()),
+                Outcome::StuckUnhandledOperation,
+                "seed {seed:#x}: negative perform fixture should be immediately stuck: {}",
+                generated.term
+            );
+            assert_eq!(
+                first.outcome,
+                Outcome::StuckUnhandledOperation,
+                "seed {seed:#x}: negative perform fixture did not detect unhandled operation"
+            );
+            return;
+        }
+
+        let progress = classify_progress(generated.term.clone());
+        assert!(
+            matches!(progress, Outcome::Value | Outcome::Stepable),
+            "seed {seed:#x}: progress failed for {}: {progress:?}: {}",
+            generated.name,
+            generated.term
         );
 
         assert_ne!(
             first.outcome,
             Outcome::StuckDoubleResume,
-            "one-shot soundness failed for {}",
-            generated.name
+            "seed {seed:#x}: one-shot soundness failed for {}: {}",
+            generated.name,
+            generated.term
         );
         assert_ne!(
             first.outcome,
             Outcome::StuckUnhandledOperation,
-            "handled operation escaped for {}",
-            generated.name
+            "seed {seed:#x}: handled operation escaped for {}: {}",
+            generated.name,
+            generated.term
         );
         assert_ne!(
             first.outcome,
             Outcome::InternalMalformed,
-            "unexpected internal malformed state for {}: {first:?}",
-            generated.name
+            "seed {seed:#x}: unexpected internal malformed state for {}: {first:?}: {}",
+            generated.name,
+            generated.term
         );
 
         match generated.witness.divergence {
             Divergence::Terminates => assert_eq!(
                 first.outcome,
                 Outcome::Value,
-                "terminating generated term exhausted budget or stuck: {} -> {first:?}",
-                generated.name
+                "seed {seed:#x}: terminating generated term exhausted budget or stuck: {} -> {first:?}: {}",
+                generated.name,
+                generated.term
             ),
             Divergence::Div => assert_eq!(
                 first.outcome,
                 Outcome::BudgetExhaustedDiv,
-                "div generated term should be classified by budget exhaustion"
+                "seed {seed:#x}: div generated term should exhaust budget: {}",
+                generated.term
             ),
         }
 
         if let Bound::Finite(bound) = generated.witness.bound {
             assert!(
                 first.max_frame <= bound,
-                "boundedness failed for {}: max_frame {} > β {}",
+                "seed {seed:#x}: boundedness failed for {}: max_frame {} > β {}: {}",
                 generated.name,
                 first.max_frame,
-                bound
+                bound,
+                generated.term
             );
         }
-
-        assert!(generated.witness.region.outlives(generated.witness.region));
-        assert!(
-            generated.witness.continuation_uses.resumed
-                <= generated.witness.continuation_uses.introduced,
-            "witness permits multi-shot continuation use"
-        );
     }
 
     #[test]
-    fn generated_terms_satisfy_acceptance_properties_with_fixed_seed() {
+    fn generated_terms_satisfy_differential_acceptance_with_fixed_seed() {
         let mut runner = TestRunner::new(Config {
             cases: SAMPLE_SIZE as u32,
             rng_seed: RngSeed::Fixed(FIXED_SEED),
@@ -102,11 +134,11 @@ mod tests {
                 assert_acceptance(generated);
                 Ok(())
             })
-            .expect("fixed-seed generated acceptance properties pass");
+            .expect("fixed-seed generated differential properties pass");
     }
 
     #[test]
-    fn fixed_seed_sample_covers_every_required_form() {
+    fn fixed_seed_sample_has_required_coverage_and_distribution() {
         let sample = fixed_seed_sample();
         assert_eq!(sample.len(), SAMPLE_SIZE);
         let counts = coverage_counts(&sample);
@@ -115,15 +147,57 @@ mod tests {
             assert!(counts.get(tag) > 0, "missing coverage for {tag:?}");
         }
         assert!(counts.get(CoverageTag::LambdaApp) > 0);
+
+        let distribution = distribution(&sample);
+        assert!(
+            distribution.nested_handlers > 0,
+            "nested-handler count must be nonzero: {distribution:?}"
+        );
+        assert!(
+            distribution.strict_rec_calls > 0,
+            "strict recursive-call count must be nonzero: {distribution:?}"
+        );
+        assert!(
+            distribution.non_strict_rec_calls > 0,
+            "non-strict recursive-call count must be nonzero: {distribution:?}"
+        );
+        assert!(
+            distribution.negative_unhandled > 0,
+            "negative unhandled perform fixtures must be generated"
+        );
+
+        let mut frame_positive = 0;
+        let mut tight_hits = 0;
+        for generated in &sample {
+            let expect_div = generated.witness.divergence == Divergence::Div;
+            let report = eval(generated.term.clone(), STEP_BUDGET, expect_div);
+            if report.max_frame > 0 {
+                frame_positive += 1;
+            }
+            if let Bound::Finite(bound) = generated.witness.bound {
+                if report.max_frame == bound {
+                    tight_hits += 1;
+                }
+            }
+        }
+        assert!(
+            frame_positive >= 100,
+            "expected ≥100 frame-positive cases, got {frame_positive}"
+        );
+        assert!(
+            tight_hits > 0,
+            "expected at least one tight max_frame == β hit"
+        );
     }
 
     #[test]
     fn generated_witnesses_are_complete_and_shrinker_regenerates_them() {
-        // The proptest input shrinks the `u8` selector; each shrink maps through
-        // `generated_case`, so the witness is regenerated from the shrunk term constructor.
-        for selector in 0_u8..32 {
-            let generated = generated_case(selector);
+        // The proptest input shrinks choice bytes; every shrink maps through
+        // `generated_from_choices`, so the term is rebuilt and the witness is re-derived.
+        for selector in 0_u8..64 {
+            let generated = generated_from_choices(vec![selector; MAX_CHOICES]);
             assert!(!generated.name.is_empty());
+            assert_eq!(generated.witness, derive_witness(&generated.term));
             assert!(generated
                 .witness
                 .effects
@@ -156,7 +230,7 @@ mod tests {
             }),
             tag: crate::core::RecursionTag::Structural,
         };
-        let witness = crate::gen::derive_witness(&fix);
+        let witness = derive_witness(&fix);
         assert_eq!(witness.bound, Bound::finite(1));
     }
 
@@ -172,7 +246,7 @@ mod tests {
             )),
             tag: crate::core::RecursionTag::Structural,
         };
-        let witness = crate::gen::derive_witness(&fix);
+        let witness = derive_witness(&fix);
         assert_eq!(witness.bound, Bound::Omega);
         assert_eq!(witness.divergence, Divergence::Div);
     }
