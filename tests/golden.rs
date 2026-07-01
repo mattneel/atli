@@ -134,6 +134,24 @@ fn handler_op_can_drop_continuation() {
 }
 
 #[test]
+fn dropped_handler_does_not_capture_context_frame() {
+    let body = Term::Let {
+        var: "a".into(),
+        expr: Box::new(Term::Perform(Label::L, Box::new(Term::nat(1)))),
+        body: Box::new(Term::var("a")),
+    };
+    let term = Term::Handle {
+        body: Box::new(body),
+        handler: identity_handler(Term::nat(9)),
+    };
+    let report = eval(term, 8, false);
+    assert_eq!(report.outcome, Outcome::Value);
+    assert_eq!(report.final_term, Term::nat(9));
+    assert_eq!(report.trace, vec![Rule::HOp]);
+    assert_eq!(report.max_frame, 0);
+}
+
+#[test]
 fn double_resume_is_detected_as_stuck() {
     let op_body = Term::Let {
         var: "_spent".into(),

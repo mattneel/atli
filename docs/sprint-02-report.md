@@ -40,9 +40,9 @@ Fixed seed: `0xa7110002`; sample size: `1024`; step budget: `96`.
 | 2 | One-shot soundness (§8.3) | PASS | Zero `StuckDoubleResume` outcomes across the sample. |
 | 3 | Handler discharge + negative detection | PASS | Safe handled terms had zero `StuckUnhandledOperation`; 85 tagged top-level `perform ℓ` negatives did stick. |
 | 4 | Determinism | PASS | Double evaluation normalized reports matched for every generated term. |
-| 5 | Differential boundedness (§8.4) | PASS | All finite-`β` terms satisfied `max_frame ≤ β`; 436 cases had `max_frame > 0`. |
+| 5 | Differential boundedness (§8.4) | PASS | All finite-`β` terms satisfied `max_frame ≤ β`; 305 cases had `max_frame > 0`. |
 | 6 | Termination split | PASS | 758 evaluations reached `Value`; 181 derived-`Div` evaluations exhausted budget; zero misclassifications. |
-| 7 | Tightness | PASS | 327 finite-bound cases had `max_frame == β`. |
+| 7 | Tightness | PASS | 335 finite-bound cases had `max_frame == β`. |
 | 8 | Coverage + distribution | PASS | All required form counters and distribution counters were nonzero; details below. |
 | 9 | Regression | PASS | `cargo test --quiet` and `cargo test --test golden --quiet` pass. |
 
@@ -62,11 +62,18 @@ Distribution counters:
 
 - Depth histogram: `{1: 34, 2: 32, 3: 38, 4: 136, 5: 184, 6: 135, 7: 101, 8: 113, 9: 123, 10: 85, 11: 30, 12: 12, 13: 1}`
 - Nested handlers: 191
-- Perform under captured context / `max_frame > 0`: 436
-- Tight hits / `max_frame == β`: 327
+- Perform under captured context / `max_frame > 0`: 305
+- Tight hits / `max_frame == β`: 335
 - Strict recursive calls: 409
 - Non-strict recursive calls: 544
 - Negative unhandled-operation fixtures: 85
+
+## Amendment note
+
+After the lazy-capture calculus amendment, dropped handler clauses no longer materialize
+the captured continuation frame. The fixed-seed distribution above was regenerated under
+that amended `H-op-drop` / `H-op-resume` semantics; frame-positive cases remain well above
+the ≥100 non-vacuity threshold.
 
 ## §8.4 interpretation note
 

@@ -21,14 +21,14 @@ semantics.
   must exhaust the budget. This is honest differential coverage, not a complete frame
   layout model for recursion.
 
-- SPEC-GAP(handler-drop-captured-frame-accounting): `docs/calculus.md §4.7` defines a
-  dropped handler clause's effective `β̂ᵢ` as the clause body `βᵢ`, while `docs/calculus.md
-  §5` still captures the delimited context in `H-op` before the clause drops `k`. The
-  Sprint 02 executable frame metric observes that capture allocation even for early-return
-  handlers. The derived witness therefore conservatively includes the handled body's
-  frame bound whenever a handled operation may be introduced, including dropped clauses.
-
 ## Resolved gaps
+
+- RESOLVED(handler-drop-captured-frame-accounting): `docs/calculus.md §4.7` and §5 now use
+  lazy continuation capture. A dropped operation clause (`k ∉ FV(eᵢ)`) reduces by
+  `H-op-drop` without materializing the delimited continuation frame, so its effective
+  `β̂ᵢ` is exactly the clause body's `βᵢ`. A resuming clause uses `H-op-resume`,
+  materializes the one-shot continuation, and pays `βᵢ ⊕ β`. This preserves the
+  exception/default-handler idiom where dropping is frame-free.
 
 - RESOLVED(nat-structural-recursion-core): `docs/calculus.md` now includes unary `zero` /
   `succ e` naturals and `case e { zero => e₀ ; succ x => e₁ }`. The predecessor `x` in

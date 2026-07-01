@@ -177,8 +177,10 @@ H ::= { return x → e_ret ; (ℓ p k → e_ℓ)* }
 ```
 
 Handler `H` has one return clause and zero-or-more operation clauses. In clause
-`ℓ p k → e_ℓ`, `p` binds the operation argument and `k : Cont[…] A R @ 1` binds the
-**one-shot** delimited continuation up to the enclosing `handle`.
+`ℓ p k → e_ℓ`, `p` binds the operation argument and `k : Cont[…] A R @ 1` names the
+**one-shot** delimited continuation up to the enclosing `handle`. The continuation is
+materialized lazily: a clause that does not use `k` does not allocate or carry the
+delimited frame.
 
 ---
 
@@ -315,23 +317,26 @@ Let `H = { return x → e_r ; (ℓᵢ pᵢ kᵢ → eᵢ)_{i∈I} }` handle oper
             ;  ρ ⟩
 ```
 
-where each clause's *effective* boundedness `β̂ᵢ` accounts for whether the clause
-invokes its continuation:
+where each clause's *effective* boundedness `β̂ᵢ` accounts for lazy continuation
+materialization:
 
 ```
-β̂ᵢ  =  βᵢ                     if eᵢ does not resume kᵢ         (exception / early-return shape)
+β̂ᵢ  =  βᵢ                     if eᵢ does not use/resume kᵢ      (lazy drop; no frame capture)
 β̂ᵢ  =  βᵢ ⊕ β                 if eᵢ resumes kᵢ exactly once     (β = captured body frame)
 ```
 
 There is deliberately **no** `βᵢ ⊕ (n · β)` case: `kᵢ` is typed `[1]`, so it resumes
 at most once, so the continuation's frame enters **additively, never multiplicatively**.
-This is the whole trick (§6.2).
+There is also no implicit `β` charge for dropped clauses: because capture is lazy,
+exception/default handlers are frame-free unless they actually resume. This is the whole
+trick (§6.2).
 
 Key facts encoded above:
 - **Effect discharge:** `L` is removed from the result effect (`ε \ L`); the handler's
   own effects (`ε_r`, `εᵢ`) are added back.
-- **`k` is affine:** grade `1`, and the type system permits `0` uses (drop = early
-  return). It **cannot** be `ω`.
+- **`k` is affine and lazy:** grade `1`, and the type system permits `0` uses
+  (drop = early return). A `0`-use clause does not capture the continuation frame. It
+  **cannot** be `ω`.
 - **Boundedness co-propagation:** `k`'s row `σ_kᵢ` carries the *body's* `β` *inward* to
   the clause. If `eᵢ` resumes, that `β` is paid; the handler's own `β` then flows back
   *outward* in the result row. Effects out, boundedness qualifier in, at the same site.
@@ -414,9 +419,13 @@ Handler reductions (deep):
 ```
 handle v with H                →   e_r[x := v]                           (H-return)
 
+handle E[perform ℓ v] with H   →   e_ℓ[ p := v ]                         (H-op-drop)
+     when  ℓ ∈ H, E is handler-free for ℓ, and k ∉ FV(e_ℓ).
+     No continuation is materialized; the captured frame is not allocated.
+
 handle E[perform ℓ v] with H   →   e_ℓ[ p := v ,
-                                        k := κ ]                         (H-op)
-     when  ℓ ∈ H  and  E is handler-free for ℓ,  where
+                                        k := κ ]                         (H-op-resume)
+     when  ℓ ∈ H, E is handler-free for ℓ, and k ∈ FV(e_ℓ), where
      κ  =  λ y. handle E[y] with H          -- deep: H reinstalled
      and κ is marked ONE-SHOT.
 
@@ -424,7 +433,8 @@ resume κ v                      →   κ v            if κ not yet used      (
 resume κ v                      →   ⊥ (stuck)      if κ already used      (one-shot violation)
 ```
 
-The one-shot marking on `κ` is the operational witness of the `[1]` grade in `Handle`.
+The one-shot marking on materialized `κ` is the operational witness of the `[1]` grade in
+`Handle`; dropped clauses have no `κ` to mark because lazy capture avoids allocation.
 Preservation (§8.2) guarantees the stuck case is unreachable in well-typed programs;
 it is retained so the reference interpreter can *detect* a violation during testing
 (Layer‑1 property: "no well-typed program reaches `resume`-after-use").
@@ -450,7 +460,8 @@ This rule is the **`⟨⟩`-combining operator of Gaboardi et al. (2016)** speci
 
 > **Lemma (affine continuations bound the boundedness fixpoint).**
 > If every continuation `k` introduced by `Handle` has uniqueness grade `1`, then the
-> boundedness contribution of any operation clause is *additive* in the body frame `β`:
+> boundedness contribution of any operation clause is *additive* in the body frame `β`
+> when the clause resumes, and zero in the body frame when the clause drops:
 > `β̂ᵢ ∈ { βᵢ , βᵢ ⊕ β }`. Consequently the recursive `β`-constraint induced by a
 > handled loop is of the form `β ⊒ c ⊕ β_rec` (additive), whose lfp over `Bound` is
 > finite whenever the recursion depth is finite.
@@ -611,7 +622,9 @@ Mechanize in Rocq (Iris for the substructural/linearity reasoning). Prove soundn
 
 - Types: `Unit`, `Nat`, one arrow, `Cont`; `Nat` has unary `zero`/`succ` and `case`.
 - Effects: **one** operation `ℓ`.
-- **One** handler form (`Handle`), deep, affine `k`.
+- **One** handler form (`Handle`), deep, affine `k`, with lazy continuation capture for
+  dropped clauses (`H-op-drop`) and one-shot materialized continuations for resuming
+  clauses (`H-op-resume`).
 - Boundedness: `Bound = ℕ ∪ {ω}`, `⊕`/`⊔`, `Fix` with the recursive `β`-constraint.
 - Drop for now: records/variants, regions beyond a single arena, `move`/`inplace`
   (add back as *known-sound extensions* once the core holds).

@@ -297,13 +297,23 @@ impl Machine {
                 captured.label, handler.op_label,
                 "Sprint 01 has one operation label"
             );
+            let with_param = handler.op_body.subst(&handler.op_param, &captured.arg);
+            if !term_mentions_var(&handler.op_body, &handler.op_k) {
+                // Lazy `H-op-drop` (`calculus.md §5`): a clause that does not use `k`
+                // receives the operation parameter without materializing the delimited
+                // continuation, so dropped/default handlers allocate no captured frame.
+                return StepResult::Stepped {
+                    term: with_param,
+                    rule: Rule::HOp,
+                };
+            }
+
             let frame_size = u32::try_from(captured.frames.len()).expect("frame depth fits u32");
             self.max_frame = self.max_frame.max(frame_size);
             let id = self.alloc_continuation(captured.frames, handler.clone(), frame_size);
-            let with_param = handler.op_body.subst(&handler.op_param, &captured.arg);
             let with_k = with_param.subst(&handler.op_k, &Term::Cont(id));
-            // `handle E[perform ℓ v] with H → e_ℓ[p := v, k := κ]` (H-op),
-            // with deep `κ = λy. handle E[y] with H`, `calculus.md §5`.
+            // Lazy `H-op-resume` (`calculus.md §5`): only clauses that use `k`
+            // materialize deep `κ = λy. handle E[y] with H`, marked ONE-SHOT.
             return StepResult::Stepped {
                 term: with_k,
                 rule: Rule::HOp,
@@ -407,6 +417,40 @@ impl Machine {
 pub enum StepResult {
     Stepped { term: Term, rule: Rule },
     Stuck(Outcome, Term),
+}
+
+fn term_mentions_var(term: &Term, name: &str) -> bool {
+    match term {
+        Term::Var(var) => var == name,
+        Term::Unit | Term::Zero | Term::Cont(_) => false,
+        Term::Succ(inner) | Term::Perform(_, inner) => term_mentions_var(inner, name),
+        Term::Lam { param, body, .. } => param != name && term_mentions_var(body, name),
+        Term::App(fun, arg) => term_mentions_var(fun, name) || term_mentions_var(arg, name),
+        Term::Let { var, expr, body } => {
+            term_mentions_var(expr, name) || (var != name && term_mentions_var(body, name))
+        }
+        Term::Fix {
+            func, param, body, ..
+        } => func != name && param != name && term_mentions_var(body, name),
+        Term::CaseNat {
+            scrutinee,
+            zero_body,
+            succ_var,
+            succ_body,
+        } => {
+            term_mentions_var(scrutinee, name)
+                || term_mentions_var(zero_body, name)
+                || (succ_var != name && term_mentions_var(succ_body, name))
+        }
+        Term::Handle { body, handler } => {
+            term_mentions_var(body, name)
+                || (handler.return_var != name && term_mentions_var(&handler.return_body, name))
+                || (handler.op_param != name
+                    && handler.op_k != name
+                    && term_mentions_var(&handler.op_body, name))
+        }
+        Term::Resume { kont, arg } => term_mentions_var(kont, name) || term_mentions_var(arg, name),
+    }
 }
 
 struct CapturedPerform {

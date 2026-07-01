@@ -913,14 +913,13 @@ fn derive_handle(body: &Term, handler: &Handler, env: &Env) -> Derived {
     let introduced = u32::from(body_d.effects.contains(handler.op_label));
     let resumes = op_d.continuation_uses.resumed;
     let dropped = introduced.saturating_sub(resumes);
-    let op_effective_bound = if introduced > 0 {
-        // `H-op` captures the delimited evaluation context before the operation clause
-        // decides whether to resume or drop `k` (`calculus.md §5`).  The calculus
-        // `Handle` rule (`§4.7`) only adds the carried body `β` to resuming clauses; the
-        // executable Sprint 02 frame-count proxy must also cover the capture allocation
-        // for dropped clauses.  See SPEC-GAP(handler-drop-captured-frame-accounting).
+    let op_effective_bound = if resumes > 0 {
+        // Lazy `H-op-resume` (`calculus.md §5`) materializes the deep one-shot
+        // continuation, so the `Handle` rule (`§4.7`) adds the carried body `β`.
         op_d.bound.sequential(body_d.bound)
     } else {
+        // Lazy `H-op-drop` does not materialize `k`; dropped exception/default clauses
+        // keep `β̂ᵢ = βᵢ` (`calculus.md §4.7`).
         op_d.bound
     };
     let mut out = Derived::pure(ret_d.ty.clone());
