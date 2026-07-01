@@ -201,6 +201,10 @@ fn build(name: &'static str, term: Term, expected: ExpectedOutcome) -> Generated
     debug_assert_eq!(witness.coverage, derive_witness(&term).coverage);
     debug_assert!(witness.continuation_uses.resumed <= witness.continuation_uses.introduced);
     debug_assert!(is_closed(&term), "generated term must be closed: {term}");
+    debug_assert!(
+        term_obeys_continuation_usage(&term),
+        "generated term violates handler k usage discipline: {term}"
+    );
     GeneratedTerm {
         term,
         witness,
@@ -208,6 +212,17 @@ fn build(name: &'static str, term: Term, expected: ExpectedOutcome) -> Generated
         expected,
         facts,
     }
+}
+
+/// Checks the reduced-core handler side condition from `docs/calculus.md §4.7`.
+///
+/// A handler clause may drop `k` by not mentioning it. If `k` appears free in the clause,
+/// the only legal mention is exactly one direct `resume k v`. This makes the interpreter's
+/// lazy `H-op-drop` / `H-op-resume` FV dispatch (`§5`) agree with derived β accounting on
+/// generated well-typed terms.
+#[must_use]
+pub fn term_obeys_continuation_usage(term: &Term) -> bool {
+    term_obeys_continuation_usage_under(term)
 }
 
 #[derive(Debug, Clone)]
@@ -1100,6 +1115,125 @@ fn scan_rec_calls(term: &Term, stack: &mut Vec<RecScan>, facts: &mut GenerationF
 fn is_closed(term: &Term) -> bool {
     let mut scope = Vec::new();
     closed_under(term, &mut scope)
+}
+
+fn term_obeys_continuation_usage_under(term: &Term) -> bool {
+    match term {
+        Term::Handle { body, handler } => {
+            term_obeys_continuation_usage_under(body)
+                && term_obeys_continuation_usage_under(&handler.return_body)
+                && term_obeys_continuation_usage_under(&handler.op_body)
+                && handler_clause_obeys_k_usage(&handler.op_body, &handler.op_k)
+        }
+        Term::Succ(inner) | Term::Perform(_, inner) => term_obeys_continuation_usage_under(inner),
+        Term::Lam { body, .. } | Term::Fix { body, .. } => {
+            term_obeys_continuation_usage_under(body)
+        }
+        Term::App(fun, arg) | Term::Resume { kont: fun, arg } => {
+            term_obeys_continuation_usage_under(fun) && term_obeys_continuation_usage_under(arg)
+        }
+        Term::Let { expr, body, .. } => {
+            term_obeys_continuation_usage_under(expr) && term_obeys_continuation_usage_under(body)
+        }
+        Term::CaseNat {
+            scrutinee,
+            zero_body,
+            succ_body,
+            ..
+        } => {
+            term_obeys_continuation_usage_under(scrutinee)
+                && term_obeys_continuation_usage_under(zero_body)
+                && term_obeys_continuation_usage_under(succ_body)
+        }
+        Term::Var(_) | Term::Unit | Term::Zero | Term::Cont(_) => true,
+    }
+}
+
+fn handler_clause_obeys_k_usage(clause: &Term, k: &str) -> bool {
+    let mentions = free_var_count(clause, k);
+    if mentions == 0 {
+        return true;
+    }
+    mentions == 1 && direct_resume_count(clause, k) == 1
+}
+
+fn free_var_count(term: &Term, name: &str) -> usize {
+    match term {
+        Term::Var(var) => usize::from(var == name),
+        Term::Unit | Term::Zero | Term::Cont(_) => 0,
+        Term::Succ(inner) | Term::Perform(_, inner) => free_var_count(inner, name),
+        Term::Lam { param, body, .. } => usize::from(param != name) * free_var_count(body, name),
+        Term::App(fun, arg) | Term::Resume { kont: fun, arg } => {
+            free_var_count(fun, name) + free_var_count(arg, name)
+        }
+        Term::Let { var, expr, body } => {
+            free_var_count(expr, name) + usize::from(var != name) * free_var_count(body, name)
+        }
+        Term::Fix {
+            func, param, body, ..
+        } => usize::from(func != name && param != name) * free_var_count(body, name),
+        Term::CaseNat {
+            scrutinee,
+            zero_body,
+            succ_var,
+            succ_body,
+        } => {
+            free_var_count(scrutinee, name)
+                + free_var_count(zero_body, name)
+                + usize::from(succ_var != name) * free_var_count(succ_body, name)
+        }
+        Term::Handle { body, handler } => {
+            free_var_count(body, name)
+                + usize::from(handler.return_var != name)
+                    * free_var_count(&handler.return_body, name)
+                + usize::from(handler.op_param != name && handler.op_k != name)
+                    * free_var_count(&handler.op_body, name)
+        }
+    }
+}
+
+fn direct_resume_count(term: &Term, name: &str) -> usize {
+    match term {
+        Term::Resume { kont, arg } => {
+            let here = usize::from(matches!(&**kont, Term::Var(var) if var == name));
+            let kont_nested = if here == 0 {
+                direct_resume_count(kont, name)
+            } else {
+                0
+            };
+            here + kont_nested + direct_resume_count(arg, name)
+        }
+        Term::Var(_) | Term::Unit | Term::Zero | Term::Cont(_) => 0,
+        Term::Succ(inner) | Term::Perform(_, inner) => direct_resume_count(inner, name),
+        Term::Lam { param, body, .. } => {
+            usize::from(param != name) * direct_resume_count(body, name)
+        }
+        Term::App(fun, arg) => direct_resume_count(fun, name) + direct_resume_count(arg, name),
+        Term::Let { var, expr, body } => {
+            direct_resume_count(expr, name)
+                + usize::from(var != name) * direct_resume_count(body, name)
+        }
+        Term::Fix {
+            func, param, body, ..
+        } => usize::from(func != name && param != name) * direct_resume_count(body, name),
+        Term::CaseNat {
+            scrutinee,
+            zero_body,
+            succ_var,
+            succ_body,
+        } => {
+            direct_resume_count(scrutinee, name)
+                + direct_resume_count(zero_body, name)
+                + usize::from(succ_var != name) * direct_resume_count(succ_body, name)
+        }
+        Term::Handle { body, handler } => {
+            direct_resume_count(body, name)
+                + usize::from(handler.return_var != name)
+                    * direct_resume_count(&handler.return_body, name)
+                + usize::from(handler.op_param != name && handler.op_k != name)
+                    * direct_resume_count(&handler.op_body, name)
+        }
+    }
 }
 
 fn closed_under(term: &Term, scope: &mut Vec<String>) -> bool {

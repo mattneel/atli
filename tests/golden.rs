@@ -1,5 +1,6 @@
 use atli::core::{Handler, RecursionTag, Term, Type};
-use atli::grade::Label;
+use atli::gen::{derive_witness, term_obeys_continuation_usage};
+use atli::grade::{Bound, Label};
 use atli::interp::{eval, Outcome, Rule};
 
 fn id_lam() -> Term {
@@ -149,6 +150,36 @@ fn dropped_handler_does_not_capture_context_frame() {
     assert_eq!(report.final_term, Term::nat(9));
     assert_eq!(report.trace, vec![Rule::HOp]);
     assert_eq!(report.max_frame, 0);
+}
+
+#[test]
+fn mention_without_resume_is_negative_checker_obligation() {
+    let body = Term::Let {
+        var: "a".into(),
+        expr: Box::new(Term::Perform(Label::L, Box::new(Term::nat(1)))),
+        body: Box::new(Term::var("a")),
+    };
+    let op_body = Term::Let {
+        var: "z".into(),
+        expr: Box::new(Term::var("k")),
+        body: Box::new(Term::nat(9)),
+    };
+    let term = Term::Handle {
+        body: Box::new(body),
+        handler: identity_handler(op_body),
+    };
+
+    assert!(
+        !term_obeys_continuation_usage(&term),
+        "Sprint 03 checker must reject mention-without-resume handler clauses"
+    );
+    let witness = derive_witness(&term);
+    assert_eq!(witness.bound, Bound::ZERO);
+
+    let report = eval(term, 8, false);
+    assert_eq!(report.outcome, Outcome::Value);
+    assert_eq!(report.final_term, Term::nat(9));
+    assert_eq!(report.max_frame, 1);
 }
 
 #[test]

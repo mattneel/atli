@@ -290,6 +290,8 @@ licenses destructive mutation in the backend (§9). Neither is well-typed on a `
 `perform ℓ` adds `ℓ` to the effect grade and contributes the operation's own frame
 cost `β_ℓ`. The operation's resume-type `B` is what a handler's continuation will be
 fed. Nothing here says whether `ℓ` terminates — that is decided *at its handler*.
+Likewise, the continuation variable is not available at the `perform` site; the
+mention-implies-resume discipline for handler-bound `k` is imposed by `Handle` (§4.7).
 
 ### 4.7 The handler rule — the centerpiece
 
@@ -309,6 +311,9 @@ Let `H = { return x → e_r ; (ℓᵢ pᵢ kᵢ → eᵢ)_{i∈I} }` handle oper
 (for each i ∈ I, with resume-type Bᵢ of ℓᵢ and argument-type Aᵢ)
 Γᵢ , pᵢ :[q_p] Aᵢ , kᵢ :[1] (Cont[σ_kᵢ] Bᵢ R)  ⊢  eᵢ : R ! σᵢ
         where  σ_kᵢ  =  ⟨ ε \ L ; β ; ρ ⟩          -- k carries the *body's* frame β
+        and    kᵢ ∉ FV(eᵢ)
+              or eᵢ contains exactly one occurrence of resume kᵢ v
+                 and no other free occurrence of kᵢ
 ──────────────────────────────────────────────────────────────────────────  (Handle)
 Γ_b + Γ_r + Σᵢ Γᵢ
    ⊢  handle e with H
@@ -316,6 +321,11 @@ Let `H = { return x → e_r ; (ℓᵢ pᵢ kᵢ → eᵢ)_{i∈I} }` handle oper
             ;  β_setup ⊕ ( β_r ⊔ ⊔ᵢ β̂ᵢ )
             ;  ρ ⟩
 ```
+
+The final side condition is the reduced core's continuation-use discipline: mentioning
+`kᵢ` is relevant, and a relevant `kᵢ` must be consumed by exactly one direct `resume`.
+A clause such as `let z = kᵢ in e` is not well-typed. This makes the syntactic
+lazy-capture dispatch in §5 complete for typed programs.
 
 where each clause's *effective* boundedness `β̂ᵢ` accounts for lazy continuation
 materialization:
@@ -334,9 +344,10 @@ trick (§6.2).
 Key facts encoded above:
 - **Effect discharge:** `L` is removed from the result effect (`ε \ L`); the handler's
   own effects (`ε_r`, `εᵢ`) are added back.
-- **`k` is affine and lazy:** grade `1`, and the type system permits `0` uses
-  (drop = early return). A `0`-use clause does not capture the continuation frame. It
-  **cannot** be `ω`.
+- **`k` is affine, relevant when mentioned, and lazy:** grade `1`; the type system
+  permits `0` uses only when `k` is absent from the clause. If `k` appears free, that
+  occurrence must be exactly one `resume k v`. A `0`-use clause does not capture the
+  continuation frame. It **cannot** be `ω`.
 - **Boundedness co-propagation:** `k`'s row `σ_kᵢ` carries the *body's* `β` *inward* to
   the clause. If `eᵢ` resumes, that `β` is paid; the handler's own `β` then flows back
   *outward* in the result row. Effects out, boundedness qualifier in, at the same site.
@@ -462,7 +473,9 @@ This rule is the **`⟨⟩`-combining operator of Gaboardi et al. (2016)** speci
 > If every continuation `k` introduced by `Handle` has uniqueness grade `1`, then the
 > boundedness contribution of any operation clause is *additive* in the body frame `β`
 > when the clause resumes, and zero in the body frame when the clause drops:
-> `β̂ᵢ ∈ { βᵢ , βᵢ ⊕ β }`. Consequently the recursive `β`-constraint induced by a
+> `β̂ᵢ ∈ { βᵢ , βᵢ ⊕ β }`. For well-typed clauses,
+> `kᵢ ∈ FV(eᵢ) ⇔ eᵢ` contains exactly one direct `resume kᵢ v`; this lemma licenses the
+> operational FV-dispatch in §5. Consequently the recursive `β`-constraint induced by a
 > handled loop is of the form `β ⊒ c ⊕ β_rec` (additive), whose lfp over `Bound` is
 > finite whenever the recursion depth is finite.
 >
@@ -622,9 +635,10 @@ Mechanize in Rocq (Iris for the substructural/linearity reasoning). Prove soundn
 
 - Types: `Unit`, `Nat`, one arrow, `Cont`; `Nat` has unary `zero`/`succ` and `case`.
 - Effects: **one** operation `ℓ`.
-- **One** handler form (`Handle`), deep, affine `k`, with lazy continuation capture for
-  dropped clauses (`H-op-drop`) and one-shot materialized continuations for resuming
-  clauses (`H-op-resume`).
+- **One** handler form (`Handle`), deep, affine/relevant `k`, with lazy continuation
+  capture for dropped clauses (`H-op-drop`), one-shot materialized continuations for
+  resuming clauses (`H-op-resume`), and the lemma that typed clauses satisfy
+  `k ∈ FV(e_ℓ) ⇔ e_ℓ` directly resumes `k` exactly once.
 - Boundedness: `Bound = ℕ ∪ {ω}`, `⊕`/`⊔`, `Fix` with the recursive `β`-constraint.
 - Drop for now: records/variants, regions beyond a single arena, `move`/`inplace`
   (add back as *known-sound extensions* once the core holds).

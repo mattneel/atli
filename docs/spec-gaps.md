@@ -23,6 +23,13 @@ semantics.
 
 ## Resolved gaps
 
+- RESOLVED(handler-k-usage-discipline): `docs/calculus.md §4.7` now makes option (i)
+  explicit: a handler clause may drop `k` only by not mentioning it, and if `k` appears
+  free then the clause must contain exactly one direct `resume k v` and no other free
+  occurrence of `k`. Thus `k ∈ FV(eᵢ) ⇔ eᵢ` resumes `k` for well-typed clauses, licensing
+  the interpreter's lazy-capture FV dispatch while requiring the future checker to reject
+  mention-without-resume wedges such as `let z = k in e`.
+
 - RESOLVED(handler-drop-captured-frame-accounting): `docs/calculus.md §4.7` and §5 now use
   lazy continuation capture. A dropped operation clause (`k ∉ FV(eᵢ)`) reduces by
   `H-op-drop` without materializing the delimited continuation frame, so its effective
