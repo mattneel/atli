@@ -81,6 +81,15 @@ semantics.
 
 ## Resolved gaps
 
+- RESOLVED(solver-widening-partial-iterate-escape): `docs/calculus.md §7.2` step 3
+  promises widening over-approximates upward, and §7.3 promises no partial iterate
+  reaches consumers. The implementation's single widen pass could leave an SCC partner at
+  a stale finite value below its ω-widened peer: `a ⊒ b ⊕ 1, b ⊒ a` gave `a = ω, b = 3`
+  with `b ⊒ a` violated. That was an under-approximating certificate, §2.3's miscompile
+  direction (finding twenty-six, found while building Sprint 16 D's Rocq solver model).
+  The fix iterates the widened pass to stability; the regression test pins
+  post-fixpoint-ness across the SCC. The Rocq D-rungs model the corrected algorithm.
+
 - RESOLVED(stepf-pattern-absorption-congruence-loss): Sprint 16 finding twenty-three
   repaired the mechanized `stepf` dispatch. The beta and case-succ patterns had absorbed
   their congruence cases, so a lambda-headed application with a reducible argument and a

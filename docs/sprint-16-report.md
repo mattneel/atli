@@ -21,6 +21,18 @@ per rung as each lands. Ledger notes are recorded in the same commit as every
   the lazy-capture amendment audit closes. `proofs/ADMITTED_COUNT` 3 → 2.
   Remaining admitted: `boundedness_soundness` (L7), `solver_certificate_soundness` (L8).
 
+## Findings
+
+- Finding twenty-six: component ownership is solver-side (`src/check/solve.rs`), confirmed
+  by reproduction with `a ⊒ b ⊕ 1, b ⊒ a`. The single widening pass violated the
+  `docs/calculus.md` §7.2 upward-over-approximation promise and §7.3 sealed-certificate
+  boundary by emitting a partial iterate (`a = ω, b = 3`) in §2.3's under-allocation
+  miscompile direction. This commit fixes the solver by iterating widened SCC passes to
+  stability and adds a regression test that checks post-fixpoint-ness across the SCC. The
+  found-a-bug discipline is satisfied: separate commit, would-have-caught test, and report
+  entry. The Rust-src scope fence was crossed deliberately under the found-a-bug law
+  because D3's bridge cross-cites solver outputs.
+
 ## Acceptance table (in progress; one row per rung, completed at E2)
 
 | Rung | Status | Evidence |

@@ -201,14 +201,29 @@ pub fn solve(system: &ConstraintSystem) -> SolverOutput {
             }
         }
         if !converged {
-            let next = apply_scc(system, &values, &scc, true);
-            for id in &scc {
-                if next[id] == Bound::Omega && values[id] != Bound::Omega {
-                    stats.widening_fires += 1;
+            // Finding twenty-six: a single widen pass can leave a stale finite value on an
+            // SCC partner whose candidate was momentarily stable, yielding a non-post-fixpoint
+            // certificate (under-approximation, §2.3). Iterate the widened pass to stability;
+            // ω absorbs, so this terminates within |scc| additional passes.
+            let mut widen_passes = 0;
+            loop {
+                let next = apply_scc(system, &values, &scc, true);
+                widen_passes += 1;
+                let changed = scc.iter().any(|id| values[id] != next[id]);
+                for id in &scc {
+                    if next[id] == Bound::Omega && values[id] != Bound::Omega {
+                        stats.widening_fires += 1;
+                    }
+                    values.insert(*id, next[id]);
                 }
-                values.insert(*id, next[id]);
+                if !changed {
+                    break;
+                }
             }
-            stats.iterations.push(SOLVER_THRESHOLD_K + 1);
+            // Keep one stats entry per SCC. The count includes the thresholded finite
+            // iterations plus each widened pass, including the final stability check,
+            // because §7.2's widened result must be the §2.3-safe post-fixpoint.
+            stats.iterations.push(SOLVER_THRESHOLD_K + widen_passes);
         }
     }
 
@@ -352,5 +367,28 @@ mod tests {
         let solved = solve(&system);
         assert_eq!(solved.certificate.value(a), Bound::Omega);
         assert!(solved.stats.widening_fires > 0);
+    }
+
+    #[test]
+    fn widened_certificate_is_a_postfixpoint_across_the_scc() {
+        // Finding twenty-six: a ⊒ b ⊕ 1, b ⊒ a -- alternating growth; the widen
+        // pass must not leave b at a stale finite value below ω-widened a.
+        let mut system = ConstraintSystem::new();
+        let a = system.fresh_unknown();
+        let b = system.fresh_unknown();
+        system.constrain(
+            a,
+            BoundExpr::unknown(b).seq(BoundExpr::constant(Bound::finite(1))),
+        );
+        system.constrain(b, BoundExpr::unknown(a));
+        let solved = solve(&system);
+        assert_eq!(solved.certificate.value(a), Bound::Omega);
+        assert_eq!(solved.certificate.value(b), Bound::Omega);
+        // The sealed-certificate contract: every constraint is satisfied.
+        for c in system.constraints() {
+            let rhs = solved.certificate.eval(&c.expr);
+            let target = solved.certificate.value(c.target);
+            assert_eq!(rhs.join(target), target, "constraint violated");
+        }
     }
 }
