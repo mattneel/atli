@@ -2152,6 +2152,169 @@ mod tests {
     }
 
     #[test]
+    fn bypassed_record_destructure_aliasing_inplace_diverges_from_copy_oracle() {
+        if find_tool("ATLI_CLANG", &["clang-22", "clang"]).is_none()
+            || find_tool(
+                "ATLI_MLIR_OPT",
+                &["mlir-opt", "/usr/lib/llvm-22/bin/mlir-opt"],
+            )
+            .is_none()
+            || find_tool(
+                "ATLI_MLIR_TRANSLATE",
+                &["mlir-translate", "/usr/lib/llvm-22/bin/mlir-translate"],
+            )
+            .is_none()
+        {
+            eprintln!("skipping record-shaped uniqueness falsifier: LLVM/MLIR toolchain not found");
+            return;
+        }
+
+        let oracle = crate::interp::eval(
+            crate::core::Term::Let {
+                var: "buf".into(),
+                expr: Box::new(crate::core::Term::MkArray(
+                    Box::new(crate::core::Term::nat(1)),
+                    Box::new(crate::core::Term::nat(0)),
+                )),
+                body: Box::new(crate::core::Term::Let {
+                    var: "record".into(),
+                    expr: Box::new(crate::core::Term::ArraySet(
+                        Box::new(crate::core::Term::ArraySet(
+                            Box::new(crate::core::Term::MkArray(
+                                Box::new(crate::core::Term::nat(2)),
+                                Box::new(crate::core::Term::nat(0)),
+                            )),
+                            Box::new(crate::core::Term::zero()),
+                            Box::new(crate::core::Term::var("buf")),
+                        )),
+                        Box::new(crate::core::Term::nat(1)),
+                        Box::new(crate::core::Term::nat(1)),
+                    )),
+                    body: Box::new(crate::core::Term::Let {
+                        var: "alias".into(),
+                        expr: Box::new(crate::core::Term::var("record")),
+                        body: Box::new(crate::core::Term::Let {
+                            var: "extracted".into(),
+                            expr: Box::new(crate::core::Term::ArrayGet(
+                                Box::new(crate::core::Term::var("record")),
+                                Box::new(crate::core::Term::zero()),
+                            )),
+                            body: Box::new(crate::core::Term::Let {
+                                var: "_mut".into(),
+                                expr: Box::new(crate::core::Term::Inplace(Box::new(
+                                    crate::core::Term::ArraySet(
+                                        Box::new(crate::core::Term::var("extracted")),
+                                        Box::new(crate::core::Term::zero()),
+                                        Box::new(crate::core::Term::nat(7)),
+                                    ),
+                                ))),
+                                body: Box::new(crate::core::Term::ArrayGet(
+                                    Box::new(crate::core::Term::ArrayGet(
+                                        Box::new(crate::core::Term::var("alias")),
+                                        Box::new(crate::core::Term::zero()),
+                                    )),
+                                    Box::new(crate::core::Term::zero()),
+                                )),
+                            }),
+                        }),
+                    }),
+                }),
+            },
+            128,
+            false,
+        );
+        assert_eq!(oracle.final_term, crate::core::Term::nat(0));
+
+        let mlir = r#"module attributes {atli.certified_beta_slots = 0 : i64, atli.arena_overhead_slots = 0 : i64, atli.growable = false} {
+  func.func private @atli_array_new(%len: i64, %fill: i64) -> i64
+  func.func private @atli_array_get(%handle: i64, %idx: i64) -> i64
+  func.func private @atli_array_inplace_set(%handle: i64, %idx: i64, %value: i64) -> i64
+  func.func @atli_beta_slots() -> i64 {
+    %c0 = arith.constant 0 : i64
+    return %c0 : i64
+  }
+  func.func @atli_high_water_value() -> i64 {
+    %c0 = arith.constant 0 : i64
+    return %c0 : i64
+  }
+  func.func @atli_program_main() -> i64 {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %c2 = arith.constant 2 : i64
+    %c7 = arith.constant 7 : i64
+    %buf = func.call @atli_array_new(%c1, %c0) : (i64, i64) -> i64
+    %record = func.call @atli_array_new(%c2, %c0) : (i64, i64) -> i64
+    %record_buf = func.call @atli_array_inplace_set(%record, %c0, %buf) : (i64, i64, i64) -> i64
+    %record_len = func.call @atli_array_inplace_set(%record_buf, %c1, %c1) : (i64, i64, i64) -> i64
+    %extracted = func.call @atli_array_get(%record_len, %c0) : (i64, i64) -> i64
+    %_mut = func.call @atli_array_inplace_set(%extracted, %c0, %c7) : (i64, i64, i64) -> i64
+    %alias_buf = func.call @atli_array_get(%record_len, %c0) : (i64, i64) -> i64
+    %read = func.call @atli_array_get(%alias_buf, %c0) : (i64, i64) -> i64
+    return %read : i64
+  }
+}
+"#;
+        fs::create_dir_all(BUILD_DIR).unwrap();
+        let mlir_path = Path::new(BUILD_DIR).join("record_uniqueness_falsifier.mlir");
+        let runtime_path = Path::new(BUILD_DIR).join("record_uniqueness_falsifier_runtime.c");
+        let llvm_mlir_path = Path::new(BUILD_DIR).join("record_uniqueness_falsifier.llvm.mlir");
+        let llvm_ir_path = Path::new(BUILD_DIR).join("record_uniqueness_falsifier.ll");
+        let exe = Path::new(BUILD_DIR).join("record_uniqueness_falsifier");
+        fs::write(&mlir_path, mlir).unwrap();
+        fs::write(&runtime_path, runtime_shim()).unwrap();
+        run_tool(
+            find_tool(
+                "ATLI_MLIR_OPT",
+                &["mlir-opt", "/usr/lib/llvm-22/bin/mlir-opt"],
+            )
+            .unwrap(),
+            &[
+                mlir_path.as_os_str(),
+                "--convert-scf-to-cf".as_ref(),
+                "--convert-cf-to-llvm".as_ref(),
+                "--convert-func-to-llvm".as_ref(),
+                "--convert-arith-to-llvm".as_ref(),
+                "--finalize-memref-to-llvm".as_ref(),
+                "--reconcile-unrealized-casts".as_ref(),
+                "-o".as_ref(),
+                llvm_mlir_path.as_os_str(),
+            ],
+        )
+        .unwrap();
+        run_tool(
+            find_tool(
+                "ATLI_MLIR_TRANSLATE",
+                &["mlir-translate", "/usr/lib/llvm-22/bin/mlir-translate"],
+            )
+            .unwrap(),
+            &[
+                "--mlir-to-llvmir".as_ref(),
+                llvm_mlir_path.as_os_str(),
+                "-o".as_ref(),
+                llvm_ir_path.as_os_str(),
+            ],
+        )
+        .unwrap();
+        run_tool(
+            find_tool("ATLI_CLANG", &["clang-22", "clang"]).unwrap(),
+            &[
+                llvm_ir_path.as_os_str(),
+                runtime_path.as_os_str(),
+                "-o".as_ref(),
+                exe.as_os_str(),
+            ],
+        )
+        .unwrap();
+        let output = Command::new(&exe).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "7\n");
+    }
+
+    #[test]
     fn corrupted_resume_debug_check_trips_one_shot_trap() {
         if find_tool("ATLI_CLANG", &["clang-22", "clang"]).is_none()
             || find_tool(

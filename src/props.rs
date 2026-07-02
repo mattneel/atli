@@ -11,12 +11,15 @@ mod tests {
 
     use crate::check::check;
     use crate::core::{CoverageTag, Divergence, ExpectedOutcome, GeneratedTerm};
+    use crate::elaborate::elaborate_program;
     use crate::gen::{
-        coverage_counts, derive_witness, distribution, fixed_seed_sample, generated_from_choices,
-        FIXED_SEED, MAX_CHOICES, REQUIRED_COVERAGE, SAMPLE_SIZE, STEP_BUDGET,
+        aggregate_negative_fixtures, coverage_counts, derive_witness, distribution,
+        fixed_seed_sample, generated_from_choices, FIXED_SEED, MAX_CHOICES, REQUIRED_COVERAGE,
+        SAMPLE_SIZE, STEP_BUDGET,
     };
     use crate::grade::Bound;
     use crate::interp::{classify_progress, eval, Outcome};
+    use crate::surface::parse_program;
 
     fn generated_strategy() -> impl Strategy<Value = GeneratedTerm> {
         prop::collection::vec(any::<u8>(), 1..=MAX_CHOICES).prop_map(generated_from_choices)
@@ -166,6 +169,19 @@ mod tests {
             counts.get(CoverageTag::Array) > 0,
             "missing array/uniqueness coverage"
         );
+        for tag in [
+            CoverageTag::RecordAggregate,
+            CoverageTag::VariantAggregate,
+            CoverageTag::DestructureConsume,
+            CoverageTag::RecordFunctionalUpdate,
+            CoverageTag::RecordInplaceUpdate,
+            CoverageTag::ConstructorPatternDescent,
+        ] {
+            assert!(
+                counts.get(tag) > 0,
+                "missing aggregate generator coverage for {tag:?}: {counts:?}"
+            );
+        }
 
         let distribution = distribution(&sample);
         assert!(
@@ -239,6 +255,37 @@ mod tests {
             assert!(
                 generated.witness.continuation_uses.resumed
                     <= generated.witness.continuation_uses.introduced
+            );
+        }
+    }
+
+    #[test]
+    fn generator_tagged_aggregate_negatives_match_frontend_verdicts() {
+        for fixture in aggregate_negative_fixtures() {
+            let program = parse_program(fixture.source).unwrap_or_else(|err| {
+                panic!(
+                    "aggregate negative fixture {} should parse before rejection: {err:?}",
+                    fixture.name
+                )
+            });
+            let rendered = match elaborate_program(&program) {
+                Ok(elaborated) => check(&elaborated.term)
+                    .map(|_| String::new())
+                    .unwrap_err()
+                    .to_string(),
+                Err(error) => format!("{error:?}"),
+            };
+            assert!(
+                !rendered.is_empty(),
+                "fixture {} must reject in elaboration or checking",
+                fixture.name
+            );
+            assert!(
+                rendered.contains(fixture.expected_error),
+                "fixture {} rejected with unexpected diagnostic:\nexpected substring: {}\nactual: {}",
+                fixture.name,
+                fixture.expected_error,
+                rendered
             );
         }
     }

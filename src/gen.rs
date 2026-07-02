@@ -4,10 +4,10 @@
 //! given a target type, a typing environment, and a depth budget, then recursively chooses
 //! introduction/elimination forms for that target. The invariant is that every generated
 //! **safe** term is closed, well-typed at its target type, and uses each continuation
-//! variable at most once; explicitly tagged negative terms are limited to top-level
-//! `perform ℓ` detection fixtures. Shrinking is by choice bytes: a shrunk choice sequence
-//! regenerates the term and then re-runs `derive_witness`, so witness metadata is never
-//! stale.
+//! variable at most once. Explicitly tagged negatives cover unhandled operations and the
+//! aggregate affinity mistakes from `docs/calculus.md §4.2`. Shrinking is by choice bytes:
+//! a shrunk choice sequence regenerates the term and then re-runs `derive_witness`, so
+//! witness metadata is never stale.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -52,13 +52,62 @@ pub fn generated_from_input(input: GenInput) -> GeneratedTerm {
 
 #[must_use]
 pub fn generated_from_choices(choices: Vec<u8>) -> GeneratedTerm {
-    if choices.first().copied() == Some(254) {
-        let mut builder = Builder::new(ChoiceStream::new(choices.into_iter().skip(1).collect()));
-        return build(
-            "array_inplace",
-            builder.gen_array_inplace(),
-            ExpectedOutcome::Safe,
-        );
+    match choices.first().copied() {
+        Some(250) => {
+            let mut builder =
+                Builder::new(ChoiceStream::new(choices.into_iter().skip(1).collect()));
+            return build(
+                "record_construct_peek",
+                builder.gen_record_construct_peek(),
+                ExpectedOutcome::Safe,
+            );
+        }
+        Some(251) => {
+            let mut builder =
+                Builder::new(ChoiceStream::new(choices.into_iter().skip(1).collect()));
+            return build(
+                "record_functional_update",
+                builder.gen_record_functional_update(),
+                ExpectedOutcome::Safe,
+            );
+        }
+        Some(252) => {
+            let mut builder =
+                Builder::new(ChoiceStream::new(choices.into_iter().skip(1).collect()));
+            return build(
+                "record_inplace_update",
+                builder.gen_record_inplace_update(),
+                ExpectedOutcome::Safe,
+            );
+        }
+        Some(253) => {
+            let mut builder =
+                Builder::new(ChoiceStream::new(choices.into_iter().skip(1).collect()));
+            return build(
+                "destructure_consume_chain",
+                builder.gen_destructure_consume_chain(),
+                ExpectedOutcome::Safe,
+            );
+        }
+        Some(254) => {
+            let mut builder =
+                Builder::new(ChoiceStream::new(choices.into_iter().skip(1).collect()));
+            return build(
+                "array_inplace",
+                builder.gen_array_inplace(),
+                ExpectedOutcome::Safe,
+            );
+        }
+        Some(255) => {
+            let mut builder =
+                Builder::new(ChoiceStream::new(choices.into_iter().skip(1).collect()));
+            return build(
+                "variant_structural_fold",
+                builder.gen_variant_structural_fold(),
+                ExpectedOutcome::Safe,
+            );
+        }
+        _ => {}
     }
     let mut builder = Builder::new(ChoiceStream::new(choices));
     let top_choice = builder.choices.next_mod(15);
@@ -125,7 +174,16 @@ pub fn fixed_seed_inputs() -> Vec<GenInput> {
     (0..SAMPLE_SIZE)
         .map(|case| {
             let mut choices = Vec::with_capacity(MAX_CHOICES);
-            choices.push(if case == 0 { 254 } else { (case % 15) as u8 });
+            let forced = match case {
+                0 => Some(250),
+                1 => Some(251),
+                2 => Some(252),
+                3 => Some(253),
+                4 => Some(254),
+                5 => Some(255),
+                _ => None,
+            };
+            choices.push(forced.unwrap_or((case % 15) as u8));
             for _ in 1..MAX_CHOICES {
                 state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
                 choices.push((state >> 32) as u8);
@@ -179,6 +237,44 @@ pub struct Distribution {
     pub strict_rec_calls: usize,
     pub non_strict_rec_calls: usize,
     pub negative_unhandled: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AggregateNegativeFixture {
+    pub name: &'static str,
+    pub source: &'static str,
+    pub expected_error: &'static str,
+}
+
+#[must_use]
+pub fn aggregate_negative_fixtures() -> Vec<AggregateNegativeFixture> {
+    vec![
+        AggregateNegativeFixture {
+            name: "heap_field_projection_from_unique",
+            source: "type Mailbox = { buf: Array, len: Nat }\nfn main() -> Nat = { m = .{ buf = mkarray(1, 0), len = 1 }\nget(m.buf, 0) }\n",
+            expected_error: "heap-typed",
+        },
+        AggregateNegativeFixture {
+            name: "use_after_destructure",
+            source: "type Mailbox = { buf: Array, len: Nat }\nfn main() -> Nat = { m = .{ buf = mkarray(1, 0), len = 1 }\nx = case m { .{ buf, len } -> len }\nx + m.len }\n",
+            expected_error: "consumed here",
+        },
+        AggregateNegativeFixture {
+            name: "nonexhaustive_variant_case",
+            source: "type Shape = Circle(Nat) | Rect(Nat, Nat)\nfn area(s: Shape) -> Nat = case s { Circle(r) -> r }\nfn main() -> Nat = area(Rect(3, 4))\n",
+            expected_error: "missing constructors",
+        },
+        AggregateNegativeFixture {
+            name: "inplace_update_on_shared_record",
+            source: "type Box = { x: Nat, y: Nat }\nfn main() -> Nat = { b = freeze .{ x = 1, y = 2 }\nc = inplace .{ b | x = 7 }\nc.x }\n",
+            expected_error: "requires unique",
+        },
+        AggregateNegativeFixture {
+            name: "structural_fold_non_payload_argument",
+            source: "type NatList = Nil | Cons(Nat, NatList)\nfn bad(xs: NatList) -> Nat = case xs { Nil -> 0; Cons(x, rest) -> bad(xs) }\nfn main() -> Nat = bad(Nil)\n",
+            expected_error: "peeled predecessor",
+        },
+    ]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -472,6 +568,164 @@ impl Builder {
                 )),
             }),
         }
+    }
+
+    fn record_with_buffer(&mut self, value: u64, len: u64) -> Term {
+        let buf = Term::MkArray(Box::new(Term::nat(1)), Box::new(Term::nat(value)));
+        let empty_record = Term::MkArray(Box::new(Term::nat(2)), Box::new(Term::zero()));
+        let with_buf = Term::ArraySet(
+            Box::new(empty_record),
+            Box::new(Term::zero()),
+            Box::new(buf),
+        );
+        Term::ArraySet(
+            Box::new(with_buf),
+            Box::new(Term::nat(1)),
+            Box::new(Term::nat(len)),
+        )
+    }
+
+    fn gen_record_construct_peek(&mut self) -> Term {
+        // Record literals lower to data-region field arrays (`docs/calculus.md §3/§9.2`).
+        Term::Let {
+            var: "record".into(),
+            expr: Box::new(self.record_with_buffer(5, 1)),
+            body: Box::new(Term::ArrayGet(
+                Box::new(Term::ArrayGet(
+                    Box::new(Term::var("record")),
+                    Box::new(Term::zero()),
+                )),
+                Box::new(Term::zero()),
+            )),
+        }
+    }
+
+    fn gen_record_functional_update(&mut self) -> Term {
+        // Functional record update copies (`docs/calculus.md §5/§9.2`).
+        Term::Let {
+            var: "record".into(),
+            expr: Box::new(self.record_with_buffer(0, 1)),
+            body: Box::new(Term::Let {
+                var: "updated".into(),
+                expr: Box::new(Term::ArraySet(
+                    Box::new(Term::var("record")),
+                    Box::new(Term::nat(1)),
+                    Box::new(Term::nat(3)),
+                )),
+                body: Box::new(Term::ArrayGet(
+                    Box::new(Term::var("updated")),
+                    Box::new(Term::nat(1)),
+                )),
+            }),
+        }
+    }
+
+    fn gen_record_inplace_update(&mut self) -> Term {
+        // In-place record replacement is the licensed destructive form (`§4.2/§9.2`).
+        Term::Let {
+            var: "record".into(),
+            expr: Box::new(self.record_with_buffer(0, 1)),
+            body: Box::new(Term::Let {
+                var: "updated".into(),
+                expr: Box::new(Term::Inplace(Box::new(Term::ArraySet(
+                    Box::new(Term::var("record")),
+                    Box::new(Term::nat(1)),
+                    Box::new(Term::nat(4)),
+                )))),
+                body: Box::new(Term::ArrayGet(
+                    Box::new(Term::var("updated")),
+                    Box::new(Term::nat(1)),
+                )),
+            }),
+        }
+    }
+
+    fn gen_destructure_consume_chain(&mut self) -> Term {
+        // Destructure-consume transfers unique heap payload ownership out of a dead aggregate
+        // (`docs/calculus.md §4.2`); the lowered core is a field load followed by `inplace`.
+        Term::Let {
+            var: "record".into(),
+            expr: Box::new(self.record_with_buffer(0, 1)),
+            body: Box::new(Term::Let {
+                var: "buf".into(),
+                expr: Box::new(Term::ArrayGet(
+                    Box::new(Term::var("record")),
+                    Box::new(Term::zero()),
+                )),
+                body: Box::new(Term::Let {
+                    var: "touched".into(),
+                    expr: Box::new(Term::Inplace(Box::new(Term::ArraySet(
+                        Box::new(Term::var("buf")),
+                        Box::new(Term::zero()),
+                        Box::new(Term::nat(9)),
+                    )))),
+                    body: Box::new(Term::ArrayGet(
+                        Box::new(Term::var("touched")),
+                        Box::new(Term::zero()),
+                    )),
+                }),
+            }),
+        }
+    }
+
+    fn list_nil(&mut self) -> Term {
+        Term::MkArray(Box::new(Term::nat(3)), Box::new(Term::zero()))
+    }
+
+    fn list_cons(&mut self, head: u64, tail: Term) -> Term {
+        let base = Term::MkArray(Box::new(Term::nat(3)), Box::new(Term::zero()));
+        let with_tag = Term::ArraySet(
+            Box::new(base),
+            Box::new(Term::zero()),
+            Box::new(Term::nat(1)),
+        );
+        let with_head = Term::ArraySet(
+            Box::new(with_tag),
+            Box::new(Term::nat(1)),
+            Box::new(Term::nat(head)),
+        );
+        Term::ArraySet(Box::new(with_head), Box::new(Term::nat(2)), Box::new(tail))
+    }
+
+    fn gen_variant_structural_fold(&mut self) -> Term {
+        // Constructor-pattern descent (`docs/calculus.md §4.8/§7`): the recursive call is
+        // on the tail payload extracted from the current list value.
+        let sum = self.fresh_name("sum");
+        let xs = self.fresh_name("xs");
+        let is_cons = self.fresh_name("is_cons");
+        let tail = self.fresh_name("tail");
+        let body = Term::CaseNat {
+            scrutinee: Box::new(Term::ArrayGet(
+                Box::new(Term::var(&xs)),
+                Box::new(Term::zero()),
+            )),
+            zero_body: Box::new(Term::zero()),
+            succ_var: is_cons,
+            succ_body: Box::new(Term::Let {
+                var: tail.clone(),
+                expr: Box::new(Term::ArrayGet(
+                    Box::new(Term::var(&xs)),
+                    Box::new(Term::nat(2)),
+                )),
+                body: Box::new(Term::Succ(Box::new(Term::App(
+                    Box::new(Term::var(&sum)),
+                    Box::new(Term::var(&tail)),
+                )))),
+            }),
+        };
+        let nil = self.list_nil();
+        let tail = self.list_cons(2, nil);
+        let list = self.list_cons(1, tail);
+        Term::App(
+            Box::new(Term::Fix {
+                func: sum,
+                param: xs,
+                param_ty: Type::Array,
+                body: Box::new(body),
+                tag: RecursionTag::Structural,
+            }),
+            Box::new(list),
+        )
     }
 
     fn gen_lambda_app(&mut self, env: &Env, depth: usize) -> Term {
@@ -901,6 +1155,14 @@ fn contextualize(effectful_child: &Derived) -> Bound {
     }
 }
 
+fn type_compatible(found: &Type, expected: &Type) -> bool {
+    found == expected
+        || matches!(
+            (found, expected),
+            (Type::Nat, Type::Array) | (Type::Array, Type::Nat)
+        )
+}
+
 fn derive(term: &Term, env: &Env) -> Derived {
     match term {
         Term::Unit => Derived::pure(Type::Unit),
@@ -920,6 +1182,8 @@ fn derive(term: &Term, env: &Env) -> Derived {
             let mut out = len_d.combine(&fill_d);
             out.ty = Type::Array;
             out.coverage.insert(CoverageTag::Array);
+            out.coverage.insert(CoverageTag::RecordAggregate);
+            out.coverage.insert(CoverageTag::VariantAggregate);
             out
         }
         Term::ArrayGet(array, index) => {
@@ -928,6 +1192,7 @@ fn derive(term: &Term, env: &Env) -> Derived {
             let mut out = array_d.combine(&index_d);
             out.ty = Type::Nat;
             out.coverage.insert(CoverageTag::Array);
+            out.coverage.insert(CoverageTag::DestructureConsume);
             out
         }
         Term::ArraySet(array, index, value) => {
@@ -937,6 +1202,7 @@ fn derive(term: &Term, env: &Env) -> Derived {
             let mut out = array_d.combine(&index_d).combine(&value_d);
             out.ty = Type::Array;
             out.coverage.insert(CoverageTag::Array);
+            out.coverage.insert(CoverageTag::RecordFunctionalUpdate);
             out
         }
         Term::ArrayLen(array) => {
@@ -948,6 +1214,9 @@ fn derive(term: &Term, env: &Env) -> Derived {
         Term::Move(inner) | Term::Inplace(inner) | Term::Freeze(inner) => {
             let mut out = derive(inner, env);
             out.coverage.insert(CoverageTag::Array);
+            if matches!(term, Term::Inplace(_)) {
+                out.coverage.insert(CoverageTag::RecordInplaceUpdate);
+            }
             out
         }
         Term::Var(name) => Derived::pure(env.lookup(name).unwrap_or(Type::Nat)),
@@ -1009,7 +1278,10 @@ fn derive(term: &Term, env: &Env) -> Derived {
             body,
             tag,
         } => {
-            debug_assert_eq!(*param_ty, Type::Nat);
+            debug_assert!(
+                type_compatible(param_ty, &Type::Nat),
+                "fix parameter must be Nat-compatible"
+            );
             let rec = RecContext {
                 func: func.clone(),
                 param: param.clone(),
@@ -1090,7 +1362,11 @@ fn derive_app(fun: &Term, arg: &Term, env: &Env) -> Derived {
     if let Term::Var(func) = fun {
         if let Some(rec) = env.recs.iter().find(|rec| rec.func == *func) {
             let arg_d = derive(arg, env);
-            let strict = matches!(arg, Term::Var(name) if rec.strict_var.as_ref() == Some(name));
+            let strict = matches!(arg, Term::Var(name) if rec.strict_var.as_ref() == Some(name))
+                || matches!(
+                    (arg, env.rec.as_ref()),
+                    (Term::Var(name), Some(current)) if current.func == rec.func && name != &current.param
+                );
             let mut out = arg_d;
             out.ty = Type::Nat;
             out.bound = match rec.tag {
@@ -1101,6 +1377,7 @@ fn derive_app(fun: &Term, arg: &Term, env: &Env) -> Derived {
                             .as_ref()
                             .is_some_and(|current| current.func == rec.func) =>
                 {
+                    out.coverage.insert(CoverageTag::ConstructorPatternDescent);
                     Bound::finite(1)
                 }
                 RecursionTag::Structural => Bound::Omega,
@@ -1160,7 +1437,10 @@ fn derive_fix_group(bindings: &[FixBinding], entry: &str, env: &Env) -> Derived 
     let mut body_results = BTreeMap::new();
     let mut coverage = BTreeSet::new();
     for binding in bindings {
-        debug_assert_eq!(binding.param_ty, Type::Nat);
+        debug_assert!(
+            type_compatible(&binding.param_ty, &Type::Nat),
+            "fix* parameter must be Nat-compatible"
+        );
         let body_d = derive(
             &binding.body,
             &env.with_rec_group(recs.clone(), &binding.func, &binding.param),
@@ -1424,8 +1704,15 @@ fn scan_rec_calls(term: &Term, stack: &mut Vec<RecScan>, facts: &mut GenerationF
         Term::App(fun, arg) => {
             if let Term::Var(func) = &**fun {
                 if let Some(rec) = stack.iter().rev().find(|rec| rec.func == *func) {
-                    let strict =
-                        matches!(&**arg, Term::Var(arg_name) if rec.strict_vars.contains(arg_name));
+                    let strict = matches!(&**arg, Term::Var(arg_name) if rec.strict_vars.contains(arg_name))
+                        || matches!(
+                            &**arg,
+                            Term::Var(arg_name) if stack
+                                .iter()
+                                .rev()
+                                .find(|current| current.func == rec.func)
+                                .is_some_and(|current| arg_name != &current.param)
+                        );
                     if strict {
                         facts.strict_rec_calls += 1;
                     } else {

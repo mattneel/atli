@@ -161,6 +161,12 @@ pub enum CoverageTag {
     HandleResuming,
     HandleDropped,
     Array,
+    RecordAggregate,
+    VariantAggregate,
+    DestructureConsume,
+    RecordFunctionalUpdate,
+    RecordInplaceUpdate,
+    ConstructorPatternDescent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
