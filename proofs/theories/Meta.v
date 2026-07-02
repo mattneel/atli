@@ -1106,6 +1106,89 @@ Proof.
   apply IHHty. exact Hvalue.
 Qed.
 
+(** Sprint 16 B2: context weakening — closed typings embed into any context. *)
+
+Lemma typing_lookup_monotone : forall g1 t ty eps beta,
+  has_type g1 t ty eps beta ->
+  forall g2, (forall x tx, lookup x g1 = Some tx -> lookup x g2 = Some tx) ->
+  has_type g2 t ty eps beta.
+Proof.
+  intros g1 t ty eps beta Hty.
+  assert (lookup_preserve_cons :
+    forall (g1 g2 : ctx) y ty0,
+      (forall x tx, lookup x g1 = Some tx -> lookup x g2 = Some tx) ->
+      forall x tx,
+        lookup x ((y, ty0) :: g1) = Some tx ->
+        lookup x ((y, ty0) :: g2) = Some tx).
+  {
+    intros ga gb y ty0 Hpres x tx Hlookup.
+    simpl in Hlookup |- *.
+    destruct (String.eqb x y); [exact Hlookup|].
+    eapply Hpres. exact Hlookup.
+  }
+  induction Hty; intros g2 Hpres.
+  - apply Ty_Var. eapply Hpres. exact H.
+  - apply Ty_Unit.
+  - apply Ty_Zero.
+  - apply Ty_Succ. apply IHHty. exact Hpres.
+  - eapply Ty_CaseNat.
+    + apply IHHty1. exact Hpres.
+    + apply IHHty2. exact Hpres.
+    + apply IHHty3. apply lookup_preserve_cons. exact Hpres.
+  - apply Ty_Lam. apply IHHty. apply lookup_preserve_cons. exact Hpres.
+  - eapply Ty_App.
+    + apply IHHty1. exact Hpres.
+    + apply IHHty2. exact Hpres.
+  - eapply Ty_Let.
+    + apply IHHty1. exact Hpres.
+    + apply IHHty2. apply lookup_preserve_cons. exact Hpres.
+  - apply Ty_FixStructural. apply IHHty.
+    apply lookup_preserve_cons. apply lookup_preserve_cons. exact Hpres.
+  - apply Ty_FixMeasure. apply IHHty.
+    apply lookup_preserve_cons. apply lookup_preserve_cons. exact Hpres.
+  - eapply Ty_FixDiv. apply IHHty.
+    apply lookup_preserve_cons. apply lookup_preserve_cons. exact Hpres.
+  - apply Ty_Perform. apply IHHty. exact Hpres.
+  - eapply Ty_HandleDrop.
+    + apply IHHty1. exact Hpres.
+    + apply IHHty2. apply lookup_preserve_cons. exact Hpres.
+    + apply IHHty3. apply lookup_preserve_cons. apply lookup_preserve_cons. exact Hpres.
+    + assumption.
+    + assumption.
+  - eapply Ty_HandleResume.
+    + apply IHHty1. exact Hpres.
+    + apply IHHty2. apply lookup_preserve_cons. exact Hpres.
+    + apply IHHty3. apply lookup_preserve_cons. apply lookup_preserve_cons. exact Hpres.
+    + assumption.
+    + assumption.
+    + assumption.
+    + assumption.
+  - eapply Ty_Resume.
+    + apply IHHty1. exact Hpres.
+    + apply IHHty2. exact Hpres.
+  - eapply Ty_ContVal; eauto.
+Qed.
+
+Lemma typing_context_ext : forall g1 g2 t ty eps beta,
+  has_type g1 t ty eps beta ->
+  (forall x, lookup x g1 = lookup x g2) ->
+  has_type g2 t ty eps beta.
+Proof.
+  intros g1 g2 t ty eps beta Hty Heq.
+  eapply typing_lookup_monotone; eauto.
+  intros x tx Hlookup.
+  rewrite <- Heq.
+  exact Hlookup.
+Qed.
+
+Theorem closed_typing_weakening : forall t ty eps beta,
+  has_type [] t ty eps beta -> forall g, has_type g t ty eps beta.
+Proof.
+  intros t ty eps beta Hty g.
+  eapply typing_lookup_monotone; eauto.
+  intros x tx Hlookup. discriminate Hlookup.
+Qed.
+
 (** Proof ladder for [docs/calculus.md §8] and mechanization target §10. *)
 
 Theorem L2_substitution_nonhandler_min : forall g t ty eps beta x replacement,
