@@ -1057,6 +1057,55 @@ Proof.
   eapply stepf_preserves_closedness; eauto.
 Qed.
 
+(** Sprint 16 B1: canonical forms (docs/calculus.md §3.1/§4) and value-row canonicity. *)
+
+Lemma canonical_nat : forall g v eps beta,
+  is_value v = true -> has_type g v TyNat eps beta ->
+  v = TZero \/ exists v', v = TSucc v' /\ is_value v' = true.
+Proof.
+  intros g v eps beta Hvalue Hty.
+  destruct v as [x| | |v'|scrut zero_body succ_var succ_body
+    |x param_ty body|f arg|x expr body|func param param_ty body tag
+    |op arg|body h|kont arg|h ctx|h ctx];
+    simpl in Hvalue; try discriminate; inversion Hty; subst.
+  - left. reflexivity.
+  - right. exists v'. split; [reflexivity|exact Hvalue].
+Qed.
+
+Lemma canonical_arrow : forall g v a lat_eps lat_beta b eps beta,
+  is_value v = true -> has_type g v (TyArrow a lat_eps lat_beta b) eps beta ->
+  exists x body, v = TLam x a body.
+Proof.
+  intros g v a lat_eps lat_beta b eps beta Hvalue Hty.
+  destruct v as [y| | |v'|scrut zero_body succ_var succ_body
+    |x param_ty body|f arg|y expr let_body|func param fix_ty fix_body tag
+    |op arg|handle_body h|kont arg|h ctx|h ctx];
+    simpl in Hvalue; try discriminate; inversion Hty; subst.
+  eauto.
+Qed.
+
+Lemma canonical_cont : forall g v a bk b eps beta,
+  is_value v = true -> has_type g v (TyCont a bk b) eps beta ->
+  exists rv rbody op_param op_k op_body ctx,
+    v = TContVal (Handler rv rbody L op_param op_k op_body) ctx.
+Proof.
+  intros g v a bk b eps beta Hvalue Hty.
+  destruct v as [x| | |v'|scrut zero_body succ_var succ_body
+    |x param_ty body|f arg|x expr let_body|func param fix_ty fix_body tag
+    |op arg|handle_body h|kont arg|h ctx|h ctx];
+    simpl in Hvalue; try discriminate; inversion Hty; subst.
+  exists rv, rbody, op_param, op_k, op_body, ctx. reflexivity.
+Qed.
+
+Lemma value_rows_trivial : forall g v ty eps beta,
+  is_value v = true -> has_type g v ty eps beta ->
+  eps = EffEmpty /\ beta = BFinite 0.
+Proof.
+  intros g v ty eps beta Hvalue Hty.
+  induction Hty; simpl in Hvalue; try discriminate; try (split; reflexivity).
+  apply IHHty. exact Hvalue.
+Qed.
+
 (** Proof ladder for [docs/calculus.md §8] and mechanization target §10. *)
 
 Theorem L2_substitution_nonhandler_min : forall g t ty eps beta x replacement,
