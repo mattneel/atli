@@ -30,6 +30,7 @@ jobs:
       - run: cargo test
       - run: make -C proofs
       - run: scripts/check-admitted-count.sh
+      - run: scripts/check-readme-quickstart.sh
       - run: cargo run -- test examples/
       - run: mdbook build book
       - run: scripts/check-book-samples.sh

@@ -17,7 +17,7 @@ cargo run -- run examples/fib.atli
 cargo run -- check examples/fib.atli
 # type: Nat
 # effects: ∅
-# β: 1
+# β: 2
 # divergence: Terminates
 
 cargo run -- run --compiled examples/fib.atli
