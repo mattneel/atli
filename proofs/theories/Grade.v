@@ -137,3 +137,44 @@ Proof. destruct a, b; simpl; auto; lia. Qed.
 
 Theorem bound_join_upper_r : forall a b, bound_le b (bound_join a b).
 Proof. destruct a, b; simpl; auto; lia. Qed.
+
+(** Sprint 16 C2: order micro-lemmas consumed by the preservation ladder (docs/calculus.md §2.2/§2.3). *)
+
+Theorem eff_sub_trans : forall a b c,
+  eff_sub a b = true -> eff_sub b c = true -> eff_sub a c = true.
+Proof. destruct a, b, c; simpl; auto. Qed.
+
+Theorem eff_sub_join_mono : forall a a' b b',
+  eff_sub a a' = true -> eff_sub b b' = true ->
+  eff_sub (eff_join a b) (eff_join a' b') = true.
+Proof. destruct a, a', b, b'; simpl; auto. Qed.
+
+Theorem eff_sub_join_upper_l : forall a b, eff_sub a (eff_join a b) = true.
+Proof. destruct a, b; reflexivity. Qed.
+
+Theorem eff_sub_join_upper_r : forall a b, eff_sub b (eff_join a b) = true.
+Proof. destruct a, b; reflexivity. Qed.
+
+Theorem eff_sub_empty : forall a, eff_sub EffEmpty a = true.
+Proof. destruct a; reflexivity. Qed.
+
+Theorem bound_le_trans : forall a b c,
+  bound_le a b -> bound_le b c -> bound_le a c.
+Proof. destruct a, b, c; simpl; auto; lia. Qed.
+
+Theorem bound_seq_mono : forall a a' b b',
+  bound_le a a' -> bound_le b b' -> bound_le (bound_seq a b) (bound_seq a' b').
+Proof. destruct a, a', b, b'; simpl; auto; lia. Qed.
+
+Theorem bound_join_mono : forall a a' b b',
+  bound_le a a' -> bound_le b b' -> bound_le (bound_join a b) (bound_join a' b').
+Proof. destruct a, a', b, b'; simpl; auto; lia. Qed.
+
+Theorem bound_seq_upper_l : forall a b, bound_le a (bound_seq a b).
+Proof. destruct a, b; simpl; auto; lia. Qed.
+
+Theorem bound_seq_upper_r : forall a b, bound_le b (bound_seq a b).
+Proof. destruct a, b; simpl; auto; lia. Qed.
+
+Theorem bound_le_zero : forall a, bound_le (BFinite 0) a.
+Proof. destruct a; simpl; auto; lia. Qed.
