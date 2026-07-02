@@ -1,10 +1,15 @@
-// expect: 6
+// expect: 8
 type Option[A] = None | Some(A)
 type List[A] = Nil | Cons(A, List[A])
-fn map[A, B](xs: List[A]) -> List[A] = case xs { Nil -> Nil; Cons(x, rest) -> Cons(x, map(rest)) }
+fn unwrap_or[A](o: Option[A], d: A) -> A = case o { None -> d; Some(x) -> x }
+fn inc(x: Nat) -> Nat = x + 1
+fn opt_value(o: Option[Nat]) -> Nat = unwrap_or(o, 0)
+fn map[A, B](xs: List[A], f: A -> B) -> List[B] = case xs { Nil -> Nil; Cons(x, rest) -> Cons(f(x), map(rest, f)) }
 fn sum(xs: List[Nat]) -> Nat = case xs { Nil -> 0; Cons(x, rest) -> x + sum(rest) }
 fn main() -> Nat = {
-  a = map(Cons(1, Cons(2, Nil)))
-  b = map(Cons(Some(3), Nil))
-  sum(a) + 3
+  nums = Cons(1, Cons(2, Nil))
+  opts = Cons(Some(3), Nil)
+  mapped_nums = map(nums, inc)
+  mapped_opts = map(opts, opt_value)
+  sum(mapped_nums) + sum(mapped_opts)
 }

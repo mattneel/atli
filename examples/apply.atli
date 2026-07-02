@@ -1,0 +1,4 @@
+// expect: 6
+fn inc(x: Nat) -> Nat = x + 1
+fn apply[A, B](f: A -> B, x: A) -> B = f(x)
+fn main() -> Nat = apply(inc, 5)

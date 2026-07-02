@@ -33,6 +33,13 @@ semantics.
 
 ## Resolved gaps
 
+- RESOLVED(generic-arrow-instantiation): Sprint 14 originally claimed higher-order
+  generic calls but `list_map.atli` did not exercise the quoted capability. The surface
+  unifier defaulted generic variables in arrow positions instead of recursing through
+  `A -> B`, so `fn map[A, B](xs: List[A], f: A -> B) -> List[B]` failed at the point a
+  function argument was supplied. v0.5.1 resolves this by structurally unifying arrow
+  types, adding the exact `map` signature as the flagship example, and pinning `apply` as
+  a separate golden for generic function arguments.
 
 - RESOLVED(pipe-inplace-composition): Sprint 12 fixes the Sprint 11 surface mismatch where
   the pitch form `buf |> inplace set(i, v)` rejected and `render.atli` used let-chaining

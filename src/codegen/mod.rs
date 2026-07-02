@@ -413,6 +413,7 @@ fn find_tool(env_var: &str, names: &[&str]) -> Option<PathBuf> {
 
 fn runtime_shim(program: &Program) -> String {
     let mut wrappers = String::new();
+    let mut apply_cases = String::new();
     for decl in &program.decls {
         let Decl::Fn(func) = decl else {
             continue;
@@ -423,10 +424,12 @@ fn runtime_shim(program: &Program) -> String {
             wrappers.push_str(&format!(
                 "extern int64_t {symbol}(int64_t);\nint64_t {entry}(int64_t arg) {{ return {symbol}(arg); }}\n"
             ));
+            let id = function_id(&func.name.node);
+            apply_cases.push_str(&format!("case {id}: return {symbol}(arg);\n"));
         }
     }
     format!(
-        "{}{}",
+        "{}{}{}{}{}",
         "#include <stdint.h>\n\
      #include <stdio.h>\n\
      #include <stdlib.h>\n\
@@ -643,7 +646,10 @@ fn runtime_shim(program: &Program) -> String {
        return 0;\n\
      }\n"
         ,
-        wrappers
+        wrappers,
+        "int64_t atli_apply(int64_t fn_id, int64_t arg) {\n  switch (fn_id) {\n",
+        apply_cases,
+        "  default: fprintf(stderr, \"ATLI APPLY UNKNOWN FUNCTION\\n\"); exit(89);\n  }\n}\n"
     )
 }
 
@@ -733,6 +739,7 @@ impl<'a> MlirModule<'a> {
         out.push_str("  func.func private @atli_scope_enter() -> ()\n");
         out.push_str("  func.func private @atli_scope_exit() -> ()\n");
         out.push_str("  func.func private @atli_tick() -> ()\n");
+        out.push_str("  func.func private @atli_apply(%fn_id: i64, %arg: i64) -> i64\n");
         out.push_str(
             "  func.func private @atli_scope_push(%label: i64, %mode: i64, %value: i64, %watermark: i64) -> ()\n",
         );
@@ -873,7 +880,7 @@ impl<'a> Builder<'a> {
                 self.functions
                     .contains_key(name)
                     .then(|| Value {
-                        name: mlir_func_name(name),
+                        name: self.constant(function_id(name), indent).name,
                     })
                     .ok_or_else(|| CodegenError::new(format!("cannot lower variable `{name}`")))
             }
@@ -1382,6 +1389,21 @@ impl<'a> Builder<'a> {
                 "tier-1 native lowering supports direct function calls only",
             ));
         };
+        if let Some(fn_id) = env.get(name).cloned() {
+            if args.len() != 1 {
+                return Err(CodegenError::new("tier-1 erased function values are unary"));
+            }
+            let arg = self.expr(&args[0], env, indent)?;
+            let result = self.fresh("apply");
+            self.line(
+                indent,
+                &format!(
+                    "{result} = func.call @atli_apply({fn_id}, {}) : (i64, i64) -> i64",
+                    arg.name
+                ),
+            );
+            return Ok(Value { name: result });
+        }
         if let Some(ctor) = self.aggregates.constructors.get(name) {
             if args.len() != ctor.payload_count {
                 return Err(CodegenError::new(format!(
@@ -2124,6 +2146,7 @@ fn assert_word_type(ty: &TypeExpr) -> Result<(), CodegenError> {
             | TypeExpr::Applied(_, _, _)
             | TypeExpr::Unique(_, _)
             | TypeExpr::Preserve { .. }
+            | TypeExpr::Arrow(_, _, _)
     ) {
         Ok(())
     } else {
@@ -2188,6 +2211,17 @@ fn c_func_name(name: &str) -> String {
 
 fn c_task_entry_name(name: &str) -> String {
     format!("atli_entry_{}", c_ident(name))
+}
+
+fn function_id(name: &str) -> u64 {
+    // Erased generic function values are one i64 slot (`docs/calculus.md §9.4`).
+    // The ID is deterministic and only dispatches within the generated module.
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in name.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash & 0x7fff_ffff_ffff_ffff
 }
 
 fn c_ident(name: &str) -> String {

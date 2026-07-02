@@ -30,6 +30,11 @@ One logical unit per commit. Keep the tree green at every commit. Run `cargo fmt
 
 Each sprint report records acceptance status, verification commands, findings, gaps, generated statistics where relevant, and carried-forward work. If a sprint prompt has numbered acceptance criteria, the report acceptance table must contain exactly one top-level row per criterion number, in prompt order. Sub-criteria may be nested inside that row, but missing, duplicated, or renumbered top-level rows are report failures. Freely-composed green tables are forbidden because they can omit criteria silently.
 
+Criteria that demand a language capability must quote the exact source program or
+signature that exercises it. "A generic map" is not an acceptance artifact;
+`fn map[A, B](xs: List[A], f: A -> B) -> List[B]` is. Prose intent is promoted to
+numbered criteria, and capability criteria carry their own concrete program.
+
 ## Differential and falsifier provenance
 
 Acceptance differentials and falsifiers must exercise the same production path they claim to validate. A backend falsifier must compile through the Atli emitter/MLIR/LLVM pipeline and link against the actual generated runtime shim, unless it is explicitly labeled as a non-acceptance sanity check. Hand-written C, summary IR, or bypassed shims cannot discharge criteria about native lowering. Reports must name the provenance of every falsifier.

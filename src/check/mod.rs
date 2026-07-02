@@ -839,12 +839,7 @@ fn expect_type(
     rule: &'static str,
     section: &'static str,
 ) -> Result<(), TypeError> {
-    if found == expected
-        || matches!(
-            (found, expected),
-            (Type::Nat, Type::Array) | (Type::Array, Type::Nat)
-        )
-    {
+    if types_compatible(found, expected) {
         Ok(())
     } else {
         Err(TypeError::new(
@@ -858,6 +853,19 @@ fn expect_type(
             },
         ))
     }
+}
+
+fn types_compatible(found: &Type, expected: &Type) -> bool {
+    found == expected
+        || matches!(
+            (found, expected),
+            (Type::Nat, Type::Array) | (Type::Array, Type::Nat)
+        )
+        || matches!(
+            (found, expected),
+            (Type::Arrow(fa, fr), Type::Arrow(ea, er))
+                if types_compatible(fa, ea) && types_compatible(fr, er)
+        )
 }
 
 fn free_var_count(term: &Term, name: &str) -> usize {

@@ -74,9 +74,133 @@ struct FunctionSig {
 }
 
 pub fn elaborate_program(program: &Program) -> Result<ElaboratedProgram, ElaborateError> {
+    check_surface_types(program)?;
     check_surface_uniqueness(program)?;
     let mut elaborator = Elaborator::new(program)?;
     elaborator.elaborate()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SurfaceTy {
+    Unit,
+    Nat,
+    Named(String, Vec<SurfaceTy>),
+    Var(u32, String),
+    Arrow(Box<SurfaceTy>, Box<SurfaceTy>),
+}
+
+impl std::fmt::Display for SurfaceTy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unit => f.write_str("Unit"),
+            Self::Nat => f.write_str("Nat"),
+            Self::Named(name, args) if args.is_empty() => f.write_str(name),
+            Self::Named(name, args) => {
+                let args = args
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "{name}[{args}]")
+            }
+            Self::Var(_, name) => f.write_str(name),
+            Self::Arrow(arg, ret) => write!(f, "{arg} -> {ret}"),
+        }
+    }
+}
+
+#[derive(Default)]
+struct TypeInfer {
+    next: u32,
+    subst: BTreeMap<u32, SurfaceTy>,
+}
+
+impl TypeInfer {
+    fn fresh(&mut self, name: &str) -> SurfaceTy {
+        let id = self.next;
+        self.next += 1;
+        SurfaceTy::Var(id, name.into())
+    }
+
+    fn resolve(&mut self, ty: SurfaceTy) -> SurfaceTy {
+        match ty {
+            SurfaceTy::Var(id, name) => {
+                if let Some(bound) = self.subst.get(&id).cloned() {
+                    self.resolve(bound)
+                } else {
+                    SurfaceTy::Var(id, name)
+                }
+            }
+            SurfaceTy::Named(name, args) => SurfaceTy::Named(
+                name,
+                args.into_iter().map(|arg| self.resolve(arg)).collect(),
+            ),
+            SurfaceTy::Arrow(arg, ret) => {
+                SurfaceTy::Arrow(Box::new(self.resolve(*arg)), Box::new(self.resolve(*ret)))
+            }
+            other => other,
+        }
+    }
+
+    fn unify(&mut self, lhs: SurfaceTy, rhs: SurfaceTy, span: Span) -> Result<(), ElaborateError> {
+        let lhs = self.resolve(lhs);
+        let rhs = self.resolve(rhs);
+        match (lhs, rhs) {
+            (SurfaceTy::Var(lhs, _), SurfaceTy::Var(rhs, _)) if lhs == rhs => Ok(()),
+            (SurfaceTy::Var(id, _), ty) | (ty, SurfaceTy::Var(id, _)) => {
+                self.subst.insert(id, ty);
+                Ok(())
+            }
+            (SurfaceTy::Unit, SurfaceTy::Unit) | (SurfaceTy::Nat, SurfaceTy::Nat) => Ok(()),
+            // Generic arrow-position instantiation (`docs/calculus.md §4`, Sprint 14):
+            // recurse structurally so `A -> B` binds from a passed function's arrow type.
+            (SurfaceTy::Arrow(a1, r1), SurfaceTy::Arrow(a2, r2)) => {
+                self.unify(*a1, *a2, span)?;
+                self.unify(*r1, *r2, span)
+            }
+            (SurfaceTy::Named(n1, a1), SurfaceTy::Named(n2, a2))
+                if n1 == n2 && a1.len() == a2.len() =>
+            {
+                for (lhs, rhs) in a1.into_iter().zip(a2) {
+                    self.unify(lhs, rhs, span)?;
+                }
+                Ok(())
+            }
+            (found, expected) => Err(ElaborateError {
+                span,
+                message: format!("type mismatch: expected `{expected}`, found `{found}`"),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SurfaceFnSig {
+    type_params: Vec<String>,
+    params: Vec<(String, TypeExpr)>,
+    ret: TypeExpr,
+}
+
+#[derive(Debug, Clone)]
+struct SurfaceCtorSig {
+    owner: String,
+    owner_params: Vec<String>,
+    payloads: Vec<TypeExpr>,
+}
+
+#[derive(Debug, Clone)]
+struct SurfaceFieldSig {
+    owner: String,
+    owner_params: Vec<String>,
+    ty: TypeExpr,
+}
+
+#[derive(Default)]
+struct SurfaceTypeCtx {
+    functions: BTreeMap<String, SurfaceFnSig>,
+    constructors: BTreeMap<String, SurfaceCtorSig>,
+    records: BTreeMap<String, Vec<(String, TypeExpr)>>,
+    fields: BTreeMap<String, SurfaceFieldSig>,
 }
 
 struct Elaborator<'a> {
@@ -166,6 +290,579 @@ fn validate_type_uses(program: &Program) -> Result<(), ElaborateError> {
         }
     }
     Ok(())
+}
+
+fn check_surface_types(program: &Program) -> Result<(), ElaborateError> {
+    validate_type_uses(program)?;
+    let ctx = SurfaceTypeCtx::from_program(program);
+    for decl in &program.decls {
+        let Decl::Fn(func) = decl else {
+            continue;
+        };
+        let mut infer = TypeInfer::default();
+        let mut locals = BTreeMap::new();
+        let type_params = func
+            .type_params
+            .iter()
+            .map(|param| param.node.clone())
+            .collect::<BTreeSet<_>>();
+        for param in &func.params {
+            locals.insert(
+                param.name.node.clone(),
+                surface_ty_from_expr(&param.ty, &type_params, &mut infer),
+            );
+        }
+        let found = infer_surface_expr(&func.body, &ctx, &mut locals, &mut infer)?;
+        let expected = surface_ty_from_expr(&func.ret, &type_params, &mut infer);
+        infer.unify(found, expected, func.ret.span())?;
+    }
+    Ok(())
+}
+
+impl SurfaceTypeCtx {
+    fn from_program(program: &Program) -> Self {
+        let mut ctx = Self::default();
+        for decl in &program.decls {
+            match decl {
+                Decl::Fn(func) => {
+                    ctx.functions.insert(
+                        func.name.node.clone(),
+                        SurfaceFnSig {
+                            type_params: func
+                                .type_params
+                                .iter()
+                                .map(|param| param.node.clone())
+                                .collect(),
+                            params: func
+                                .params
+                                .iter()
+                                .map(|param| (param.name.node.clone(), param.ty.clone()))
+                                .collect(),
+                            ret: func.ret.clone(),
+                        },
+                    );
+                }
+                Decl::Type(decl) => match &decl.kind {
+                    TypeDeclKind::Variant(ctors) => {
+                        let owner_params = decl
+                            .type_params
+                            .iter()
+                            .map(|param| param.node.clone())
+                            .collect::<Vec<_>>();
+                        for ctor in ctors {
+                            ctx.constructors.insert(
+                                ctor.name.node.clone(),
+                                SurfaceCtorSig {
+                                    owner: decl.name.node.clone(),
+                                    owner_params: owner_params.clone(),
+                                    payloads: ctor.payloads.clone(),
+                                },
+                            );
+                        }
+                    }
+                    TypeDeclKind::Record(fields) => {
+                        let owner_params = decl
+                            .type_params
+                            .iter()
+                            .map(|param| param.node.clone())
+                            .collect::<Vec<_>>();
+                        for field in fields {
+                            ctx.fields.insert(
+                                field.name.node.clone(),
+                                SurfaceFieldSig {
+                                    owner: decl.name.node.clone(),
+                                    owner_params: owner_params.clone(),
+                                    ty: field.ty.clone(),
+                                },
+                            );
+                        }
+                        ctx.records.insert(
+                            decl.name.node.clone(),
+                            fields
+                                .iter()
+                                .map(|field| (field.name.node.clone(), field.ty.clone()))
+                                .collect(),
+                        );
+                    }
+                },
+                Decl::Effect(_) => {}
+            }
+        }
+        ctx
+    }
+
+    fn record_for_fields(
+        &self,
+        fields: &[(crate::surface::ast::Spanned<String>, Expr)],
+    ) -> Option<String> {
+        let names = fields
+            .iter()
+            .map(|(name, _)| name.node.as_str())
+            .collect::<BTreeSet<_>>();
+        self.records.iter().find_map(|(record, declared)| {
+            let declared_names = declared
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<BTreeSet<_>>();
+            (declared_names == names).then(|| record.clone())
+        })
+    }
+}
+
+fn surface_ty_from_expr(
+    ty: &TypeExpr,
+    type_params: &BTreeSet<String>,
+    infer: &mut TypeInfer,
+) -> SurfaceTy {
+    match ty {
+        TypeExpr::Unit(_) => SurfaceTy::Unit,
+        TypeExpr::Nat(_) => SurfaceTy::Nat,
+        TypeExpr::Array(_) => SurfaceTy::Named("Array".into(), vec![SurfaceTy::Nat]),
+        TypeExpr::Named(name, _) if type_params.contains(name) => infer.fresh(name),
+        TypeExpr::Named(name, _) => SurfaceTy::Named(name.clone(), Vec::new()),
+        TypeExpr::Applied(name, args, _) => SurfaceTy::Named(
+            name.clone(),
+            args.iter()
+                .map(|arg| surface_ty_from_expr(arg, type_params, infer))
+                .collect(),
+        ),
+        TypeExpr::Unique(inner, _) | TypeExpr::Preserve { inner, .. } => {
+            surface_ty_from_expr(inner, type_params, infer)
+        }
+        TypeExpr::Arrow(arg, ret, _) => SurfaceTy::Arrow(
+            Box::new(surface_ty_from_expr(arg, type_params, infer)),
+            Box::new(surface_ty_from_expr(ret, type_params, infer)),
+        ),
+    }
+}
+
+fn instantiate_type(ty: &TypeExpr, params: &BTreeMap<String, SurfaceTy>) -> SurfaceTy {
+    match ty {
+        TypeExpr::Unit(_) => SurfaceTy::Unit,
+        TypeExpr::Nat(_) => SurfaceTy::Nat,
+        TypeExpr::Array(_) => SurfaceTy::Named("Array".into(), vec![SurfaceTy::Nat]),
+        TypeExpr::Named(name, _) => params
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| SurfaceTy::Named(name.clone(), Vec::new())),
+        TypeExpr::Applied(name, args, _) => SurfaceTy::Named(
+            name.clone(),
+            args.iter()
+                .map(|arg| instantiate_type(arg, params))
+                .collect(),
+        ),
+        TypeExpr::Unique(inner, _) | TypeExpr::Preserve { inner, .. } => {
+            instantiate_type(inner, params)
+        }
+        TypeExpr::Arrow(arg, ret, _) => SurfaceTy::Arrow(
+            Box::new(instantiate_type(arg, params)),
+            Box::new(instantiate_type(ret, params)),
+        ),
+    }
+}
+
+fn instantiate_fn(sig: &SurfaceFnSig, infer: &mut TypeInfer) -> (Vec<SurfaceTy>, SurfaceTy) {
+    let params = sig
+        .type_params
+        .iter()
+        .map(|name| (name.clone(), infer.fresh(name)))
+        .collect::<BTreeMap<_, _>>();
+    let args = sig
+        .params
+        .iter()
+        .map(|(_, ty)| instantiate_type(ty, &params))
+        .collect();
+    let ret = instantiate_type(&sig.ret, &params);
+    (args, ret)
+}
+
+fn instantiate_constructor(
+    ctor: &SurfaceCtorSig,
+    infer: &mut TypeInfer,
+) -> (Vec<SurfaceTy>, SurfaceTy) {
+    let params = ctor
+        .owner_params
+        .iter()
+        .map(|name| (name.clone(), infer.fresh(name)))
+        .collect::<BTreeMap<_, _>>();
+    let payloads = ctor
+        .payloads
+        .iter()
+        .map(|ty| instantiate_type(ty, &params))
+        .collect::<Vec<_>>();
+    let result = SurfaceTy::Named(
+        ctor.owner.clone(),
+        ctor.owner_params
+            .iter()
+            .map(|name| params.get(name).cloned().unwrap())
+            .collect(),
+    );
+    (payloads, result)
+}
+
+fn instantiate_field(field: &SurfaceFieldSig, infer: &mut TypeInfer) -> (SurfaceTy, SurfaceTy) {
+    let params = field
+        .owner_params
+        .iter()
+        .map(|name| (name.clone(), infer.fresh(name)))
+        .collect::<BTreeMap<_, _>>();
+    let owner = SurfaceTy::Named(
+        field.owner.clone(),
+        field
+            .owner_params
+            .iter()
+            .map(|name| params.get(name).cloned().unwrap())
+            .collect(),
+    );
+    let ty = instantiate_type(&field.ty, &params);
+    (owner, ty)
+}
+
+fn fn_type_from_sig(sig: &SurfaceFnSig, infer: &mut TypeInfer) -> SurfaceTy {
+    let (params, ret) = instantiate_fn(sig, infer);
+    params.into_iter().rev().fold(ret, |acc, param| {
+        SurfaceTy::Arrow(Box::new(param), Box::new(acc))
+    })
+}
+
+fn infer_surface_expr(
+    expr: &Expr,
+    ctx: &SurfaceTypeCtx,
+    locals: &mut BTreeMap<String, SurfaceTy>,
+    infer: &mut TypeInfer,
+) -> Result<SurfaceTy, ElaborateError> {
+    match &expr.kind {
+        ExprKind::Unit => Ok(SurfaceTy::Unit),
+        ExprKind::Nat(_) => Ok(SurfaceTy::Nat),
+        ExprKind::Var(name) => {
+            if let Some(local) = locals.get(name).cloned() {
+                return Ok(local);
+            }
+            if let Some(sig) = ctx.functions.get(name) {
+                return Ok(fn_type_from_sig(sig, infer));
+            }
+            if let Some(ctor) = ctx.constructors.get(name) {
+                let (payloads, result) = instantiate_constructor(ctor, infer);
+                if payloads.is_empty() {
+                    return Ok(result);
+                }
+            }
+            Ok(SurfaceTy::Nat)
+        }
+        ExprKind::Binary { lhs, rhs, .. } => {
+            let lhs_ty = infer_surface_expr(lhs, ctx, locals, infer)?;
+            let rhs_ty = infer_surface_expr(rhs, ctx, locals, infer)?;
+            infer.unify(lhs_ty, SurfaceTy::Nat, lhs.span)?;
+            infer.unify(rhs_ty, SurfaceTy::Nat, rhs.span)?;
+            Ok(SurfaceTy::Nat)
+        }
+        ExprKind::Pipe { lhs, rhs } => {
+            let desugared = desugar_pipe((**lhs).clone(), (**rhs).clone(), expr.span)?;
+            infer_surface_expr(&desugared, ctx, locals, infer)
+        }
+        ExprKind::Prefix { expr: inner, .. } => infer_surface_expr(inner, ctx, locals, infer),
+        ExprKind::Block { bindings, result } => {
+            let mut inner = locals.clone();
+            for binding in bindings {
+                let ty = infer_surface_expr(&binding.expr, ctx, &mut inner, infer)?;
+                inner.insert(binding.name.node.clone(), infer.resolve(ty));
+            }
+            infer_surface_expr(result, ctx, &mut inner, infer)
+        }
+        ExprKind::Call { callee, args } => {
+            if let ExprKind::Var(name) = &callee.kind {
+                if let Some(ctor) = ctx.constructors.get(name) {
+                    let (params, ret) = instantiate_constructor(ctor, infer);
+                    if params.len() != args.len() {
+                        return Err(ElaborateError {
+                            span: expr.span,
+                            message: format!(
+                                "constructor `{name}` expects {} payloads",
+                                params.len()
+                            ),
+                        });
+                    }
+                    for (arg, expected) in args.iter().zip(params) {
+                        let found = infer_surface_expr(arg, ctx, locals, infer)?;
+                        infer.unify(found, expected, arg.span)?;
+                    }
+                    return Ok(infer.resolve(ret));
+                }
+                match name.as_str() {
+                    "mkarray" if args.len() == 2 => {
+                        let len = infer_surface_expr(&args[0], ctx, locals, infer)?;
+                        infer.unify(len, SurfaceTy::Nat, args[0].span)?;
+                        let elem = infer_surface_expr(&args[1], ctx, locals, infer)?;
+                        return Ok(SurfaceTy::Named("Array".into(), vec![infer.resolve(elem)]));
+                    }
+                    "get" if args.len() == 2 => {
+                        let elem = infer.fresh("A");
+                        let arr = infer_surface_expr(&args[0], ctx, locals, infer)?;
+                        let idx = infer_surface_expr(&args[1], ctx, locals, infer)?;
+                        infer.unify(
+                            arr,
+                            SurfaceTy::Named("Array".into(), vec![elem.clone()]),
+                            args[0].span,
+                        )?;
+                        infer.unify(idx, SurfaceTy::Nat, args[1].span)?;
+                        return Ok(infer.resolve(elem));
+                    }
+                    "set" if args.len() == 3 => {
+                        let elem = infer.fresh("A");
+                        let arr = infer_surface_expr(&args[0], ctx, locals, infer)?;
+                        let idx = infer_surface_expr(&args[1], ctx, locals, infer)?;
+                        let val = infer_surface_expr(&args[2], ctx, locals, infer)?;
+                        infer.unify(
+                            arr,
+                            SurfaceTy::Named("Array".into(), vec![elem.clone()]),
+                            args[0].span,
+                        )?;
+                        infer.unify(idx, SurfaceTy::Nat, args[1].span)?;
+                        infer.unify(val, elem.clone(), args[2].span)?;
+                        return Ok(SurfaceTy::Named("Array".into(), vec![infer.resolve(elem)]));
+                    }
+                    "len" if args.len() == 1 => {
+                        let elem = infer.fresh("A");
+                        let arr = infer_surface_expr(&args[0], ctx, locals, infer)?;
+                        infer.unify(
+                            arr,
+                            SurfaceTy::Named("Array".into(), vec![elem]),
+                            args[0].span,
+                        )?;
+                        return Ok(SurfaceTy::Nat);
+                    }
+                    _ => {}
+                }
+                if let Some(sig) = ctx.functions.get(name) {
+                    let (params, ret) = instantiate_fn(sig, infer);
+                    if params.len() != args.len() {
+                        return Err(ElaborateError {
+                            span: expr.span,
+                            message: format!(
+                                "function `{name}` expects {} argument(s)",
+                                params.len()
+                            ),
+                        });
+                    }
+                    for (arg, expected) in args.iter().zip(params) {
+                        let found = infer_surface_expr(arg, ctx, locals, infer)?;
+                        infer.unify(found, expected, arg.span)?;
+                    }
+                    return Ok(infer.resolve(ret));
+                }
+            }
+            let mut fun = infer_surface_expr(callee, ctx, locals, infer)?;
+            for arg in args {
+                let arg_ty = infer_surface_expr(arg, ctx, locals, infer)?;
+                let ret = infer.fresh("R");
+                infer.unify(
+                    fun,
+                    SurfaceTy::Arrow(Box::new(arg_ty), Box::new(ret.clone())),
+                    expr.span,
+                )?;
+                fun = infer.resolve(ret);
+            }
+            Ok(fun)
+        }
+        ExprKind::CaseNat { scrutinee, arms } => {
+            let scrut_ty = infer_surface_expr(scrutinee, ctx, locals, infer)?;
+            let is_variant = arms.iter().any(|arm| {
+                matches!(
+                    arm.pattern,
+                    Pattern::Constructor { .. } | Pattern::Record { .. } | Pattern::Wildcard(_)
+                )
+            }) && !arms
+                .iter()
+                .any(|arm| matches!(arm.pattern, Pattern::Zero(_)));
+            if is_variant {
+                infer_variant_case(arms, scrut_ty, ctx, locals, infer, expr.span)
+            } else {
+                infer.unify(scrut_ty, SurfaceTy::Nat, scrutinee.span)?;
+                let mut out = None;
+                for arm in arms {
+                    let mut branch_locals = locals.clone();
+                    if let Pattern::Bind(name) = &arm.pattern {
+                        branch_locals.insert(name.node.clone(), SurfaceTy::Nat);
+                    }
+                    let branch = infer_surface_expr(&arm.body, ctx, &mut branch_locals, infer)?;
+                    if let Some(prev) = out.clone() {
+                        infer.unify(branch, prev, arm.body.span)?;
+                    } else {
+                        out = Some(branch);
+                    }
+                }
+                Ok(infer.resolve(out.unwrap_or(SurfaceTy::Unit)))
+            }
+        }
+        ExprKind::RecordLit(fields) => {
+            let record = ctx
+                .record_for_fields(fields)
+                .ok_or_else(|| ElaborateError {
+                    span: expr.span,
+                    message: "record literal fields do not match a declared record type".into(),
+                })?;
+            let declared = ctx.records.get(&record).expect("record exists");
+            let owner_params = ctx
+                .fields
+                .values()
+                .find(|field| field.owner == record)
+                .map(|field| field.owner_params.clone())
+                .unwrap_or_default();
+            let params = owner_params
+                .iter()
+                .map(|name| (name.clone(), infer.fresh(name)))
+                .collect::<BTreeMap<_, _>>();
+            for (field_name, field_ty) in declared {
+                let (_, field_expr) = fields
+                    .iter()
+                    .find(|(name, _)| name.node == *field_name)
+                    .expect("record_for_fields checked names");
+                let found = infer_surface_expr(field_expr, ctx, locals, infer)?;
+                let expected = instantiate_type(field_ty, &params);
+                infer.unify(found, expected, field_expr.span)?;
+            }
+            Ok(SurfaceTy::Named(
+                record,
+                owner_params
+                    .iter()
+                    .map(|name| params.get(name).cloned().unwrap())
+                    .collect(),
+            ))
+        }
+        ExprKind::RecordUpdate {
+            record,
+            field,
+            value,
+        } => {
+            let record_ty = infer_surface_expr(record, ctx, locals, infer)?;
+            let field_sig = ctx.fields.get(&field.node).ok_or_else(|| ElaborateError {
+                span: field.span,
+                message: format!("unknown record field `{}`", field.node),
+            })?;
+            let (owner_ty, field_ty) = instantiate_field(field_sig, infer);
+            infer.unify(record_ty.clone(), owner_ty, record.span)?;
+            let found = infer_surface_expr(value, ctx, locals, infer)?;
+            infer.unify(found, field_ty, value.span)?;
+            Ok(infer.resolve(record_ty))
+        }
+        ExprKind::Field { record, field } => {
+            let record_ty = infer_surface_expr(record, ctx, locals, infer)?;
+            let field_sig = ctx.fields.get(&field.node).ok_or_else(|| ElaborateError {
+                span: field.span,
+                message: format!("unknown record field `{}`", field.node),
+            })?;
+            let (owner_ty, field_ty) = instantiate_field(field_sig, infer);
+            infer.unify(record_ty, owner_ty, record.span)?;
+            Ok(infer.resolve(field_ty))
+        }
+        ExprKind::QualifiedCall { args, .. } => {
+            for arg in args {
+                let found = infer_surface_expr(arg, ctx, locals, infer)?;
+                infer.unify(found, SurfaceTy::Nat, arg.span)?;
+            }
+            Ok(SurfaceTy::Nat)
+        }
+        ExprKind::Handle { body, clauses } => {
+            let body_ty = infer_surface_expr(body, ctx, locals, infer)?;
+            for clause in clauses {
+                match clause {
+                    HandleClause::Return { var, body, .. } => {
+                        let mut clause_locals = locals.clone();
+                        clause_locals.insert(var.node.clone(), body_ty.clone());
+                        let clause_ty = infer_surface_expr(body, ctx, &mut clause_locals, infer)?;
+                        infer.unify(clause_ty, body_ty.clone(), body.span)?;
+                    }
+                    HandleClause::Operation {
+                        param, kont, body, ..
+                    } => {
+                        let mut clause_locals = locals.clone();
+                        if let Pattern::Bind(param) = param {
+                            clause_locals.insert(param.node.clone(), SurfaceTy::Nat);
+                        }
+                        if let Pattern::Bind(kont) = kont {
+                            clause_locals.insert(
+                                kont.node.clone(),
+                                SurfaceTy::Arrow(
+                                    Box::new(SurfaceTy::Nat),
+                                    Box::new(body_ty.clone()),
+                                ),
+                            );
+                        }
+                        let clause_ty = infer_surface_expr(body, ctx, &mut clause_locals, infer)?;
+                        infer.unify(clause_ty, body_ty.clone(), body.span)?;
+                    }
+                }
+            }
+            Ok(body_ty)
+        }
+        ExprKind::Scope { body } => infer_surface_expr(body, ctx, locals, infer),
+        ExprKind::Spawn { callee, args } => {
+            if let Some(sig) = ctx.functions.get(&callee.node) {
+                let (params, ret) = instantiate_fn(sig, infer);
+                for (arg, expected) in args.iter().zip(params) {
+                    let found = infer_surface_expr(arg, ctx, locals, infer)?;
+                    infer.unify(found, expected, arg.span)?;
+                }
+                Ok(SurfaceTy::Named("Task".into(), vec![ret]))
+            } else {
+                Ok(SurfaceTy::Named("Task".into(), vec![SurfaceTy::Nat]))
+            }
+        }
+        ExprKind::Await { handle } => {
+            let ret = infer.fresh("T");
+            let found = infer_surface_expr(handle, ctx, locals, infer)?;
+            infer.unify(
+                found,
+                SurfaceTy::Named("Task".into(), vec![ret.clone()]),
+                handle.span,
+            )?;
+            Ok(infer.resolve(ret))
+        }
+    }
+}
+
+fn infer_variant_case(
+    arms: &[crate::surface::ast::CaseArm],
+    scrut_ty: SurfaceTy,
+    ctx: &SurfaceTypeCtx,
+    locals: &mut BTreeMap<String, SurfaceTy>,
+    infer: &mut TypeInfer,
+    span: Span,
+) -> Result<SurfaceTy, ElaborateError> {
+    let mut out = None;
+    for arm in arms {
+        let mut branch_locals = locals.clone();
+        match &arm.pattern {
+            Pattern::Constructor { name, args, .. } => {
+                if let Some(ctor) = ctx.constructors.get(&name.node) {
+                    let (payloads, result) = instantiate_constructor(ctor, infer);
+                    infer.unify(scrut_ty.clone(), result, name.span)?;
+                    for (pattern, payload_ty) in args.iter().zip(payloads) {
+                        if let Pattern::Bind(bind) = pattern {
+                            branch_locals.insert(bind.node.clone(), payload_ty);
+                        }
+                    }
+                }
+            }
+            Pattern::Record { fields, .. } => {
+                for field in fields {
+                    branch_locals.insert(field.node.clone(), infer.fresh("F"));
+                }
+            }
+            Pattern::Wildcard(_) => {}
+            Pattern::Zero(_) | Pattern::Bind(_) => {}
+        }
+        let branch = infer_surface_expr(&arm.body, ctx, &mut branch_locals, infer)?;
+        if let Some(prev) = out.clone() {
+            infer.unify(branch, prev, arm.body.span)?;
+        } else {
+            out = Some(branch);
+        }
+    }
+    Ok(infer.resolve(out.unwrap_or_else(|| {
+        let _ = span;
+        SurfaceTy::Unit
+    })))
 }
 
 fn validate_type_expr(
@@ -437,29 +1134,75 @@ impl<'a> Elaborator<'a> {
             })?;
         let recursive = expr_mentions(&func.body, &func.name.node);
         if recursive {
-            if sig.params.len() != 1 || !matches!(sig.params[0].1, Type::Nat | Type::Array) {
+            if sig.params.is_empty() || !matches!(sig.params[0].1, Type::Nat | Type::Array) {
                 return Err(ElaborateError {
                     span: func.name.span,
                     message:
-                        "recursive reduced-core functions must be unary `Nat`/aggregate -> ..."
+                        "recursive reduced-core functions must recurse on a leading `Nat`/aggregate parameter"
                             .into(),
                 });
             }
             let tag = self.recursion_tag(&func.boundedness, &sig.params[0].0)?;
+            let loop_name = if sig.params.len() == 1 {
+                func.name.node.clone()
+            } else {
+                format!("__atli_{}_loop", func.name.node)
+            };
+            let body_expr = if sig.params.len() == 1 {
+                func.body.clone()
+            } else {
+                rewrite_self_calls(
+                    &func.body,
+                    &func.name.node,
+                    &loop_name,
+                    &sig.params[1..]
+                        .iter()
+                        .map(|(name, _, _)| name.clone())
+                        .collect::<Vec<_>>(),
+                )?
+            };
             let mut body_env = env.clone();
-            body_env.vars.insert(func.name.node.clone());
-            body_env.vars.insert(sig.params[0].0.clone());
-            let body = self.expr(&func.body, &body_env)?;
-            return Ok(self.record(
+            body_env.vars.insert(loop_name.clone());
+            for (name, _, _) in &sig.params {
+                body_env.vars.insert(name.clone());
+            }
+            let body = self.expr(&body_expr, &body_env)?;
+            let fix = self.record(
                 Term::Fix {
-                    func: func.name.node.clone(),
+                    func: loop_name,
                     param: sig.params[0].0.clone(),
                     param_ty: sig.params[0].1.clone(),
                     body: Box::new(body),
                     tag,
                 },
                 func.span,
-            ));
+            );
+            if sig.params.len() == 1 {
+                return Ok(fix);
+            }
+            let mut term = self.record(
+                Term::App(Box::new(fix), Box::new(Term::var(&sig.params[0].0))),
+                func.span,
+            );
+            for (name, ty, _) in sig.params.iter().skip(1).rev() {
+                term = self.record(
+                    Term::Lam {
+                        param: name.clone(),
+                        param_ty: ty.clone(),
+                        body: Box::new(term),
+                    },
+                    func.span,
+                );
+            }
+            term = self.record(
+                Term::Lam {
+                    param: sig.params[0].0.clone(),
+                    param_ty: sig.params[0].1.clone(),
+                    body: Box::new(term),
+                },
+                func.span,
+            );
+            return Ok(term);
         }
         let mut body_env = env.clone();
         for (name, _, _) in &sig.params {
@@ -1988,6 +2731,197 @@ fn check_unique_call(
             }
         }
     }
+}
+
+fn rewrite_self_calls(
+    expr: &Expr,
+    func: &str,
+    loop_name: &str,
+    captured_params: &[String],
+) -> Result<Expr, ElaborateError> {
+    let kind = match &expr.kind {
+        ExprKind::Call { callee, args } if matches!(&callee.kind, ExprKind::Var(name) if name == func) =>
+        {
+            if args.len() != captured_params.len() + 1 {
+                return Err(ElaborateError {
+                    span: expr.span,
+                    message: format!(
+                        "recursive call to `{func}` must pass the recursive argument plus unchanged captured parameters"
+                    ),
+                });
+            }
+            for (arg, param) in args.iter().skip(1).zip(captured_params) {
+                if !matches!(&arg.kind, ExprKind::Var(name) if name == param) {
+                    return Err(ElaborateError {
+                        span: arg.span,
+                        message: format!(
+                            "recursive call to `{func}` must pass captured parameter `{param}` unchanged"
+                        ),
+                    });
+                }
+            }
+            ExprKind::Call {
+                callee: Box::new(Expr::new(ExprKind::Var(loop_name.into()), callee.span)),
+                args: vec![rewrite_self_calls(
+                    &args[0],
+                    func,
+                    loop_name,
+                    captured_params,
+                )?],
+            }
+        }
+        ExprKind::Call { callee, args } => ExprKind::Call {
+            callee: Box::new(rewrite_self_calls(
+                callee,
+                func,
+                loop_name,
+                captured_params,
+            )?),
+            args: args
+                .iter()
+                .map(|arg| rewrite_self_calls(arg, func, loop_name, captured_params))
+                .collect::<Result<Vec<_>, _>>()?,
+        },
+        ExprKind::QualifiedCall { effect, op, args } => ExprKind::QualifiedCall {
+            effect: effect.clone(),
+            op: op.clone(),
+            args: args
+                .iter()
+                .map(|arg| rewrite_self_calls(arg, func, loop_name, captured_params))
+                .collect::<Result<Vec<_>, _>>()?,
+        },
+        ExprKind::Binary { op, lhs, rhs } => ExprKind::Binary {
+            op: *op,
+            lhs: Box::new(rewrite_self_calls(lhs, func, loop_name, captured_params)?),
+            rhs: Box::new(rewrite_self_calls(rhs, func, loop_name, captured_params)?),
+        },
+        ExprKind::Pipe { lhs, rhs } => ExprKind::Pipe {
+            lhs: Box::new(rewrite_self_calls(lhs, func, loop_name, captured_params)?),
+            rhs: Box::new(rewrite_self_calls(rhs, func, loop_name, captured_params)?),
+        },
+        ExprKind::Block { bindings, result } => ExprKind::Block {
+            bindings: bindings
+                .iter()
+                .map(|binding| {
+                    Ok(crate::surface::ast::Binding {
+                        name: binding.name.clone(),
+                        expr: rewrite_self_calls(&binding.expr, func, loop_name, captured_params)?,
+                        span: binding.span,
+                    })
+                })
+                .collect::<Result<Vec<_>, ElaborateError>>()?,
+            result: Box::new(rewrite_self_calls(
+                result,
+                func,
+                loop_name,
+                captured_params,
+            )?),
+        },
+        ExprKind::CaseNat { scrutinee, arms } => ExprKind::CaseNat {
+            scrutinee: Box::new(rewrite_self_calls(
+                scrutinee,
+                func,
+                loop_name,
+                captured_params,
+            )?),
+            arms: arms
+                .iter()
+                .map(|arm| {
+                    Ok(crate::surface::ast::CaseArm {
+                        pattern: arm.pattern.clone(),
+                        body: rewrite_self_calls(&arm.body, func, loop_name, captured_params)?,
+                        span: arm.span,
+                    })
+                })
+                .collect::<Result<Vec<_>, ElaborateError>>()?,
+        },
+        ExprKind::RecordLit(fields) => ExprKind::RecordLit(
+            fields
+                .iter()
+                .map(|(name, field)| {
+                    Ok((
+                        name.clone(),
+                        rewrite_self_calls(field, func, loop_name, captured_params)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, ElaborateError>>()?,
+        ),
+        ExprKind::RecordUpdate {
+            record,
+            field,
+            value,
+        } => ExprKind::RecordUpdate {
+            record: Box::new(rewrite_self_calls(
+                record,
+                func,
+                loop_name,
+                captured_params,
+            )?),
+            field: field.clone(),
+            value: Box::new(rewrite_self_calls(value, func, loop_name, captured_params)?),
+        },
+        ExprKind::Field { record, field } => ExprKind::Field {
+            record: Box::new(rewrite_self_calls(
+                record,
+                func,
+                loop_name,
+                captured_params,
+            )?),
+            field: field.clone(),
+        },
+        ExprKind::Handle { body, clauses } => ExprKind::Handle {
+            body: Box::new(rewrite_self_calls(body, func, loop_name, captured_params)?),
+            clauses: clauses
+                .iter()
+                .map(|clause| match clause {
+                    HandleClause::Return { var, body, span } => Ok(HandleClause::Return {
+                        var: var.clone(),
+                        body: rewrite_self_calls(body, func, loop_name, captured_params)?,
+                        span: *span,
+                    }),
+                    HandleClause::Operation {
+                        effect,
+                        op,
+                        param,
+                        kont,
+                        body,
+                        span,
+                    } => Ok(HandleClause::Operation {
+                        effect: effect.clone(),
+                        op: op.clone(),
+                        param: param.clone(),
+                        kont: kont.clone(),
+                        body: rewrite_self_calls(body, func, loop_name, captured_params)?,
+                        span: *span,
+                    }),
+                })
+                .collect::<Result<Vec<_>, ElaborateError>>()?,
+        },
+        ExprKind::Scope { body } => ExprKind::Scope {
+            body: Box::new(rewrite_self_calls(body, func, loop_name, captured_params)?),
+        },
+        ExprKind::Spawn { callee, args } => ExprKind::Spawn {
+            callee: callee.clone(),
+            args: args
+                .iter()
+                .map(|arg| rewrite_self_calls(arg, func, loop_name, captured_params))
+                .collect::<Result<Vec<_>, _>>()?,
+        },
+        ExprKind::Await { handle } => ExprKind::Await {
+            handle: Box::new(rewrite_self_calls(
+                handle,
+                func,
+                loop_name,
+                captured_params,
+            )?),
+        },
+        ExprKind::Prefix { op, expr: inner } => ExprKind::Prefix {
+            op: *op,
+            expr: Box::new(rewrite_self_calls(inner, func, loop_name, captured_params)?),
+        },
+        ExprKind::Unit | ExprKind::Nat(_) | ExprKind::Var(_) => expr.kind.clone(),
+    };
+    Ok(Expr::new(kind, expr.span))
 }
 
 fn scope_returns_task_handle(expr: &Expr) -> bool {

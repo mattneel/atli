@@ -142,9 +142,10 @@ fn cli_runs_examples_and_surfaces_witnesses() {
         ("examples/copy_vs_inplace.atli", "2\n"),
         ("examples/copy_functional.atli", "2\n"),
         ("examples/option.atli", "7\n"),
-        ("examples/list_map.atli", "6\n"),
+        ("examples/list_map.atli", "8\n"),
         ("examples/preserve.atli", "2\n"),
         ("examples/spawn_generic.atli", "5\n"),
+        ("examples/apply.atli", "6\n"),
     ];
     for (path, expected) in cases {
         let (code, stdout, stderr) = run_cli(&["run", path]);
@@ -299,6 +300,7 @@ fn codegen_emit_goldens_pin_certified_arena_literals() {
             "examples/list_map.atli",
             "tests/goldens/codegen/list_map.mlir",
         ),
+        ("examples/apply.atli", "tests/goldens/codegen/apply.mlir"),
     ] {
         let (code, stdout, stderr) = run_cli(&["emit", path]);
         assert_eq!(code, 0, "{stderr}");
@@ -392,7 +394,8 @@ fn compiled_native_outputs_match_oracle_for_finite_programs() {
         ("courier", fs::read_to_string("examples/courier.atli").unwrap(), "42\n"),
         ("nursery", fs::read_to_string("examples/nursery.atli").unwrap(), "6\n"),
         ("option", fs::read_to_string("examples/option.atli").unwrap(), "7\n"),
-        ("list_map", fs::read_to_string("examples/list_map.atli").unwrap(), "6\n"),
+        ("list_map", fs::read_to_string("examples/list_map.atli").unwrap(), "8\n"),
+        ("apply", fs::read_to_string("examples/apply.atli").unwrap(), "6\n"),
         ("preserve", fs::read_to_string("examples/preserve.atli").unwrap(), "2\n"),
         ("spawn_generic", fs::read_to_string("examples/spawn_generic.atli").unwrap(), "5\n"),
     ];
