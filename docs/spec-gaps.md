@@ -58,6 +58,17 @@ semantics.
 
 ## Resolved gaps
 
+- RESOLVED(stepf-pattern-absorption-congruence-loss): Sprint 16 finding twenty-three
+  repaired the mechanized `stepf` dispatch. The beta and case-succ patterns had absorbed
+  their congruence cases, so a lambda-headed application with a reducible argument and a
+  succ-headed scrutinee with a reducible inside were `stepf`-stuck; the App/Resume
+  congruence arms also carried an off-grammar stuck-function fallback. All three diverged
+  from `docs/calculus.md §5`'s `E e | v E` / `case E` grammar and from the Rust oracle's
+  value-guarded dispatch (`src/interp.rs`). Both absorption witnesses were well-typed,
+  closed, non-value, un-blocked, `stepf`-stuck terms: live counterexamples to the corrected
+  L3 trichotomy. The repair restructures the three dispatches to the oracle's
+  value-guarded form; Bridge anchors pin the restored congruences and removed fallback.
+
 - RESOLVED(mechanized-token-continuation-erasure): Sprint 16 Part A repairs Sprint 04's
   erased token continuation model. Continuation values now carry the installed handler and
   captured context as `TContVal h ctx`; `capture` decomposes handler bodies; §5's deep

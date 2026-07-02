@@ -133,24 +133,33 @@ Proof.
     + discriminate.
 Qed.
 
+(** Sprint 16 finding twenty-three: dispatch is value-guarded exactly like the
+    Rust oracle (src/interp.rs step_app/step_case_nat/step_resume) and like
+    [capture]. Pre-repair pattern absorption made beta/case-succ swallow their
+    congruence cases, and the removed argument fallbacks were off-grammar. *)
 Fixpoint stepf (t : term) : option term :=
   match t with
-  | TApp (TLam x _ body) v =>
-      if is_value v then Some (subst x v body) else None (* β, §5 *)
   | TApp f a =>
-      match stepf f with
-      | Some f' => Some (TApp f' a)
-      | None => match stepf a with Some a' => Some (TApp f a') | None => None end
-      end
+      if is_value f then
+        if is_value a then
+          match f with
+          | TLam x _ body => Some (subst x a body) (* β, §5 *)
+          | _ => None
+          end
+        else match stepf a with Some a' => Some (TApp f a') | None => None end (* v E, §5 *)
+      else match stepf f with Some f' => Some (TApp f' a) | None => None end (* E e, §5 *)
   | TLet x v body =>
       if is_value v then Some (subst x v body) (* let, §5 *)
       else match stepf v with Some v' => Some (TLet x v' body) | None => None end
   | TSucc e => match stepf e with Some e' => Some (TSucc e') | None => None end
-  | TCaseNat TZero e0 _ _ => Some e0 (* case-zero, §5 *)
-  | TCaseNat (TSucc v) _ x e1 =>
-      if is_value v then Some (subst x v e1) else None (* case-succ, §5 *)
   | TCaseNat scrut e0 x e1 =>
-      match stepf scrut with Some scrut' => Some (TCaseNat scrut' e0 x e1) | None => None end
+      if is_value scrut then
+        match scrut with
+        | TZero => Some e0 (* case-zero, §5 *)
+        | TSucc v => Some (subst x v e1) (* case-succ, §5 *)
+        | _ => None
+        end
+      else match stepf scrut with Some scrut' => Some (TCaseNat scrut' e0 x e1) | None => None end (* case E, §5 *)
   | TFix f x a body tag =>
       Some (TLam x a (subst f (TFix f x a body tag) body)) (* unfold, §5 *)
   | TPerform op arg =>
@@ -180,10 +189,10 @@ Fixpoint stepf (t : term) : option term :=
       else match stepf v with Some v' => Some (TResume (TContVal h ctx) v') | None => None end
   | TResume (TUsedContVal _ _) _ => None (* resume-after-use is the retained stuck state, §5/§8.3 *)
   | TResume k arg =>
-      match stepf k with
-      | Some k' => Some (TResume k' arg)
-      | None => match stepf arg with Some arg' => Some (TResume k arg') | None => None end
-      end
+      if is_value k then
+        if is_value arg then None
+        else match stepf arg with Some arg' => Some (TResume k arg') | None => None end (* resume v E, §5 *)
+      else match stepf k with Some k' => Some (TResume k' arg) | None => None end (* resume E e, §5 *)
   | _ => None
   end.
 

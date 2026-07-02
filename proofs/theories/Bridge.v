@@ -335,6 +335,34 @@ Example finding21_completes :
   step (THandle TZero resuming_handler) TZero.
 Proof. apply StepByFunction. reflexivity. Qed.
 
+(** Finding twenty-three anchors, Sprint 16: value-guarded congruence restored.
+    App, case, and resume dispatch now mirrors docs/calculus.md §5 and the Rust
+    oracle instead of absorbing congruence cases or falling back to the argument
+    after a stuck non-value function/kont. *)
+Definition inner_redex : term := TApp (TLam "y" TyNat (TVar "y")) TZero.
+
+Example finding23_beta_arg_congruence_now_steps :
+  step (TApp (TLam "x" TyNat (TVar "x")) inner_redex)
+       (TApp (TLam "x" TyNat (TVar "x")) TZero).
+Proof. apply StepByFunction. reflexivity. Qed.
+
+Example finding23_case_succ_congruence_now_steps :
+  step (TCaseNat (TSucc inner_redex) TZero "p" TZero)
+       (TCaseNat (TSucc TZero) TZero "p" TZero).
+Proof. apply StepByFunction. reflexivity. Qed.
+
+(* Off-grammar fallback removed: a stuck non-value function position no longer
+   licenses stepping the argument (§5: E e | v E). Under a handler the same term
+   is captured -- the blocked function position is the redex. *)
+Example finding23_stuck_fun_no_longer_steps_arg :
+  stepf (TApp (TPerform L TZero) inner_redex) = None.
+Proof. reflexivity. Qed.
+
+Example finding23_blocked_fun_captured_under_handler :
+  step (THandle (TApp (TPerform L TZero) inner_redex) resuming_handler)
+       (TResume (TContVal resuming_handler [FAppFun inner_redex]) TZero).
+Proof. apply StepByFunction. reflexivity. Qed.
+
 (** Finding twenty-two anchors, Sprint 16: handler binder aliasing.
     With op_param = op_k, typing's context order lets the continuation binding
     shadow (k wins statically) while subst2 substitutes the operation parameter
