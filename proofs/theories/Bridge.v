@@ -41,12 +41,16 @@ Example structural_fix_typable_like_rust_checker : exists beta lat_eps lat_beta,
   has_type [] structural_fix_golden (TyArrow TyNat lat_eps lat_beta TyNat) EffEmpty beta.
 Proof.
   eexists. eexists. eexists. unfold structural_fix_golden.
-  eapply Ty_FixStructural.
+  eapply Ty_FixStructural with (eps := EffEmpty) (beta := BFinite 0).
   - reflexivity.
-  - eapply Ty_CaseNat.
+  - change EffEmpty with (eff_join EffEmpty (eff_join EffEmpty EffEmpty)).
+    change (BFinite 0) with (bound_seq (BFinite 0) (bound_join (BFinite 0) (BFinite 0))).
+    eapply Ty_CaseNat.
     + apply Ty_Var. reflexivity.
     + apply Ty_Zero.
-    + eapply Ty_App.
+    + change EffEmpty with (eff_join EffEmpty (eff_join EffEmpty EffEmpty)).
+      change (BFinite 0) with (bound_seq (BFinite 0) (bound_seq (BFinite 0) (BFinite 0))).
+      eapply Ty_App with (arg_ty := TyNat) (lat_eps := EffEmpty) (lat_beta := BFinite 0).
       * apply Ty_Var. reflexivity.
       * apply Ty_Var. reflexivity.
 Qed.
@@ -55,7 +59,7 @@ Example div_fix_typable_like_rust_checker :
   has_type [] div_fix_golden (TyArrow TyNat EffEmpty BOmega TyNat) EffEmpty (BFinite 0).
 Proof.
   unfold div_fix_golden.
-  eapply Ty_FixDiv with (eps := EffEmpty) (beta := BOmega).
+  eapply Ty_FixDiv with (eps := EffEmpty).
   - reflexivity.
   - change EffEmpty with (eff_join EffEmpty (eff_join EffEmpty EffEmpty)).
     change BOmega with (bound_seq (BFinite 0) (bound_seq (BFinite 0) BOmega)).
@@ -83,7 +87,7 @@ Proof.
     change EffEmpty with (eff_join EffEmpty (eff_join EffEmpty EffEmpty)).
     change BOmega with (bound_seq (BFinite 0) (bound_seq (BFinite 0) BOmega)).
     eapply Ty_App with (arg_ty := TyNat) (lat_eps := EffEmpty) (lat_beta := BOmega).
-    + eapply Ty_FixDiv with (eps := EffEmpty) (beta := BOmega).
+    + eapply Ty_FixDiv with (eps := EffEmpty).
       * reflexivity.
       * change EffEmpty with (eff_join EffEmpty (eff_join EffEmpty EffEmpty)).
         change BOmega with (bound_seq (BFinite 0) (bound_seq (BFinite 0) BOmega)).
@@ -104,7 +108,7 @@ Proof.
     change EffEmpty with (eff_join EffEmpty (eff_join EffEmpty EffEmpty)).
     change BOmega with (bound_seq (BFinite 0) (bound_seq (BFinite 0) BOmega)).
     eapply Ty_App with (arg_ty := TyNat) (lat_eps := EffEmpty) (lat_beta := BOmega).
-    + eapply Ty_FixDiv with (eps := EffEmpty) (beta := BOmega).
+    + eapply Ty_FixDiv with (eps := EffEmpty).
       * reflexivity.
       * change EffEmpty with (eff_join EffEmpty (eff_join EffEmpty EffEmpty)).
         change BOmega with (bound_seq (BFinite 0) (bound_seq (BFinite 0) BOmega)).
@@ -461,6 +465,54 @@ Example finding24_aliased_fix_untypable :
   forall ty eps beta, ~ has_type [] aliased_fix ty eps beta.
 Proof.
   intros ty eps beta Hty. inversion Hty; subst; simpl in *; discriminate.
+Qed.
+
+(** Finding twenty-five anchors, Sprint 16: fix binds f at the declared arrow. *)
+
+Example finding25_pure_body_div_untypable :
+  forall ty eps beta, ~ has_type [] (TFix "f" "x" TyNat TZero Div) ty eps beta.
+Proof.
+  intros ty eps beta Hty. inversion Hty; subst.
+  (* the premise forces TZero at row (eps0, BOmega); invert it *)
+  match goal with
+  | H : has_type _ TZero _ _ _ |- _ => inversion H
+  end.
+Qed.
+
+Example finding25_structural_unfold_preserves_type :
+  step structural_fix_golden
+       (TLam "x" TyNat
+          (TCaseNat (TVar "x") TZero "p" (TApp structural_fix_golden (TVar "p")))) /\
+  has_type []
+    (TLam "x" TyNat
+       (TCaseNat (TVar "x") TZero "p" (TApp structural_fix_golden (TVar "p"))))
+    (TyArrow TyNat EffEmpty (BFinite 0) TyNat) EffEmpty (BFinite 0).
+Proof.
+  split.
+  - apply StepByFunction. reflexivity.
+  - apply Ty_Lam.
+    change EffEmpty with (eff_join EffEmpty (eff_join EffEmpty EffEmpty)).
+    change (BFinite 0) with (bound_seq (BFinite 0) (bound_join (BFinite 0) (BFinite 0))).
+    eapply Ty_CaseNat.
+    + apply Ty_Var. reflexivity.
+    + apply Ty_Zero.
+    + change EffEmpty with (eff_join EffEmpty (eff_join EffEmpty EffEmpty)).
+      change (BFinite 0) with (bound_seq (BFinite 0) (bound_seq (BFinite 0) (BFinite 0))).
+      eapply Ty_App with (arg_ty := TyNat) (lat_eps := EffEmpty) (lat_beta := BFinite 0).
+      * unfold structural_fix_golden.
+        eapply Ty_FixStructural with (eps := EffEmpty) (beta := BFinite 0).
+        -- reflexivity.
+        -- change EffEmpty with (eff_join EffEmpty (eff_join EffEmpty EffEmpty)).
+           change (BFinite 0) with (bound_seq (BFinite 0) (bound_join (BFinite 0) (BFinite 0))).
+           eapply Ty_CaseNat.
+           ++ apply Ty_Var. reflexivity.
+           ++ apply Ty_Zero.
+           ++ change EffEmpty with (eff_join EffEmpty (eff_join EffEmpty EffEmpty)).
+              change (BFinite 0) with (bound_seq (BFinite 0) (bound_seq (BFinite 0) (BFinite 0))).
+              eapply Ty_App with (arg_ty := TyNat) (lat_eps := EffEmpty) (lat_beta := BFinite 0).
+              ** apply Ty_Var. reflexivity.
+              ** apply Ty_Var. reflexivity.
+      * apply Ty_Var. reflexivity.
 Qed.
 
 Definition div_cost_handler : handler :=

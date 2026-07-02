@@ -29,6 +29,18 @@ semantics.
   than shadowed env bindings; a surface-level probe of aliased fix names is
   carried-forward work.
 
+- SPEC-GAP(fix-recursive-binding-row-mistranscription): `docs/calculus.md §4.8` binds
+  `f` at the declared arrow `(T₁ →[σ] T₂)` -- the same `σ` as the conclusion -- with
+  side condition `σ' ⊑ σ`; the mechanized rules bound `f` at a hardwired pure arrow
+  (Structural/Measure) or left the premise row unconstrained under an `ω` conclusion
+  (Div). Without subsumption this falsified preservation at unfold:
+  `TFix "f" "x" TyNat TZero Div` typed at the `ω`-arrow but unfolded to a lambda typable
+  only at the `0`-arrow (finding twenty-five). Sprint 16 repairs to the equality slice of
+  `β ⊒ Fix_β(f,e)`: binding, body row, and conclusion latent coincide; the `⊑` slack is
+  deferred with §4.9 subsumption/§8.6 to the future principality sprint. Conservative
+  consequence: a `Div`-tagged fix must have a genuinely `ω`-row body; pure-body div fixes
+  are rejected (the paper accepts them as imprecision).
+
 - SPEC-GAP(deep-handler-resume-accounting-recursive): under §5's deep reinstallation,
   `resume` re-enters the handle, so a resuming clause's continuation bound must cover the
   rebuilt handle's whole demand: `β_k ⊒ β ⊕ (β_r ⊔ (βᵢ ⊕ β))`, §6.2's

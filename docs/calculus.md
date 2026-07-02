@@ -584,7 +584,7 @@ rule has peeled one `succ`. If the resulting lfp is finite, the frame is statica
 (stackless codegen); if it widens to `ω`, the function is `div` and gets the stackful
 fallback.
 
-**Mechanization note (Sprint 16).** `f` and `x` must be distinct binders; finding twenty-four is the aliasing counterexample, repaired with an explicit freshness premise (the §4.7 finding-twenty-two medicine at the fix rule).
+**Mechanization note (Sprint 16).** `f` and `x` must be distinct binders; finding twenty-four is the aliasing counterexample, repaired with an explicit freshness premise (the §4.7 finding-twenty-two medicine at the fix rule). Finding twenty-five: the recursive assumption must bind `f` at the declared arrow -- the mechanized core takes the equality slice of `β ⊒ Fix_β(f,e)` (binding = body row = conclusion latent), deferring the `⊑` slack to §4.9/§8.6.
 
 ### 4.9 Subsumption (mind the variance)
 

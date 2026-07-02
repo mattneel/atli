@@ -51,18 +51,27 @@ Inductive has_type : ctx -> term -> ty -> eff -> bound -> Prop :=
     (* docs/calculus.md §4.8/§7: structural tag trusts strict-descent premises stated elsewhere. *)
     (* finding twenty-four: §4.8's distinct f/x metavariables, made explicit *)
     String.eqb f x = false ->
-    has_type ((x, TyNat) :: (f, TyArrow TyNat EffEmpty (BFinite 0) TyNat) :: g) body TyNat eps beta ->
+    (* §4.8 with f bound at the DECLARED arrow (finding twenty-five): the exact
+       core takes the equality slice of the recursive constraint β ⊒ Fix_β —
+       the recursive assumption, the body row, and the conclusion latent
+       coincide. Structural tag trusts strict-descent premises stated
+       elsewhere (§4.8/§7). *)
+    has_type ((x, TyNat) :: (f, TyArrow TyNat eps beta TyNat) :: g) body TyNat eps beta ->
     has_type g (TFix f x TyNat body Structural) (TyArrow TyNat eps beta TyNat) EffEmpty (BFinite 0)
 | Ty_FixMeasure : forall g f x body eps beta,
     (* SPEC-GAP(measure-tag-trusted-reduced-core): reduced core trusts the measure tag. *)
     (* finding twenty-four: §4.8's distinct f/x metavariables, made explicit *)
     String.eqb f x = false ->
-    has_type ((x, TyNat) :: (f, TyArrow TyNat EffEmpty (BFinite 0) TyNat) :: g) body TyNat eps beta ->
+    (* §4.8 with f bound at the DECLARED arrow (finding twenty-five): the exact
+       core takes the equality slice of the recursive constraint β ⊒ Fix_β —
+       the recursive assumption, the body row, and the conclusion latent
+       coincide. *)
+    has_type ((x, TyNat) :: (f, TyArrow TyNat eps beta TyNat) :: g) body TyNat eps beta ->
     has_type g (TFix f x TyNat body Measure) (TyArrow TyNat eps beta TyNat) EffEmpty (BFinite 0)
-| Ty_FixDiv : forall g f x body eps beta,
+| Ty_FixDiv : forall g f x body eps,
     (* finding twenty-four: §4.8's distinct f/x metavariables, made explicit *)
     String.eqb f x = false ->
-    has_type ((x, TyNat) :: (f, TyArrow TyNat eps BOmega TyNat) :: g) body TyNat eps beta ->
+    has_type ((x, TyNat) :: (f, TyArrow TyNat eps BOmega TyNat) :: g) body TyNat eps BOmega ->
     has_type g (TFix f x TyNat body Div) (TyArrow TyNat eps BOmega TyNat) EffEmpty (BFinite 0)
 | Ty_Perform : forall g arg beta,
     has_type g arg TyNat EffEmpty beta ->
