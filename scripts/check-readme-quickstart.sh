@@ -22,10 +22,10 @@ if [[ "$(cat "$compiled_stdout")" != "$expected_compiled_stdout" ]]; then
   cat "$compiled_stdout" >&2
   exit 1
 fi
-expected_compiled_stderr='ATLI_HIGH_WATER=1 ATLI_BETA=2 ATLI_DATA_ALLOCS=0 ATLI_TASKS_SPAWNED=0'
-if [[ "$(cat "$compiled_stderr")" != "$expected_compiled_stderr" ]]; then
+compiled_stderr_text=$(cat "$compiled_stderr")
+if [[ ! "$compiled_stderr_text" =~ ^ATLI_HIGH_WATER=1[[:space:]]ATLI_BETA=2[[:space:]]ATLI_DATA_ALLOCS=0[[:space:]]ATLI_TASKS_SPAWNED=0[[:space:]]ATLI_TASK_TIDS=[0-9]+$ ]]; then
   echo "README compiled quickstart stderr mismatch" >&2
-  diff -u <(printf '%s\n' "$expected_compiled_stderr") "$compiled_stderr" >&2 || true
+  cat "$compiled_stderr" >&2
   exit 1
 fi
 rm -f "$compiled_stdout" "$compiled_stderr"

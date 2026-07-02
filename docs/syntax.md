@@ -1,11 +1,11 @@
 # Atli Syntax
 
-> **Status: implemented subset + open list (v0.4.0).** This document began as draft-0.
-> The v0.4.0 compiler implements the reduced surface listed below and keeps the rest in
+> **Status: implemented subset + open list (v0.4.1).** This document began as draft-0.
+> The v0.4.1 compiler implements the reduced surface listed below and keeps the rest in
 > the Open list. Normative elaboration details live in [`docs/elaboration.md`](elaboration.md);
 > the core semantics live in [`docs/calculus.md`](calculus.md).
 
-## Implemented in v0.4.0
+## Implemented in v0.4.1
 
 - `fn` / `pub fn` declarations, expression or block bodied.
 - Types: `Unit`, `Nat`, `Array`, unique marker `^T`, arrows, and effect rows `! {A, B}`.
@@ -29,7 +29,7 @@
 Full numeric tower, strings/chars/floats as runtime values, type
 parameters, uniqueness polymorphism (`^u`), modules/`use`, byte-accurate
 frame layout, real measure verification, and the full region grade remain future work.
-Unsupported v0.4.0 constructs diagnose as "not yet in the reduced surface".
+Unsupported v0.4.1 constructs diagnose as "not yet in the reduced surface".
 
 ---
 
@@ -434,7 +434,7 @@ Signature slot order, left to right: `-> RET ! EFFECTS BOUNDEDNESS =`.
 Concurrency is surfaced through `scope`, `spawn`, and `await`. `scope { … }` bounds child
 task lifetimes: when the scope exits, its children are joined and the scope's region frees
 as one operation. `spawn f(args)` starts a task whose callee is a declared top-level `fn`;
-closures are not spawnable in v0.4.0. `await h` consumes an opaque affine task handle and
+closures are not spawnable in v0.4.1. `await h` consumes an opaque affine task handle and
 returns the task result. This is the surface of **spawn = arena = cancellation**: the task
 tree, the arena tree, and the cancellation tree are the same tree.
 

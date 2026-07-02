@@ -1,6 +1,6 @@
 # Tasks: the tree of arenas
 
-Atli v0.4.0 turns `scope`, `spawn`, and `await` on. A `scope` owns a task group and a region; every `spawn` inside attaches to the nearest scope, and scope exit joins any dropped handles before freeing the region.
+Atli v0.4.1 turns `scope`, `spawn`, and `await` on. A `scope` owns a task group and a region; every `spawn` inside attaches to the nearest scope, and scope exit joins any dropped handles before freeing the region.
 
 The small fan-out example is a real checked sample:
 
@@ -8,7 +8,7 @@ The small fan-out example is a real checked sample:
 {{#include ../../../examples/fanout.atli}}
 ```
 
-Native execution may use OS threads, but accepted programs remain schedule-independent: a task receives only values consumed at the spawn site, and unique heap data can cross the boundary only by `move`. Racing requires two aliases to mutable data; that is exactly what the checker rejects.
+Native execution uses OS threads, but accepted programs remain schedule-independent: a task receives only values consumed at the spawn site, and unique heap data can cross the boundary only by `move`. Racing requires two aliases to mutable data; that is exactly what the checker rejects.
 
 The courier example pays `move`'s IOU. A unique mailbox is moved into a task, destructured there, mutated in place, and awaited:
 

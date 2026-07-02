@@ -111,15 +111,17 @@ gate and does not weaken the LLVM 22 requirement.
 
 ## Sprint 13 third amendment: task scope runtime
 
-Sprint 13 adds `scope`/`spawn`/`await` lowering for the v0.4.0 first-order fragment.
-The emitted MLIR keeps the same certified-arena entry point: every native module still receives
-arena size through `CertifiedArena`, and task creation emits a §9.3-cited `atli_task_spawned`
-call so the runtime reports `ATLI_TASKS_SPAWNED` beside high-water and data allocation counts.
+Sprint 13 completion (`56aa070`, released as v0.4.1) replaces the v0.4.0 no-op task hook with
+a load-bearing pthread runtime. The emitted MLIR passes a generated wrapper function pointer,
+the evaluated argument, the callee's certified β literal, and the growable bit to
+`atli_spawn(fn_ptr, arg, beta_slots, growable) -> handle`; `await` lowers to
+`atli_await(handle) -> result`. Child task records malloc a control arena sized by that β,
+set thread-local arena/high-water state before calling the callee, and return the result
+through `pthread_join`.
 
-Tier-1 implementation note: each `spawn` crosses the runtime task hook, which starts and joins
-a minimal pthread while the current first-order MLIR path keeps the callee lowering direct and
-observable. The checker still enforces effect-closed spawned functions, affine handles, and
-move-only transfer at the spawn site; the test-only pthread race falsifier bypasses that
-discipline to show native nondeterminism and oracle divergence. Full split-function pthread
-execution/M:N scheduling remains ROADMAP work, along with cooperative cancellation and zero-copy
-heap result promotion.
+High-water is now runtime-owned and thread-local with a process-wide reported maximum. The
+runtime reports `ATLI_TASKS_SPAWNED` and debug `ATLI_TASK_TIDS`, which the fanout smoke uses
+to prove the accepted path actually used multiple threads. The race falsifier is no longer a
+hand-C artifact: it compiles a checker-bypass MLIR twin through the same MLIR/LLVM/clang
+pipeline and links against the actual generated shim. M:N scheduling, cooperative
+cancellation, and zero-copy heap result promotion remain ROADMAP work.

@@ -17,6 +17,7 @@ The executable-spec loop audited the paper spec and implementation repeatedly:
 13. Sprint 12 acceptance tables omitted numbered criteria; CONTRIBUTING now requires one row per criterion.
 14. Aggregate generator coverage initially fired from plain array encodings; Sprint 13 made it falsifiable.
 15. Aggregate affinity remains single-implementation after surface lowering; ROADMAP names the two closure routes.
+16. Sprint 13 v0.4.0 task runtime overclaimed: spawn used a no-op pthread hook, child arenas were not allocated, and the race falsifier was hand-C. v0.4.1 replaces it with `atli_spawn`/`atli_await`, per-task β operands, thread-ID telemetry, and an actual-shim MLIR falsifier.
 
 The point is not that nothing was wrong; the point is that every layer had another layer capable of catching it.
 
@@ -26,6 +27,6 @@ The point is not that nothing was wrong; the point is that every layer had anoth
 Records and variants are implemented in v0.3.0. Normative syntax and lowering remain in `docs/syntax.md`, `docs/elaboration.md`, and `docs/calculus.md`; this Book chapter links the live examples rather than restating the rules.
 
 
-## v0.4.0 tasks
+## v0.4.1 tasks
 
-Structured concurrency is implemented in v0.4.0. The scheduler-independence claim is tested by accepted examples and attacked by the race falsifier; the formal L10 concurrent small-step proof remains pending infrastructure.
+Structured concurrency is load-bearing in v0.4.1. The scheduler-independence claim is tested by accepted examples and attacked by the race falsifier; the formal L10 concurrent small-step proof remains pending infrastructure.
