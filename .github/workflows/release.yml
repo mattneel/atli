@@ -46,6 +46,6 @@ jobs:
         with:
           files: atli-linux-x86_64.tar.gz
           body: |
-            Atli v0.2.0 ships the finite-β + effects + mutual-recursion language plus affine `^Array` uniqueness, `move`, `freeze`, and in-place array updates. Certified boundedness grades size native arenas; unique ownership licenses allocation-free stores while oracle/native values remain equal.
+            Atli v0.4.1 ships structured concurrency on the region tree: `scope`/`spawn`/`await`, per-task arenas sized from certified β, pthread-backed native execution, zero-copy move-in for unique messages, and thread-ID telemetry proving real parallelism. It also includes records, variants, uniqueness, native effects, mutual recursion, and the oracle/native differential gate.
 
-            Not yet included: `^u` uniqueness polymorphism, early reclamation, M:N scheduling/cooperative cancellation, WASM, byte-accurate frame refinement, full proof discharges, and real measure verification. See ROADMAP.md and the Book.
+            Not yet included: M:N scheduling/cooperative cancellation, zero-copy task result promotion, cross-task effect handlers, `^u` uniqueness polymorphism, early reclamation, WASM, byte-accurate frame refinement, full proof discharges, and real measure verification. See ROADMAP.md and the Book.
