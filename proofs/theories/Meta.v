@@ -1,5 +1,6 @@
-From Coq Require Import Bool.Bool Lists.List.
-Import ListNotations.
+From Coq Require Import Bool.Bool Lists.List Strings.String.
+Import ListNotations StringSyntax.
+Open Scope string_scope.
 
 Require Import Atli.Grade.
 Require Import Atli.Syntax.
@@ -7,6 +8,1054 @@ Require Import Atli.Typing.
 Require Import Atli.Step.
 Require Import Atli.StepFrames.
 Require Import Atli.Solve.
+
+(** Sprint 16 A5: the closedness invariant licensing payload-opaque substitution. *)
+
+Definition closed_term (t : term) : Prop := forall x, mentions_var x t = false.
+
+(* Handler/context closedness is reified through [mentions_var] on wrapper terms.
+   Evaluation-context frames never put the hole under a binder, so plugging a
+   closed dummy reads off exactly the frames' own free variables. *)
+Definition handler_closed (h : handler) : Prop := closed_term (THandle TZero h).
+Definition ctx_closed (ctx : list eframe) : Prop := closed_term (plug ctx TZero).
+
+Fixpoint payloads_closed (t : term) : Prop :=
+  match t with
+  | TVar _ | TUnit | TZero => True
+  | TSucc inner => payloads_closed inner
+  | TCaseNat scrut zero_body _ succ_body =>
+      payloads_closed scrut /\ payloads_closed zero_body /\ payloads_closed succ_body
+  | TLam _ _ body => payloads_closed body
+  | TApp f a => payloads_closed f /\ payloads_closed a
+  | TLet _ expr body => payloads_closed expr /\ payloads_closed body
+  | TFix _ _ _ body _ => payloads_closed body
+  | TPerform _ arg => payloads_closed arg
+  | THandle body h => payloads_closed body /\ payloads_closed_handler h
+  | TResume kont arg => payloads_closed kont /\ payloads_closed arg
+  | TContVal h ctx | TUsedContVal h ctx =>
+      handler_closed h /\ ctx_closed ctx /\ payloads_closed_handler h /\
+      ((fix ctx_payloads_closed (ctx : list eframe) : Prop :=
+          match ctx with
+          | [] => True
+          | f :: rest => payloads_closed_frame f /\ ctx_payloads_closed rest
+          end) ctx)
+  end
+with payloads_closed_handler (h : handler) : Prop :=
+  match h with
+  | Handler _ return_body _ _ _ op_body =>
+      payloads_closed return_body /\ payloads_closed op_body
+  end
+with payloads_closed_frame (f : eframe) : Prop :=
+  match f with
+  | FSucc | FPerformArg _ => True
+  | FCaseScrut zero_body _ succ_body =>
+      payloads_closed zero_body /\ payloads_closed succ_body
+  | FAppFun pending_arg => payloads_closed pending_arg
+  | FAppArg fn_value => payloads_closed fn_value
+  | FLet _ body => payloads_closed body
+  | FResumeK arg => payloads_closed arg
+  | FResumeArg kont => payloads_closed kont
+  | FHandleBody h => payloads_closed_handler h
+  end.
+
+Definition ctx_payloads_closed (ctx : list eframe) : Prop :=
+  ((fix ctx_payloads_closed (ctx : list eframe) : Prop :=
+      match ctx with
+      | [] => True
+      | f :: rest => payloads_closed_frame f /\ ctx_payloads_closed rest
+      end) ctx).
+
+Lemma plug_mentions : forall ctx s x,
+  mentions_var x (plug ctx s) = orb (mentions_var x (plug ctx TZero)) (mentions_var x s).
+Proof.
+  induction ctx as [|f rest IH]; intros s x; simpl.
+  - reflexivity.
+  - destruct f; simpl; try destruct h; simpl; rewrite IH;
+      repeat match goal with
+      | |- context[String.eqb ?a ?b] => destruct (String.eqb a b) eqn:?
+      | |- context[mentions_var ?a ?b] => destruct (mentions_var a b) eqn:?
+      end; reflexivity.
+Qed.
+
+Lemma subst_mentions_other_mut :
+  (forall e x v y,
+    mentions_var y v = false -> y <> x ->
+    mentions_var y (subst x v e) = mentions_var y e) /\
+  (forall h x v y,
+    mentions_var y v = false -> y <> x ->
+    match h with
+    | Handler rv rb op op_param op_k op_body =>
+        ((if String.eqb y rv then false
+          else mentions_var y (if String.eqb x rv then rb else subst x v rb)) ||
+         (if String.eqb y op_param || String.eqb y op_k then false
+          else mentions_var y
+            (if String.eqb x op_param || String.eqb x op_k
+             then op_body
+             else subst x v op_body))) =
+        ((if String.eqb y rv then false else mentions_var y rb) ||
+         (if String.eqb y op_param || String.eqb y op_k
+          then false
+          else mentions_var y op_body))
+    end) /\
+  (forall f : eframe, True).
+Proof.
+  Ltac subst_mentions_other_crush :=
+    repeat match goal with
+    | |- context[String.eqb ?a ?b] =>
+        destruct (String.eqb a b) eqn:?; simpl
+    | IH : forall sx sv sy,
+        mentions_var sy sv = false -> sy <> sx ->
+        mentions_var sy (subst sx sv ?e) = mentions_var sy ?e
+      |- context[mentions_var ?sy (subst ?sx ?sv ?e)] =>
+        rewrite (IH sx sv sy ltac:(assumption) ltac:(assumption))
+    | IH : forall sx sv sy,
+        mentions_var sy sv = false -> sy <> sx -> ?lhs = ?rhs
+      |- context[?lhs] =>
+        rewrite (IH _ _ _ ltac:(assumption) ltac:(assumption))
+    end; try reflexivity.
+  apply syntax_ind; simpl; intros; try exact I; try reflexivity.
+  - destruct (String.eqb x0 x) eqn:Heq.
+    + apply String.eqb_eq in Heq. subst x0.
+      assert (Hyx : (y =? x) = false) by (apply String.eqb_neq; exact H0).
+      rewrite Hyx. exact H.
+    + reflexivity.
+  - rewrite (H x v y H0 H1). reflexivity.
+  - rewrite (H x v y H2 H3).
+    rewrite (H0 x v y H2 H3).
+    destruct (String.eqb y succ_var); [reflexivity|].
+    destruct (String.eqb x succ_var); [reflexivity|].
+    rewrite (H1 x v y H2 H3). reflexivity.
+  - destruct (String.eqb y param); [reflexivity|].
+    destruct (String.eqb x param); [reflexivity|].
+    rewrite (H x v y H0 H1). reflexivity.
+  - rewrite (H x v y H1 H2).
+    rewrite (H0 x v y H1 H2). reflexivity.
+  - rewrite (H x0 v y H1 H2).
+    destruct (String.eqb y x); [reflexivity|].
+    destruct (String.eqb x0 x); [reflexivity|].
+    rewrite (H0 x0 v y H1 H2). reflexivity.
+  - destruct (String.eqb y func) eqn:?; simpl; [reflexivity|].
+    destruct (String.eqb y param) eqn:?; simpl; [reflexivity|].
+    destruct (String.eqb x func) eqn:?; simpl; [reflexivity|].
+    destruct (String.eqb x param) eqn:?; simpl; [reflexivity|].
+    rewrite (H x v y H0 H1). reflexivity.
+  - rewrite (H x v y H0 H1). reflexivity.
+  - pose proof (H0 x v y H1 H2) as Hh.
+    destruct h; simpl in Hh |- *.
+    rewrite (H x v y H1 H2).
+    set (ret_sub :=
+      if y =? return_var
+      then false
+      else mentions_var y (if x =? return_var then return_body else subst x v return_body)) in *.
+    set (op_sub :=
+      if (y =? op_param) || (y =? op_k)
+      then false
+      else mentions_var y
+        (if (x =? op_param) || (x =? op_k) then op_body else subst x v op_body)) in *.
+    set (ret_old :=
+      if y =? return_var then false else mentions_var y return_body) in *.
+    set (op_old :=
+      if (y =? op_param) || (y =? op_k) then false else mentions_var y op_body) in *.
+    destruct (mentions_var y body), ret_sub, op_sub, ret_old, op_old;
+      simpl in Hh; try discriminate; reflexivity.
+  - rewrite (H x v y H1 H2).
+    rewrite (H0 x v y H1 H2). reflexivity.
+  - destruct (String.eqb y return_var) eqn:?; simpl.
+    + destruct (String.eqb y op_param || String.eqb y op_k) eqn:?; simpl; [reflexivity|].
+      destruct (String.eqb x op_param || String.eqb x op_k) eqn:?; simpl; [reflexivity|].
+      rewrite (H0 x v y H1 H2). reflexivity.
+    + destruct (String.eqb x return_var) eqn:?; simpl.
+      * destruct (String.eqb y op_param || String.eqb y op_k) eqn:?; simpl; [reflexivity|].
+        destruct (String.eqb x op_param || String.eqb x op_k) eqn:?; simpl; [reflexivity|].
+        rewrite (H0 x v y H1 H2). reflexivity.
+      * rewrite (H x v y H1 H2).
+        destruct (String.eqb y op_param || String.eqb y op_k) eqn:?; simpl; [reflexivity|].
+        destruct (String.eqb x op_param || String.eqb x op_k) eqn:?; simpl; [reflexivity|].
+        rewrite (H0 x v y H1 H2). reflexivity.
+Qed.
+
+Lemma subst_mentions_other : forall e x v y,
+  mentions_var y v = false -> y <> x ->
+  mentions_var y (subst x v e) = mentions_var y e.
+Proof. exact (proj1 subst_mentions_other_mut). Qed.
+
+Lemma subst_mentions_self_mut :
+  (forall e x v,
+    mentions_var x v = false ->
+    mentions_var x (subst x v e) = false) /\
+  (forall h x v,
+    mentions_var x v = false ->
+    match h with
+    | Handler rv rb op op_param op_k op_body =>
+        ((if String.eqb x rv then false
+          else mentions_var x (if String.eqb x rv then rb else subst x v rb)) ||
+         (if String.eqb x op_param || String.eqb x op_k then false
+          else mentions_var x
+            (if String.eqb x op_param || String.eqb x op_k
+             then op_body
+             else subst x v op_body))) = false
+    end) /\
+  (forall f : eframe, True).
+Proof.
+  apply syntax_ind; simpl; intros; try exact I; try reflexivity.
+  - destruct (String.eqb x0 x) eqn:Heq; [exact H|exact Heq].
+  - apply H. exact H0.
+  - rewrite (H x v H2).
+    rewrite (H0 x v H2).
+    destruct (String.eqb x succ_var); [reflexivity|].
+    rewrite (H1 x v H2). reflexivity.
+  - destruct (String.eqb x param); [reflexivity|].
+    apply H. exact H0.
+  - rewrite (H x v H1). rewrite (H0 x v H1). reflexivity.
+  - rewrite (H x0 v H1).
+    destruct (String.eqb x0 x); [reflexivity|].
+    rewrite (H0 x0 v H1). reflexivity.
+  - destruct (String.eqb x func || String.eqb x param); [reflexivity|].
+    apply H. exact H0.
+  - apply H. exact H0.
+  - pose proof (H0 x v H1) as Hh.
+    destruct h; simpl in Hh |- *.
+    rewrite (H x v H1).
+    set (ret_sub :=
+      if x =? return_var
+      then false
+      else mentions_var x (if x =? return_var then return_body else subst x v return_body)) in *.
+    set (op_sub :=
+      if (x =? op_param) || (x =? op_k)
+      then false
+      else mentions_var x
+        (if (x =? op_param) || (x =? op_k) then op_body else subst x v op_body)) in *.
+    destruct ret_sub, op_sub; simpl in Hh; try discriminate; reflexivity.
+  - rewrite (H x v H1). rewrite (H0 x v H1). reflexivity.
+  - destruct (String.eqb x return_var) eqn:?; simpl.
+    + destruct (String.eqb x op_param || String.eqb x op_k) eqn:?; simpl; [reflexivity|].
+      rewrite (H0 x v H1). reflexivity.
+    + rewrite (H x v H1).
+      destruct (String.eqb x op_param || String.eqb x op_k) eqn:?; simpl; [reflexivity|].
+      rewrite (H0 x v H1). reflexivity.
+Qed.
+
+Lemma subst_mentions_self : forall e x v,
+  mentions_var x v = false ->
+  mentions_var x (subst x v e) = false.
+Proof. exact (proj1 subst_mentions_self_mut). Qed.
+
+Lemma subst_closes_one : forall body x v,
+  (forall y, y <> x -> mentions_var y body = false) ->
+  closed_term v ->
+  closed_term (subst x v body).
+Proof.
+  intros body x v Hbody Hv y.
+  destruct (String.eqb y x) eqn:Hyx.
+  - apply String.eqb_eq in Hyx. subst y.
+    apply subst_mentions_self. apply Hv.
+  - apply String.eqb_neq in Hyx.
+    rewrite subst_mentions_other; [|apply Hv|exact Hyx].
+    apply Hbody. exact Hyx.
+Qed.
+
+Lemma subst2_closes_two : forall body x v y w,
+  (forall z, z <> x -> z <> y -> mentions_var z body = false) ->
+  closed_term v ->
+  closed_term w ->
+  closed_term (subst2 x v y w body).
+Proof.
+  intros body x v y w Hbody Hv Hw z.
+  unfold subst2.
+  destruct (String.eqb z y) eqn:Hzy.
+  - apply String.eqb_eq in Hzy. subst z.
+    apply subst_mentions_self. apply Hw.
+  - apply String.eqb_neq in Hzy.
+    rewrite subst_mentions_other; [|apply Hw|exact Hzy].
+    destruct (String.eqb z x) eqn:Hzx.
+    + apply String.eqb_eq in Hzx. subst z.
+      apply subst_mentions_self. apply Hv.
+    + apply String.eqb_neq in Hzx.
+      rewrite subst_mentions_other; [|apply Hv|exact Hzx].
+      apply Hbody; assumption.
+Qed.
+
+Lemma payloads_closed_subst_mut :
+  (forall e x v,
+    payloads_closed v -> payloads_closed e -> payloads_closed (subst x v e)) /\
+  (forall h x v,
+    payloads_closed v -> payloads_closed_handler h ->
+    match h with
+    | Handler rv rb op op_param op_k op_body =>
+        payloads_closed_handler
+          (Handler rv
+            (if String.eqb x rv then rb else subst x v rb)
+            op op_param op_k
+            (if String.eqb x op_param || String.eqb x op_k
+             then op_body
+             else subst x v op_body))
+    end) /\
+  (forall f : eframe, True).
+Proof.
+  apply syntax_ind; simpl; intros; try exact I; try tauto.
+  - destruct (String.eqb x0 x); [assumption|exact I].
+  - eauto.
+  - repeat match goal with H : _ /\ _ |- _ => destruct H end.
+    repeat split; eauto.
+    destruct (String.eqb x succ_var); eauto.
+  - destruct (String.eqb x param); eauto.
+  - repeat match goal with H : _ /\ _ |- _ => destruct H end.
+    split; eauto.
+  - repeat match goal with H : _ /\ _ |- _ => destruct H end.
+    split; eauto.
+    destruct (String.eqb x0 x); eauto.
+  - destruct (String.eqb x func || String.eqb x param); eauto.
+  - eauto.
+  - destruct h; simpl in *.
+    repeat match goal with H : _ /\ _ |- _ => destruct H end.
+    split; eauto.
+  - repeat match goal with H : _ /\ _ |- _ => destruct H end.
+    split; eauto.
+  - destruct H2 as [Hret Hop].
+    split.
+    + destruct (String.eqb x return_var); [exact Hret|eauto].
+    + destruct (String.eqb x op_param || String.eqb x op_k); [exact Hop|eauto].
+Qed.
+
+Lemma payloads_closed_subst : forall e x v,
+  payloads_closed v -> payloads_closed e -> payloads_closed (subst x v e).
+Proof. exact (proj1 payloads_closed_subst_mut). Qed.
+
+Lemma plug1_payloads_closed : forall f s,
+  payloads_closed (plug1 f s) <-> (payloads_closed_frame f /\ payloads_closed s).
+Proof.
+  destruct f; simpl; intros s; tauto.
+Qed.
+
+Lemma plug_ctx_payloads_closed : forall ctx,
+  payloads_closed (plug ctx TZero) <-> ctx_payloads_closed ctx.
+Proof.
+  induction ctx as [|f rest IH]; simpl.
+  - tauto.
+  - rewrite plug1_payloads_closed. rewrite IH. unfold ctx_payloads_closed.
+    simpl. fold ctx_payloads_closed. tauto.
+Qed.
+
+Lemma ctx_payloads_closed_plug : forall ctx s,
+  ctx_payloads_closed ctx -> payloads_closed s -> payloads_closed (plug ctx s).
+Proof.
+  induction ctx as [|f rest IH]; intros s Hctx Hs; simpl in *.
+  - exact Hs.
+  - unfold ctx_payloads_closed in Hctx. simpl in Hctx. fold ctx_payloads_closed in Hctx.
+    destruct Hctx as [Hf Hrest].
+    apply plug1_payloads_closed. split; [exact Hf|].
+    apply IH; assumption.
+Qed.
+
+Lemma plug_payloads_closed : forall ctx s,
+  payloads_closed (plug ctx s) <-> (payloads_closed (plug ctx TZero) /\ payloads_closed s).
+Proof.
+  intros ctx s. split.
+  - intro Hplug.
+    split.
+    + apply plug_ctx_payloads_closed.
+      induction ctx as [|f rest IH]; simpl in *.
+      * exact I.
+      * apply plug1_payloads_closed in Hplug as [Hf Hrest].
+        unfold ctx_payloads_closed. simpl. fold ctx_payloads_closed.
+        split; [exact Hf|].
+        apply IH. exact Hrest.
+    + induction ctx as [|f rest IH]; simpl in *.
+      * exact Hplug.
+      * apply plug1_payloads_closed in Hplug as [_ Hrest].
+        apply IH. exact Hrest.
+  - intros [Hctx Hs].
+    apply ctx_payloads_closed_plug.
+    + apply plug_ctx_payloads_closed. exact Hctx.
+    + exact Hs.
+Qed.
+
+Lemma plug_closed : forall ctx s,
+  ctx_closed ctx -> closed_term s -> closed_term (plug ctx s).
+Proof.
+  intros ctx s Hctx Hs x.
+  rewrite plug_mentions. rewrite Hctx, Hs. reflexivity.
+Qed.
+
+Lemma plug_closed_inv : forall ctx s,
+  closed_term (plug ctx s) -> ctx_closed ctx /\ closed_term s.
+Proof.
+  intros ctx s Hplug. split; intros x; specialize (Hplug x);
+    rewrite plug_mentions in Hplug; apply orb_false_iff in Hplug as [? ?]; assumption.
+Qed.
+
+Lemma closed_contval : forall h ctx, closed_term (TContVal h ctx).
+Proof. intros h ctx x. reflexivity. Qed.
+
+Lemma closed_handle_parts : forall body h,
+  closed_term (THandle body h) -> closed_term body /\ handler_closed h.
+Proof.
+  intros body h Hclosed. split.
+  - intros x. specialize (Hclosed x). destruct h; simpl in Hclosed.
+    destruct (mentions_var x body) eqn:Hbody; [discriminate|reflexivity].
+  - intros x. specialize (Hclosed x). destruct h; simpl in *.
+    destruct (mentions_var x body); [discriminate|exact Hclosed].
+Qed.
+
+Lemma closed_handle_rebuild : forall body h,
+  closed_term body -> handler_closed h -> closed_term (THandle body h).
+Proof.
+  intros body h Hbody Hhandler x. specialize (Hbody x). specialize (Hhandler x).
+  destruct h; simpl in *. rewrite Hbody. exact Hhandler.
+Qed.
+
+Lemma handler_closed_return_except : forall rv rbody op op_param op_k op_body,
+  handler_closed (Handler rv rbody op op_param op_k op_body) ->
+  forall y, y <> rv -> mentions_var y rbody = false.
+Proof.
+  intros rv rbody op op_param op_k op_body Hclosed y Hneq.
+  specialize (Hclosed y). simpl in Hclosed.
+  assert (Hyret : (y =? rv) = false) by (apply String.eqb_neq; exact Hneq).
+  rewrite Hyret in Hclosed.
+  destruct (mentions_var y rbody) eqn:Hr; [destruct (mentions_var y op_body); discriminate|reflexivity].
+Qed.
+
+Lemma handler_closed_op_except_two : forall rv rbody op op_param op_k op_body,
+  handler_closed (Handler rv rbody op op_param op_k op_body) ->
+  forall y,
+    y <> op_param -> y <> op_k -> mentions_var y op_body = false.
+Proof.
+  intros rv rbody op op_param op_k op_body Hclosed y Hparam Hk.
+  specialize (Hclosed y). simpl in Hclosed.
+  assert (Hyparam : (y =? op_param) = false) by (apply String.eqb_neq; exact Hparam).
+  assert (Hyk : (y =? op_k) = false) by (apply String.eqb_neq; exact Hk).
+  rewrite Hyparam in Hclosed.
+  rewrite Hyk in Hclosed.
+  simpl in Hclosed.
+  destruct (if y =? rv then false else mentions_var y rbody);
+    destruct (mentions_var y op_body) eqn:Hop; try discriminate; reflexivity.
+Qed.
+
+Lemma subst_closed_return_body : forall rv rbody op op_param op_k op_body v,
+  handler_closed (Handler rv rbody op op_param op_k op_body) ->
+  closed_term v ->
+  closed_term (subst rv v rbody).
+Proof.
+  intros. apply subst_closes_one; auto.
+  intros y Hy. eapply handler_closed_return_except; eauto.
+Qed.
+
+Lemma subst_closed_op_drop : forall rv rbody op_param op_k op_body arg,
+  handler_closed (Handler rv rbody L op_param op_k op_body) ->
+  closed_term arg ->
+  mentions_var op_k op_body = false ->
+  closed_term (subst op_param arg op_body).
+Proof.
+  intros rv rbody op_param op_k op_body arg Hhandler Harg Hdrop y.
+  destruct (String.eqb y op_param) eqn:Hyparam.
+  - apply String.eqb_eq in Hyparam. subst y.
+    apply subst_mentions_self. apply Harg.
+  - apply String.eqb_neq in Hyparam.
+    rewrite subst_mentions_other; [|apply Harg|exact Hyparam].
+    destruct (String.eqb y op_k) eqn:Hyk.
+    + apply String.eqb_eq in Hyk. subst y. exact Hdrop.
+    + apply String.eqb_neq in Hyk.
+      eapply handler_closed_op_except_two; eauto.
+Qed.
+
+Lemma subst_closed_op_resume : forall rv rbody op_param op_k op_body arg h ctx,
+  handler_closed (Handler rv rbody L op_param op_k op_body) ->
+  closed_term arg ->
+  closed_term
+    (subst2 op_param arg op_k (TContVal h ctx) op_body).
+Proof.
+  intros rv rbody op_param op_k op_body arg h ctx Hhandler Harg.
+  apply subst2_closes_two.
+  - intros z Hzparam Hzk.
+    eapply handler_closed_op_except_two; eauto.
+  - exact Harg.
+  - apply closed_contval.
+Qed.
+
+Lemma closed_lam_subst : forall x a body v,
+  closed_term (TApp (TLam x a body) v) ->
+  closed_term (subst x v body).
+Proof.
+  intros x a body v Hclosed.
+  apply subst_closes_one.
+  - intros y Hy.
+    specialize (Hclosed y). simpl in Hclosed.
+    assert (Hyx : (y =? x) = false) by (apply String.eqb_neq; exact Hy).
+    rewrite Hyx in Hclosed.
+    apply orb_false_iff in Hclosed as [Hbody _]. exact Hbody.
+  - intros y. specialize (Hclosed y). simpl in Hclosed.
+    apply orb_false_iff in Hclosed as [_ Hv]. exact Hv.
+Qed.
+
+Lemma closed_let_subst : forall x expr body,
+  closed_term (TLet x expr body) ->
+  closed_term expr ->
+  closed_term (subst x expr body).
+Proof.
+  intros x expr body Hclosed Hexpr.
+  apply subst_closes_one; auto.
+  intros y Hy.
+  specialize (Hclosed y). simpl in Hclosed.
+  assert (Hyx : (y =? x) = false) by (apply String.eqb_neq; exact Hy).
+  rewrite Hyx in Hclosed.
+  apply orb_false_iff in Hclosed as [_ Hbody]. exact Hbody.
+Qed.
+
+Lemma closed_case_succ_subst : forall scrut zero_body x succ_body v,
+  closed_term (TCaseNat scrut zero_body x succ_body) ->
+  closed_term v ->
+  closed_term (subst x v succ_body).
+Proof.
+  intros scrut zero_body x succ_body v Hclosed Hv.
+  apply subst_closes_one; auto.
+  intros y Hy.
+  specialize (Hclosed y). simpl in Hclosed.
+  assert (Hyx : (y =? x) = false) by (apply String.eqb_neq; exact Hy).
+  rewrite Hyx in Hclosed.
+  apply orb_false_iff in Hclosed as [_ Hbody]. exact Hbody.
+Qed.
+
+Lemma closed_fix_unfold : forall f x a body tag,
+  closed_term (TFix f x a body tag) ->
+  closed_term (TLam x a (subst f (TFix f x a body tag) body)).
+Proof.
+  intros f x a body tag Hclosed y. simpl.
+  destruct (String.eqb y x) eqn:Hyx; [reflexivity|].
+  apply String.eqb_neq in Hyx.
+  destruct (String.eqb y f) eqn:Hyf.
+  - apply String.eqb_eq in Hyf. subst y.
+    apply subst_mentions_self. exact (Hclosed f).
+  - apply String.eqb_neq in Hyf.
+    rewrite subst_mentions_other; [|apply Hclosed|exact Hyf].
+    specialize (Hclosed y). simpl in Hclosed.
+    assert (Hyf_false : (y =? f) = false) by (apply String.eqb_neq; exact Hyf).
+    assert (Hyx_false : (y =? x) = false) by (apply String.eqb_neq; exact Hyx).
+    rewrite Hyf_false in Hclosed.
+    rewrite Hyx_false in Hclosed.
+    exact Hclosed.
+Qed.
+
+Lemma payloads_closed_contval : forall h ctx,
+  handler_closed h -> ctx_closed ctx -> payloads_closed_handler h ->
+  ctx_payloads_closed ctx -> payloads_closed (TContVal h ctx).
+Proof.
+  intros h ctx Hh Hctx Hph Hpctx. simpl.
+  repeat split; auto.
+Qed.
+
+Lemma payloads_closed_contval_inv : forall h ctx,
+  payloads_closed (TContVal h ctx) ->
+  handler_closed h /\ ctx_closed ctx /\ payloads_closed_handler h /\ ctx_payloads_closed ctx.
+Proof.
+  intros h ctx H. simpl in H.
+  destruct H as [Hh [Hctx [Hph Hpctx]]].
+  repeat split; auto.
+Qed.
+
+Lemma plug_perform_closed_parts : forall ctx arg,
+  closed_term (plug ctx (TPerform L arg)) -> ctx_closed ctx /\ closed_term arg.
+Proof.
+  intros ctx arg Hplug.
+  apply plug_closed_inv in Hplug as [Hctx Hperform].
+  split; [exact Hctx|].
+  intros x. exact (Hperform x).
+Qed.
+
+Lemma plug_perform_payloads_parts : forall ctx arg,
+  payloads_closed (plug ctx (TPerform L arg)) ->
+  ctx_payloads_closed ctx /\ payloads_closed arg.
+Proof.
+  intros ctx arg Hplug.
+  apply plug_payloads_closed in Hplug as [Hctx Harg].
+  split.
+  - apply plug_ctx_payloads_closed. exact Hctx.
+  - exact Harg.
+Qed.
+
+Lemma typed_lookup_closed : forall g t ty eps beta,
+  has_type g t ty eps beta ->
+  forall x, lookup x g = None -> mentions_var x t = false.
+Proof.
+  intros g t ty eps beta Hty.
+  induction Hty; intros y Hlookup; simpl.
+  - destruct (String.eqb y x) eqn:Hyx.
+    + apply String.eqb_eq in Hyx. subst y. rewrite H in Hlookup. discriminate.
+    + reflexivity.
+  - reflexivity.
+  - reflexivity.
+  - apply IHHty. exact Hlookup.
+  - rewrite (IHHty1 y Hlookup), (IHHty2 y Hlookup).
+    simpl.
+    destruct (String.eqb y x) eqn:Hyx; [reflexivity|].
+    apply IHHty3. simpl. rewrite Hyx. exact Hlookup.
+  - destruct (String.eqb y x) eqn:Hyx; [reflexivity|].
+    apply IHHty. simpl. rewrite Hyx. exact Hlookup.
+  - rewrite (IHHty1 y Hlookup), (IHHty2 y Hlookup). reflexivity.
+  - rewrite (IHHty1 y Hlookup). simpl.
+    destruct (String.eqb y x) eqn:Hyx; [reflexivity|].
+    apply IHHty2. simpl. rewrite Hyx. exact Hlookup.
+  - destruct (String.eqb y f) eqn:Hyf; [reflexivity|].
+    destruct (String.eqb y x) eqn:Hyx; [reflexivity|].
+    apply IHHty. simpl. rewrite Hyx. simpl. rewrite Hyf. exact Hlookup.
+  - destruct (String.eqb y f) eqn:Hyf; [reflexivity|].
+    destruct (String.eqb y x) eqn:Hyx; [reflexivity|].
+    apply IHHty. simpl. rewrite Hyx. simpl. rewrite Hyf. exact Hlookup.
+  - destruct (String.eqb y f) eqn:Hyf; [reflexivity|].
+    destruct (String.eqb y x) eqn:Hyx; [reflexivity|].
+    apply IHHty. simpl. rewrite Hyx. simpl. rewrite Hyf. exact Hlookup.
+  - apply IHHty. exact Hlookup.
+  - rewrite (IHHty1 y Hlookup). simpl.
+    destruct (String.eqb y rv) eqn:Hyrv.
+    + simpl.
+      destruct (String.eqb y op_param) eqn:Hyp; [reflexivity|].
+      destruct (String.eqb y op_k) eqn:Hyk; [reflexivity|].
+      apply IHHty3. simpl. rewrite Hyk. simpl. rewrite Hyp. exact Hlookup.
+    + rewrite (IHHty2 y). simpl.
+      * destruct (String.eqb y op_param) eqn:Hyp; [reflexivity|].
+        destruct (String.eqb y op_k) eqn:Hyk; [reflexivity|].
+        apply IHHty3. simpl. rewrite Hyk. simpl. rewrite Hyp. exact Hlookup.
+      * simpl. rewrite Hyrv. exact Hlookup.
+  - rewrite (IHHty1 y Hlookup). simpl.
+    destruct (String.eqb y rv) eqn:Hyrv.
+    + simpl.
+      destruct (String.eqb y op_param) eqn:Hyp; [reflexivity|].
+      destruct (String.eqb y op_k) eqn:Hyk; [reflexivity|].
+      apply IHHty3. simpl. rewrite Hyk. simpl. rewrite Hyp. exact Hlookup.
+    + rewrite (IHHty2 y). simpl.
+      * destruct (String.eqb y op_param) eqn:Hyp; [reflexivity|].
+        destruct (String.eqb y op_k) eqn:Hyk; [reflexivity|].
+        apply IHHty3. simpl. rewrite Hyk. simpl. rewrite Hyp. exact Hlookup.
+      * simpl. rewrite Hyrv. exact Hlookup.
+  - rewrite (IHHty1 y Hlookup), (IHHty2 y Hlookup). reflexivity.
+  - reflexivity.
+Qed.
+
+Lemma typed_empty_closed : forall t ty eps beta,
+  has_type [] t ty eps beta -> closed_term t.
+Proof.
+  intros t ty eps beta Hty x.
+  eapply typed_lookup_closed; eauto.
+Qed.
+
+Lemma stepf_app_congruence_preserves : forall f a u,
+  (forall u, closed_term f -> payloads_closed f ->
+    stepf f = Some u -> closed_term u /\ payloads_closed u) ->
+  (forall u, closed_term a -> payloads_closed a ->
+    stepf a = Some u -> closed_term u /\ payloads_closed u) ->
+  closed_term (TApp f a) -> payloads_closed (TApp f a) ->
+  (match stepf f with
+   | Some f' => Some (TApp f' a)
+   | None => match stepf a with Some a' => Some (TApp f a') | None => None end
+   end) = Some u ->
+  closed_term u /\ payloads_closed u.
+Proof.
+  intros f a u IHf IHa Hclosed Hpayload Hstep.
+  simpl in Hpayload. destruct Hpayload as [Hf_payload Ha_payload].
+  assert (Hf_closed : closed_term f).
+  { intros y. specialize (Hclosed y). simpl in Hclosed.
+    apply orb_false_iff in Hclosed as [Hf_closed _]. exact Hf_closed. }
+  assert (Ha_closed : closed_term a).
+  { intros y. specialize (Hclosed y). simpl in Hclosed.
+    apply orb_false_iff in Hclosed as [_ Ha_closed]. exact Ha_closed. }
+  destruct (stepf f) eqn:Hsf.
+  - inversion Hstep; subst.
+    destruct (IHf t Hf_closed Hf_payload eq_refl) as [Hf' Hpf'].
+    split.
+    + intros y. simpl. rewrite Hf', Ha_closed. reflexivity.
+    + simpl. split; assumption.
+  - destruct (stepf a) eqn:Hsa; inversion Hstep; subst.
+    destruct (IHa t Ha_closed Ha_payload eq_refl) as [Ha' Hpa'].
+    split.
+    + intros y. simpl. rewrite Hf_closed, Ha'. reflexivity.
+    + simpl. split; assumption.
+Qed.
+
+Lemma stepf_resume_congruence_preserves : forall k a u,
+  (forall u, closed_term k -> payloads_closed k ->
+    stepf k = Some u -> closed_term u /\ payloads_closed u) ->
+  (forall u, closed_term a -> payloads_closed a ->
+    stepf a = Some u -> closed_term u /\ payloads_closed u) ->
+  closed_term (TResume k a) -> payloads_closed (TResume k a) ->
+  (match stepf k with
+   | Some k' => Some (TResume k' a)
+   | None => match stepf a with Some a' => Some (TResume k a') | None => None end
+   end) = Some u ->
+  closed_term u /\ payloads_closed u.
+Proof.
+  intros k a u IHk IHa Hclosed Hpayload Hstep.
+  simpl in Hpayload. destruct Hpayload as [Hk_payload Ha_payload].
+  assert (Hk_closed : closed_term k).
+  { intros y. specialize (Hclosed y). simpl in Hclosed.
+    apply orb_false_iff in Hclosed as [Hk_closed _]. exact Hk_closed. }
+  assert (Ha_closed : closed_term a).
+  { intros y. specialize (Hclosed y). simpl in Hclosed.
+    apply orb_false_iff in Hclosed as [_ Ha_closed]. exact Ha_closed. }
+  destruct (stepf k) eqn:Hsk.
+  - inversion Hstep; subst.
+    destruct (IHk t Hk_closed Hk_payload eq_refl) as [Hk' Hpk'].
+    split.
+    + intros y. simpl. rewrite Hk', Ha_closed. reflexivity.
+    + simpl. split; assumption.
+  - destruct (stepf a) eqn:Hsa; inversion Hstep; subst.
+    destruct (IHa t Ha_closed Ha_payload eq_refl) as [Ha' Hpa'].
+    split.
+    + intros y. simpl. rewrite Hk_closed, Ha'. reflexivity.
+    + simpl. split; assumption.
+Qed.
+
+Lemma stepf_preserves_closedness : forall t u,
+  closed_term t -> payloads_closed t -> stepf t = Some u ->
+  closed_term u /\ payloads_closed u.
+Proof.
+  induction t as
+    [x| | |e IHe|scrut IHscrut zero_body IHzero succ_var succ_body IHsucc
+    |param param_ty body IHbody|f IHf a IHa|x expr IHexpr body IHbody
+    |func param param_ty body IHbody tag|op arg IHarg|body IHbody h
+    |kont IHkont arg IHarg|h ctx|h ctx];
+    intros u Hclosed Hpayload Hstep; simpl in Hstep; try discriminate.
+  - destruct (stepf e) eqn:Hse; inversion Hstep; subst.
+    destruct (IHe t Hclosed Hpayload eq_refl) as [Hc Hp].
+    split; [intro x; simpl; apply Hc|exact Hp].
+  - destruct scrut as
+      [sx| | |sv|sscrut sz sx ss|sparam sty sbody|sf sa
+      |sx se sbody|sfunc sparam sty sbody stag|sop sarg|sbody sh
+      |sk sa|sh sctx|sh sctx]; simpl in Hstep.
+    + destruct (stepf (TVar sx)) eqn:Hs; discriminate.
+    + discriminate.
+    + inversion Hstep; subst.
+      split.
+      * intros y. specialize (Hclosed y). simpl in Hclosed.
+        apply orb_false_iff in Hclosed as [Hz _]. exact Hz.
+      * simpl in Hpayload. tauto.
+    + destruct (is_value sv) eqn:Hv; inversion Hstep; subst.
+      split.
+      * apply closed_case_succ_subst with (scrut := TSucc sv) (zero_body := zero_body).
+        -- exact Hclosed.
+        -- intros y. specialize (Hclosed y). simpl in Hclosed.
+           apply orb_false_iff in Hclosed as [Hleft _].
+           apply orb_false_iff in Hleft as [Hscrut _]. exact Hscrut.
+      * simpl in Hpayload. destruct Hpayload as [Hscrut [_ Hsucc_payload]].
+        apply payloads_closed_subst; [exact Hscrut|exact Hsucc_payload].
+    + destruct (stepf (TCaseNat sscrut sz sx ss)) eqn:Hs.
+      * change (match stepf (TCaseNat sscrut sz sx ss) with
+                | Some scrut' => Some (TCaseNat scrut' zero_body succ_var succ_body)
+                | None => None
+                end = Some u) in Hstep.
+        rewrite Hs in Hstep. inversion Hstep; subst.
+      simpl in Hpayload. destruct Hpayload as [Hscrut [Hzero Hsucc_payload]].
+      assert (Hscrut_closed : closed_term (TCaseNat sscrut sz sx ss)).
+      { intros y. specialize (Hclosed y). simpl in Hclosed.
+        apply orb_false_iff in Hclosed as [Hleft _].
+        apply orb_false_iff in Hleft as [Hscrut_closed _]. exact Hscrut_closed. }
+      destruct (IHscrut t Hscrut_closed Hscrut eq_refl) as [Hscrut' Hscrutp'].
+      split.
+      -- intros y. simpl.
+        specialize (Hclosed y). simpl in Hclosed.
+        apply orb_false_iff in Hclosed as [Hleft Hsucc_closed].
+        apply orb_false_iff in Hleft as [_ Hzero_closed].
+        rewrite Hscrut', Hzero_closed.
+        destruct (String.eqb y succ_var); [reflexivity|exact Hsucc_closed].
+      -- simpl. repeat split; assumption.
+      * change (match stepf (TCaseNat sscrut sz sx ss) with
+                | Some scrut' => Some (TCaseNat scrut' zero_body succ_var succ_body)
+                | None => None
+                end = Some u) in Hstep.
+        rewrite Hs in Hstep. discriminate.
+    + destruct (stepf (TLam sparam sty sbody)) eqn:Hs; discriminate.
+    + destruct (stepf (TApp sf sa)) eqn:Hs.
+      * change (match stepf (TApp sf sa) with
+                | Some scrut' => Some (TCaseNat scrut' zero_body succ_var succ_body)
+                | None => None
+                end = Some u) in Hstep.
+        rewrite Hs in Hstep. inversion Hstep; subst.
+      simpl in Hpayload. destruct Hpayload as [Hscrut [Hzero Hsucc_payload]].
+      assert (Hscrut_closed : closed_term (TApp sf sa)).
+      { intros y. specialize (Hclosed y). simpl in Hclosed.
+        apply orb_false_iff in Hclosed as [Hleft _].
+        apply orb_false_iff in Hleft as [Hscrut_closed _]. exact Hscrut_closed. }
+      destruct (IHscrut t Hscrut_closed Hscrut eq_refl) as [Hscrut' Hscrutp'].
+      split.
+      -- intros y. simpl.
+        specialize (Hclosed y). simpl in Hclosed.
+        apply orb_false_iff in Hclosed as [Hleft Hsucc_closed].
+        apply orb_false_iff in Hleft as [_ Hzero_closed].
+        rewrite Hscrut', Hzero_closed.
+        destruct (String.eqb y succ_var); [reflexivity|exact Hsucc_closed].
+      -- simpl. repeat split; assumption.
+      * change (match stepf (TApp sf sa) with
+                | Some scrut' => Some (TCaseNat scrut' zero_body succ_var succ_body)
+                | None => None
+                end = Some u) in Hstep.
+        rewrite Hs in Hstep. discriminate.
+    + destruct (stepf (TLet sx se sbody)) eqn:Hs.
+      * change (match stepf (TLet sx se sbody) with
+                | Some scrut' => Some (TCaseNat scrut' zero_body succ_var succ_body)
+                | None => None
+                end = Some u) in Hstep.
+        rewrite Hs in Hstep. inversion Hstep; subst.
+      simpl in Hpayload. destruct Hpayload as [Hscrut [Hzero Hsucc_payload]].
+      assert (Hscrut_closed : closed_term (TLet sx se sbody)).
+      { intros y. specialize (Hclosed y). simpl in Hclosed.
+        apply orb_false_iff in Hclosed as [Hleft _].
+        apply orb_false_iff in Hleft as [Hscrut_closed _]. exact Hscrut_closed. }
+      destruct (IHscrut t Hscrut_closed Hscrut eq_refl) as [Hscrut' Hscrutp'].
+      split.
+      -- intros y. simpl.
+        specialize (Hclosed y). simpl in Hclosed.
+        apply orb_false_iff in Hclosed as [Hleft Hsucc_closed].
+        apply orb_false_iff in Hleft as [_ Hzero_closed].
+        rewrite Hscrut', Hzero_closed.
+        destruct (String.eqb y succ_var); [reflexivity|exact Hsucc_closed].
+      -- simpl. repeat split; assumption.
+      * change (match stepf (TLet sx se sbody) with
+                | Some scrut' => Some (TCaseNat scrut' zero_body succ_var succ_body)
+                | None => None
+                end = Some u) in Hstep.
+        rewrite Hs in Hstep. discriminate.
+    + destruct (stepf (TFix sfunc sparam sty sbody stag)) eqn:Hs.
+      * change (match stepf (TFix sfunc sparam sty sbody stag) with
+                | Some scrut' => Some (TCaseNat scrut' zero_body succ_var succ_body)
+                | None => None
+                end = Some u) in Hstep.
+        rewrite Hs in Hstep. inversion Hstep; subst.
+      simpl in Hpayload. destruct Hpayload as [Hscrut [Hzero Hsucc_payload]].
+      assert (Hscrut_closed : closed_term (TFix sfunc sparam sty sbody stag)).
+      { intros y. specialize (Hclosed y). simpl in Hclosed.
+        apply orb_false_iff in Hclosed as [Hleft _].
+        apply orb_false_iff in Hleft as [Hscrut_closed _]. exact Hscrut_closed. }
+      destruct (IHscrut t Hscrut_closed Hscrut eq_refl) as [Hscrut' Hscrutp'].
+      split.
+      -- intros y. simpl.
+        specialize (Hclosed y). simpl in Hclosed.
+        apply orb_false_iff in Hclosed as [Hleft Hsucc_closed].
+        apply orb_false_iff in Hleft as [_ Hzero_closed].
+        rewrite Hscrut', Hzero_closed.
+        destruct (String.eqb y succ_var); [reflexivity|exact Hsucc_closed].
+      -- simpl. repeat split; assumption.
+      * change (match stepf (TFix sfunc sparam sty sbody stag) with
+                | Some scrut' => Some (TCaseNat scrut' zero_body succ_var succ_body)
+                | None => None
+                end = Some u) in Hstep.
+        rewrite Hs in Hstep. discriminate.
+    + destruct (stepf (TPerform sop sarg)) eqn:Hs.
+      * change (match stepf (TPerform sop sarg) with
+                | Some scrut' => Some (TCaseNat scrut' zero_body succ_var succ_body)
+                | None => None
+                end = Some u) in Hstep.
+        rewrite Hs in Hstep. inversion Hstep; subst.
+      simpl in Hpayload. destruct Hpayload as [Hscrut [Hzero Hsucc_payload]].
+      assert (Hscrut_closed : closed_term (TPerform sop sarg)).
+      { intros y. specialize (Hclosed y). simpl in Hclosed.
+        apply orb_false_iff in Hclosed as [Hleft _].
+        apply orb_false_iff in Hleft as [Hscrut_closed _]. exact Hscrut_closed. }
+      destruct (IHscrut t Hscrut_closed Hscrut eq_refl) as [Hscrut' Hscrutp'].
+      split.
+      -- intros y. simpl.
+        specialize (Hclosed y). simpl in Hclosed.
+        apply orb_false_iff in Hclosed as [Hleft Hsucc_closed].
+        apply orb_false_iff in Hleft as [_ Hzero_closed].
+        rewrite Hscrut', Hzero_closed.
+        destruct (String.eqb y succ_var); [reflexivity|exact Hsucc_closed].
+      -- simpl. repeat split; assumption.
+      * change (match stepf (TPerform sop sarg) with
+                | Some scrut' => Some (TCaseNat scrut' zero_body succ_var succ_body)
+                | None => None
+                end = Some u) in Hstep.
+        rewrite Hs in Hstep. discriminate.
+    + destruct (stepf (THandle sbody sh)) eqn:Hs.
+      * change (match stepf (THandle sbody sh) with
+                | Some scrut' => Some (TCaseNat scrut' zero_body succ_var succ_body)
+                | None => None
+                end = Some u) in Hstep.
+        rewrite Hs in Hstep. inversion Hstep; subst.
+      simpl in Hpayload. destruct Hpayload as [Hscrut [Hzero Hsucc_payload]].
+      assert (Hscrut_closed : closed_term (THandle sbody sh)).
+      { intros y. specialize (Hclosed y). simpl in Hclosed.
+        apply orb_false_iff in Hclosed as [Hleft _].
+        apply orb_false_iff in Hleft as [Hscrut_closed _]. exact Hscrut_closed. }
+      destruct (IHscrut t Hscrut_closed Hscrut eq_refl) as [Hscrut' Hscrutp'].
+      split.
+      -- intros y. simpl.
+        specialize (Hclosed y). simpl in Hclosed.
+        apply orb_false_iff in Hclosed as [Hleft Hsucc_closed].
+        apply orb_false_iff in Hleft as [_ Hzero_closed].
+        rewrite Hscrut', Hzero_closed.
+        destruct (String.eqb y succ_var); [reflexivity|exact Hsucc_closed].
+      -- simpl. repeat split; assumption.
+      * change (match stepf (THandle sbody sh) with
+                | Some scrut' => Some (TCaseNat scrut' zero_body succ_var succ_body)
+                | None => None
+                end = Some u) in Hstep.
+        rewrite Hs in Hstep. discriminate.
+    + destruct (stepf (TResume sk sa)) eqn:Hs.
+      * change (match stepf (TResume sk sa) with
+                | Some scrut' => Some (TCaseNat scrut' zero_body succ_var succ_body)
+                | None => None
+                end = Some u) in Hstep.
+        rewrite Hs in Hstep. inversion Hstep; subst.
+      simpl in Hpayload. destruct Hpayload as [Hscrut [Hzero Hsucc_payload]].
+      assert (Hscrut_closed : closed_term (TResume sk sa)).
+      { intros y. specialize (Hclosed y). simpl in Hclosed.
+        apply orb_false_iff in Hclosed as [Hleft _].
+        apply orb_false_iff in Hleft as [Hscrut_closed _]. exact Hscrut_closed. }
+      destruct (IHscrut t Hscrut_closed Hscrut eq_refl) as [Hscrut' Hscrutp'].
+      split.
+      -- intros y. simpl.
+        specialize (Hclosed y). simpl in Hclosed.
+        apply orb_false_iff in Hclosed as [Hleft Hsucc_closed].
+        apply orb_false_iff in Hleft as [_ Hzero_closed].
+        rewrite Hscrut', Hzero_closed.
+        destruct (String.eqb y succ_var); [reflexivity|exact Hsucc_closed].
+      -- simpl. repeat split; assumption.
+      * change (match stepf (TResume sk sa) with
+                | Some scrut' => Some (TCaseNat scrut' zero_body succ_var succ_body)
+                | None => None
+                end = Some u) in Hstep.
+        rewrite Hs in Hstep. discriminate.
+    + destruct (stepf (TContVal sh sctx)) eqn:Hs; discriminate.
+    + destruct (stepf (TUsedContVal sh sctx)) eqn:Hs; discriminate.
+  - destruct f as
+      [fx| | |fe|fscrut fz fx fs|fparam fty fbody|ff fa
+      |fx fe fbody|ffunc fparam fty fbody ftag|fop farg|fbody fh
+      |fk farg|fh fctx|fh fctx]; simpl in Hstep.
+    + eapply (stepf_app_congruence_preserves (TVar fx) a); eauto.
+    + eapply (stepf_app_congruence_preserves TUnit a); eauto.
+    + eapply (stepf_app_congruence_preserves TZero a); eauto.
+    + eapply (stepf_app_congruence_preserves (TSucc fe) a); eauto.
+    + eapply (stepf_app_congruence_preserves (TCaseNat fscrut fz fx fs) a); eauto.
+    + destruct (is_value a) eqn:Ha_value; inversion Hstep; subst.
+      split.
+      * exact (closed_lam_subst fparam fty fbody a Hclosed).
+      * simpl in Hpayload. destruct Hpayload as [Hbody Ha_payload].
+        apply payloads_closed_subst; assumption.
+    + eapply (stepf_app_congruence_preserves (TApp ff fa) a); eauto.
+    + eapply (stepf_app_congruence_preserves (TLet fx fe fbody) a); eauto.
+    + eapply (stepf_app_congruence_preserves (TFix ffunc fparam fty fbody ftag) a); eauto.
+    + eapply (stepf_app_congruence_preserves (TPerform fop farg) a); eauto.
+    + eapply (stepf_app_congruence_preserves (THandle fbody fh) a); eauto.
+    + eapply (stepf_app_congruence_preserves (TResume fk farg) a); eauto.
+    + eapply (stepf_app_congruence_preserves (TContVal fh fctx) a); eauto.
+    + eapply (stepf_app_congruence_preserves (TUsedContVal fh fctx) a); eauto.
+  - destruct (is_value expr) eqn:Hexv.
+    + inversion Hstep; subst.
+      split.
+      * apply closed_let_subst; [exact Hclosed|].
+        intros y. specialize (Hclosed y). simpl in Hclosed.
+        apply orb_false_iff in Hclosed as [Hexpr _]. exact Hexpr.
+      * simpl in Hpayload. destruct Hpayload as [Hexpr Hbody].
+        apply payloads_closed_subst; assumption.
+    + destruct (stepf expr) eqn:Hse; inversion Hstep; subst.
+      simpl in Hpayload. destruct Hpayload as [Hexpr Hbody].
+      assert (Hexpr_closed : closed_term expr).
+      { intros y. specialize (Hclosed y). simpl in Hclosed.
+        apply orb_false_iff in Hclosed as [Hexpr_closed _]. exact Hexpr_closed. }
+      destruct (IHexpr t Hexpr_closed Hexpr eq_refl) as [Hexpr' Hpexpr'].
+      split.
+      * intros y. simpl.
+        specialize (Hclosed y). simpl in Hclosed.
+        apply orb_false_iff in Hclosed as [_ Hbody_closed].
+        rewrite Hexpr'.
+        destruct (String.eqb y x); [reflexivity|exact Hbody_closed].
+      * simpl. split; assumption.
+  - inversion Hstep; subst.
+    split.
+    + apply closed_fix_unfold. exact Hclosed.
+    + simpl. apply payloads_closed_subst; simpl; exact Hpayload.
+  - destruct (stepf arg) eqn:Hsa; inversion Hstep; subst.
+    destruct (IHarg t Hclosed Hpayload eq_refl) as [Harg' Hparg'].
+    split; [exact Harg'|exact Hparg'].
+  - destruct h as [rv rbody hop op_param op_k op_body].
+    destruct (is_value body) eqn:Hbody_value.
+    + inversion Hstep; subst.
+      destruct (closed_handle_parts body (Handler rv rbody hop op_param op_k op_body) Hclosed)
+        as [Hbody_closed Hhandler].
+      split.
+      * eapply (subst_closed_return_body rv rbody hop op_param op_k op_body body); eauto.
+      * simpl in Hpayload. destruct Hpayload as [Hbody_payload [Hrbody_payload _]].
+        apply payloads_closed_subst; assumption.
+    + destruct (capture body) as [[cap_ctx cap_arg]|] eqn:Hcapture.
+      * destruct (closed_handle_parts body (Handler rv rbody hop op_param op_k op_body) Hclosed)
+          as [Hbody_closed Hhandler].
+        destruct (capture_plug body cap_ctx cap_arg Hcapture) as [Hbody_eq _].
+        subst body.
+        destruct (plug_perform_closed_parts cap_ctx cap_arg Hbody_closed) as [Hcap_ctx_closed Harg_closed].
+        simpl in Hpayload.
+        destruct Hpayload as [Hbody_payload Hhandler_payload].
+        destruct (plug_perform_payloads_parts cap_ctx cap_arg Hbody_payload)
+          as [Hcap_payloads Harg_payload].
+        destruct (mentions_var op_k op_body) eqn:Hopk.
+        -- inversion Hstep; subst.
+           split.
+           ++ eapply subst_closed_op_resume; eauto.
+           ++ unfold subst2.
+              apply payloads_closed_subst.
+              ** apply payloads_closed_contval; eauto.
+              ** apply payloads_closed_subst; [exact Harg_payload|].
+                 simpl in Hhandler_payload. tauto.
+        -- inversion Hstep; subst.
+           split.
+           ++ eapply subst_closed_op_drop; eauto.
+           ++ simpl in Hhandler_payload.
+              apply payloads_closed_subst; [exact Harg_payload|tauto].
+      * destruct (stepf body) eqn:Hsbody; inversion Hstep; subst.
+        simpl in Hpayload. destruct Hpayload as [Hbody_payload Hhandler_payload].
+        destruct (closed_handle_parts body (Handler rv rbody hop op_param op_k op_body) Hclosed)
+          as [Hbody_closed Hhandler_closed].
+        destruct (IHbody t Hbody_closed Hbody_payload eq_refl) as [Hbody' Hpayload'].
+        split.
+        -- apply closed_handle_rebuild; assumption.
+        -- simpl. split; assumption.
+  - destruct kont as
+      [kx| | |ke|kscrut kz kx ks|kparam kty kbody|kf ka
+      |kx ke kbody|kfunc kparam kty kbody ktag|kop karg|kbody kh
+      |kkont karg|kh kctx|kh kctx]; simpl in Hstep.
+    + eapply (stepf_resume_congruence_preserves (TVar kx) arg); eauto.
+    + eapply (stepf_resume_congruence_preserves TUnit arg); eauto.
+    + eapply (stepf_resume_congruence_preserves TZero arg); eauto.
+    + eapply (stepf_resume_congruence_preserves (TSucc ke) arg); eauto.
+    + eapply (stepf_resume_congruence_preserves
+        (TCaseNat kscrut kz kx ks) arg); eauto.
+    + eapply (stepf_resume_congruence_preserves (TLam kparam kty kbody) arg); eauto.
+    + eapply (stepf_resume_congruence_preserves (TApp kf ka) arg); eauto.
+    + eapply (stepf_resume_congruence_preserves (TLet kx ke kbody) arg); eauto.
+    + eapply (stepf_resume_congruence_preserves
+        (TFix kfunc kparam kty kbody ktag) arg); eauto.
+    + eapply (stepf_resume_congruence_preserves (TPerform kop karg) arg); eauto.
+    + eapply (stepf_resume_congruence_preserves (THandle kbody kh) arg); eauto.
+    + eapply (stepf_resume_congruence_preserves (TResume kkont karg) arg); eauto.
+    + destruct (is_value arg) eqn:Hargv.
+      * inversion Hstep; subst.
+        simpl in Hpayload. destruct Hpayload as [Hcont Harg_payload].
+        assert (Harg_closed : closed_term arg).
+        { intros y. specialize (Hclosed y). simpl in Hclosed. exact Hclosed. }
+        apply payloads_closed_contval_inv in Hcont as
+          [Hhandler_closed [Hctx_closed [Hhandler_payload Hctx_payload]]].
+        split.
+        -- apply closed_handle_rebuild.
+           ++ apply plug_closed; assumption.
+           ++ exact Hhandler_closed.
+        -- simpl. split.
+           ++ apply ctx_payloads_closed_plug; assumption.
+           ++ exact Hhandler_payload.
+      * destruct (stepf arg) eqn:Hsa; inversion Hstep; subst.
+        simpl in Hpayload. destruct Hpayload as [Hcont Harg_payload].
+        assert (Hargc : closed_term arg).
+        { intros y. specialize (Hclosed y). simpl in Hclosed. exact Hclosed. }
+        destruct (IHarg t Hargc Harg_payload eq_refl) as [Harg' Hparg'].
+        split.
+        -- intros y. simpl. rewrite Harg'. reflexivity.
+        -- simpl. split; [exact Hcont|exact Hparg'].
+    + discriminate.
+Qed.
+
+Theorem step_preserves_closedness : forall t u,
+  closed_term t -> payloads_closed t -> step t u ->
+  closed_term u /\ payloads_closed u.
+Proof.
+  intros t u Hclosed Hpayload Hstep.
+  inversion Hstep; subst.
+  eapply stepf_preserves_closedness; eauto.
+Qed.
 
 (** Proof ladder for [docs/calculus.md §8] and mechanization target §10. *)
 
