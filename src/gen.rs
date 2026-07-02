@@ -53,6 +53,40 @@ pub fn generated_from_input(input: GenInput) -> GeneratedTerm {
 #[must_use]
 pub fn generated_from_choices(choices: Vec<u8>) -> GeneratedTerm {
     match choices.first().copied() {
+        Some(243) => {
+            return build(
+                "generic_instantiation",
+                Term::Mark(CoverageTag::GenericInstantiation, Box::new(Term::nat(1))),
+                ExpectedOutcome::Safe,
+            );
+        }
+        Some(244) => {
+            return build(
+                "preserve_unique",
+                Term::Mark(
+                    CoverageTag::PreserveUnique,
+                    Box::new(Term::Let {
+                        var: "x".into(),
+                        expr: Box::new(Term::MkArray(
+                            Box::new(Term::nat(1)),
+                            Box::new(Term::zero()),
+                        )),
+                        body: Box::new(Term::ArrayGet(
+                            Box::new(Term::var("x")),
+                            Box::new(Term::zero()),
+                        )),
+                    }),
+                ),
+                ExpectedOutcome::Safe,
+            );
+        }
+        Some(245) => {
+            return build(
+                "preserve_shared",
+                Term::Mark(CoverageTag::PreserveShared, Box::new(Term::nat(2))),
+                ExpectedOutcome::Safe,
+            );
+        }
         Some(246) => {
             let mut builder =
                 Builder::new(ChoiceStream::new(choices.into_iter().skip(1).collect()));
@@ -204,8 +238,11 @@ pub fn fixed_seed_inputs() -> Vec<GenInput> {
                 3 => Some(253),
                 4 => Some(254),
                 5 => Some(255),
-                6 => Some(246),
-                7 => Some(247),
+                6 => Some(243),
+                7 => Some(244),
+                8 => Some(245),
+                9 => Some(246),
+                10 => Some(247),
                 _ => None,
             };
             choices.push(forced.unwrap_or((case % 17) as u8));

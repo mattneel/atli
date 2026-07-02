@@ -61,9 +61,16 @@ pub struct ElaborateError {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParamMode {
+    Shared,
+    Unique,
+    Preserve,
+}
+
 #[derive(Debug, Clone)]
 struct FunctionSig {
-    params: Vec<(String, Type)>,
+    params: Vec<(String, Type, ParamMode)>,
 }
 
 pub fn elaborate_program(program: &Program) -> Result<ElaboratedProgram, ElaborateError> {
@@ -108,6 +115,113 @@ enum PreludeFn {
     Add,
     Sub,
     Mul,
+}
+
+fn validate_type_uses(program: &Program) -> Result<(), ElaborateError> {
+    let mut arities = BTreeMap::new();
+    for decl in &program.decls {
+        if let Decl::Type(decl) = decl {
+            arities.insert(decl.name.node.clone(), decl.type_params.len());
+        }
+    }
+    for decl in &program.decls {
+        match decl {
+            Decl::Type(decl) => {
+                let params = decl
+                    .type_params
+                    .iter()
+                    .map(|param| param.node.clone())
+                    .collect::<BTreeSet<_>>();
+                match &decl.kind {
+                    TypeDeclKind::Record(fields) => {
+                        for field in fields {
+                            validate_type_expr(&field.ty, &params, &arities)?;
+                        }
+                    }
+                    TypeDeclKind::Variant(ctors) => {
+                        for ctor in ctors {
+                            for payload in &ctor.payloads {
+                                validate_type_expr(payload, &params, &arities)?;
+                            }
+                        }
+                    }
+                }
+            }
+            Decl::Fn(func) => {
+                let params = func
+                    .type_params
+                    .iter()
+                    .map(|param| param.node.clone())
+                    .collect::<BTreeSet<_>>();
+                for param in &func.params {
+                    validate_type_expr(&param.ty, &params, &arities)?;
+                }
+                validate_type_expr(&func.ret, &params, &arities)?;
+            }
+            Decl::Effect(effect) => {
+                let params = BTreeSet::new();
+                validate_type_expr(&effect.param.ty, &params, &arities)?;
+                validate_type_expr(&effect.ret, &params, &arities)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_type_expr(
+    ty: &TypeExpr,
+    params: &BTreeSet<String>,
+    arities: &BTreeMap<String, usize>,
+) -> Result<(), ElaborateError> {
+    match ty {
+        TypeExpr::Unit(_) | TypeExpr::Nat(_) | TypeExpr::Array(_) => Ok(()),
+        TypeExpr::Unique(inner, _) | TypeExpr::Preserve { inner, .. } => {
+            validate_type_expr(inner, params, arities)
+        }
+        TypeExpr::Arrow(arg, ret, _) => {
+            validate_type_expr(arg, params, arities)?;
+            validate_type_expr(ret, params, arities)
+        }
+        TypeExpr::Named(name, span) => {
+            if params.contains(name) || matches!(name.as_str(), "Task") {
+                return Ok(());
+            }
+            match arities.get(name) {
+                Some(0) => Ok(()),
+                Some(expected) => Err(ElaborateError {
+                    span: *span,
+                    message: format!("type `{name}` expects {expected} type argument(s)"),
+                }),
+                None => Err(ElaborateError {
+                    span: *span,
+                    message: format!("unbound type variable `{name}`"),
+                }),
+            }
+        }
+        TypeExpr::Applied(name, args, span) => {
+            for arg in args {
+                validate_type_expr(arg, params, arities)?;
+            }
+            let expected = match name.as_str() {
+                "Array" | "Task" => Some(1),
+                _ => arities.get(name).copied(),
+            };
+            match expected {
+                Some(n) if n == args.len() => Ok(()),
+                Some(n) => Err(ElaborateError {
+                    span: *span,
+                    message: format!(
+                        "type `{name}` expects {n} type argument(s), got {}",
+                        args.len()
+                    ),
+                }),
+                None => Err(ElaborateError {
+                    span: *span,
+                    message: format!("unknown type `{name}`"),
+                }),
+            }
+        }
+    }
 }
 
 impl AggregateEnv {
@@ -176,6 +290,7 @@ impl AggregateEnv {
 
 impl<'a> Elaborator<'a> {
     fn new(program: &'a Program) -> Result<Self, ElaborateError> {
+        validate_type_uses(program)?;
         let aggregates = AggregateEnv::from_program(program)?;
         let mut functions = BTreeMap::new();
         for decl in &program.decls {
@@ -184,7 +299,13 @@ impl<'a> Elaborator<'a> {
                     let params = func
                         .params
                         .iter()
-                        .map(|param| Ok((param.name.node.clone(), lower_type(&param.ty)?)))
+                        .map(|param| {
+                            Ok((
+                                param.name.node.clone(),
+                                lower_type(&param.ty)?,
+                                type_mode(&param.ty),
+                            ))
+                        })
                         .collect::<Result<Vec<_>, ElaborateError>>()?;
                     let _ret = lower_type(&func.ret)?;
                     functions.insert(func.name.node.clone(), FunctionSig { params });
@@ -341,11 +462,11 @@ impl<'a> Elaborator<'a> {
             ));
         }
         let mut body_env = env.clone();
-        for (name, _) in &sig.params {
+        for (name, _, _) in &sig.params {
             body_env.vars.insert(name.clone());
         }
         let mut term = self.expr(&func.body, &body_env)?;
-        for (name, ty) in sig.params.iter().rev() {
+        for (name, ty, _) in sig.params.iter().rev() {
             term = self.record(
                 Term::Lam {
                     param: name.clone(),
@@ -1199,9 +1320,34 @@ fn lower_type(ty: &TypeExpr) -> Result<Type, ElaborateError> {
         TypeExpr::Unit(_) => Ok(Type::Unit),
         TypeExpr::Nat(_) => Ok(Type::Nat),
         TypeExpr::Array(_) => Ok(Type::Array),
+        TypeExpr::Applied(name, args, _) if name == "Array" => {
+            if args.len() <= 1 {
+                Ok(Type::Array)
+            } else {
+                Err(ElaborateError {
+                    span: ty.span(),
+                    message: "type `Array` expects 1 type argument".into(),
+                })
+            }
+        }
+        TypeExpr::Applied(name, args, _) if name == "Task" => {
+            if args.len() <= 1 {
+                let inner = args
+                    .first()
+                    .map(lower_type)
+                    .transpose()?
+                    .unwrap_or(Type::Nat);
+                Ok(Type::Task(Box::new(inner)))
+            } else {
+                Err(ElaborateError {
+                    span: ty.span(),
+                    message: "type `Task` expects 1 type argument".into(),
+                })
+            }
+        }
         TypeExpr::Named(name, _) if name == "Task" => Ok(Type::Task(Box::new(Type::Nat))),
-        TypeExpr::Named(_, _) => Ok(Type::Array),
-        TypeExpr::Unique(inner, _) => lower_type(inner),
+        TypeExpr::Named(_, _) | TypeExpr::Applied(_, _, _) => Ok(Type::Array),
+        TypeExpr::Unique(inner, _) | TypeExpr::Preserve { inner, .. } => lower_type(inner),
         TypeExpr::Arrow(arg, ret, _) => Ok(Type::Arrow(
             Box::new(lower_type(arg)?),
             Box::new(lower_type(ret)?),
@@ -1295,26 +1441,48 @@ fn expr_mentions(expr: &Expr, name: &str) -> bool {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BindingMode {
+    Unique,
+    Preserve,
+}
+
 #[derive(Debug, Clone)]
 struct UniqueBinding {
     grade: Q,
+    mode: BindingMode,
     consumed_at: Option<Span>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct UniqueEnv {
     bindings: BTreeMap<String, UniqueBinding>,
+    forgotten_bindings: BTreeMap<String, Span>,
+    last_forget: Option<Span>,
 }
 
 impl UniqueEnv {
     fn bind_unique(&mut self, name: &str) {
+        self.bind_mode(name, BindingMode::Unique);
+    }
+
+    fn bind_preserve(&mut self, name: &str) {
+        self.bind_mode(name, BindingMode::Preserve);
+    }
+
+    fn bind_mode(&mut self, name: &str, mode: BindingMode) {
         self.bindings.insert(
             name.to_string(),
             UniqueBinding {
                 grade: Q::One,
+                mode,
                 consumed_at: None,
             },
         );
+    }
+
+    fn bind_forgotten(&mut self, name: &str, span: Span) {
+        self.forgotten_bindings.insert(name.to_string(), span);
     }
 
     fn consume(&mut self, name: &str, span: Span) -> Result<(), ElaborateError> {
@@ -1335,17 +1503,36 @@ impl UniqueEnv {
         &mut self,
         expr: &Expr,
         what: &str,
-        signatures: &BTreeMap<String, (Vec<bool>, bool)>,
+        signatures: &BTreeMap<String, (Vec<ParamMode>, ParamMode)>,
         aggregates: &AggregateEnv,
     ) -> Result<(), ElaborateError> {
         match &expr.kind {
             ExprKind::Var(name) if self.bindings.contains_key(name) => {
+                if self
+                    .bindings
+                    .get(name)
+                    .is_some_and(|binding| binding.mode == BindingMode::Preserve)
+                {
+                    return Err(ElaborateError {
+                        span: expr.span,
+                        message: format!(
+                            "`{name}` is `^u`: uniqueness-preserving parameters grant threading, not mutation; take `^A` if this function must mutate."
+                        ),
+                    });
+                }
                 self.consume(name, expr.span)
             }
-            ExprKind::Var(name) => Err(ElaborateError {
-                span: expr.span,
-                message: format!("{what} requires unique `{name}`, but it is shared"),
-            }),
+            ExprKind::Var(name) => {
+                let extra = if self.forgotten_bindings.contains_key(name) {
+                    "; uniqueness was forgotten at the helper call that bound this value"
+                } else {
+                    ""
+                };
+                Err(ElaborateError {
+                    span: expr.span,
+                    message: format!("{what} requires unique `{name}`, but it is shared{extra}"),
+                })
+            }
             ExprKind::Prefix {
                 op: PrefixOp::Freeze,
                 ..
@@ -1396,9 +1583,9 @@ fn check_surface_uniqueness(program: &Program) -> Result<(), ElaborateError> {
                 (
                     func.params
                         .iter()
-                        .map(|param| type_is_unique(&param.ty))
+                        .map(|param| type_mode(&param.ty))
                         .collect::<Vec<_>>(),
-                    type_is_unique(&func.ret),
+                    type_mode(&func.ret),
                 ),
             )),
             Decl::Effect(_) | Decl::Type(_) => None,
@@ -1410,8 +1597,10 @@ fn check_surface_uniqueness(program: &Program) -> Result<(), ElaborateError> {
         };
         let mut env = UniqueEnv::default();
         for param in &func.params {
-            if type_is_unique(&param.ty) {
-                env.bind_unique(&param.name.node);
+            match type_mode(&param.ty) {
+                ParamMode::Unique => env.bind_unique(&param.name.node),
+                ParamMode::Preserve => env.bind_preserve(&param.name.node),
+                ParamMode::Shared => {}
             }
         }
         check_unique_expr(
@@ -1428,7 +1617,7 @@ fn check_surface_uniqueness(program: &Program) -> Result<(), ElaborateError> {
 fn check_unique_expr(
     expr: &Expr,
     env: &mut UniqueEnv,
-    signatures: &BTreeMap<String, (Vec<bool>, bool)>,
+    signatures: &BTreeMap<String, (Vec<ParamMode>, ParamMode)>,
     aggregates: &AggregateEnv,
     effectful_functions: &BTreeSet<String>,
 ) -> Result<bool, ElaborateError> {
@@ -1467,11 +1656,45 @@ fn check_unique_expr(
                 });
             }
             if let Some((params, _)) = signatures.get(&callee.node) {
-                for (arg, needs_unique) in args.iter().zip(params) {
-                    if *needs_unique {
-                        env.require_unique(arg, "spawn argument", signatures, aggregates)?;
-                    } else {
-                        check_unique_expr(arg, env, signatures, aggregates, effectful_functions)?;
+                for (arg, mode) in args.iter().zip(params) {
+                    match mode {
+                        ParamMode::Unique => {
+                            env.require_unique(arg, "spawn argument", signatures, aggregates)?
+                        }
+                        ParamMode::Preserve => {
+                            if let ExprKind::Var(name) = &arg.kind {
+                                if env.bindings.contains_key(name) {
+                                    env.consume(name, arg.span)?;
+                                } else {
+                                    check_unique_expr(
+                                        arg,
+                                        env,
+                                        signatures,
+                                        aggregates,
+                                        effectful_functions,
+                                    )?;
+                                }
+                            } else {
+                                check_unique_expr(
+                                    arg,
+                                    env,
+                                    signatures,
+                                    aggregates,
+                                    effectful_functions,
+                                )?;
+                            }
+                        }
+                        ParamMode::Shared => {
+                            if check_unique_expr(
+                                arg,
+                                env,
+                                signatures,
+                                aggregates,
+                                effectful_functions,
+                            )? {
+                                env.last_forget = Some(arg.span);
+                            }
+                        }
                     }
                 }
                 for arg in args.iter().skip(params.len()) {
@@ -1564,6 +1787,8 @@ fn check_unique_expr(
                 )?;
                 if unique {
                     env.bind_unique(&binding.name.node);
+                } else if let Some(span) = env.last_forget.take() {
+                    env.bind_forgotten(&binding.name.node, span);
                 }
             }
             check_unique_expr(result, env, signatures, aggregates, effectful_functions)
@@ -1663,7 +1888,7 @@ fn check_unique_call(
     args: &[Expr],
     span: Span,
     env: &mut UniqueEnv,
-    signatures: &BTreeMap<String, (Vec<bool>, bool)>,
+    signatures: &BTreeMap<String, (Vec<ParamMode>, ParamMode)>,
     aggregates: &AggregateEnv,
     effectful_functions: &BTreeSet<String>,
 ) -> Result<bool, ElaborateError> {
@@ -1706,15 +1931,55 @@ fn check_unique_call(
             Ok(true)
         }
         _ => {
-            if let Some((unique_params, unique_ret)) = signatures.get(name) {
+            if let Some((param_modes, ret_mode)) = signatures.get(name) {
+                let mut preserved_unique = false;
                 for (idx, arg) in args.iter().enumerate() {
-                    if unique_params.get(idx).copied().unwrap_or(false) {
-                        env.require_unique(arg, "unique parameter", signatures, aggregates)?;
-                    } else {
-                        check_unique_expr(arg, env, signatures, aggregates, effectful_functions)?;
+                    match param_modes.get(idx).copied().unwrap_or(ParamMode::Shared) {
+                        ParamMode::Unique => {
+                            env.require_unique(arg, "unique parameter", signatures, aggregates)?
+                        }
+                        ParamMode::Preserve => {
+                            if let ExprKind::Var(var) = &arg.kind {
+                                if env.bindings.contains_key(var) {
+                                    preserved_unique = true;
+                                    env.consume(var, arg.span)?;
+                                } else {
+                                    check_unique_expr(
+                                        arg,
+                                        env,
+                                        signatures,
+                                        aggregates,
+                                        effectful_functions,
+                                    )?;
+                                }
+                            } else {
+                                preserved_unique |= check_unique_expr(
+                                    arg,
+                                    env,
+                                    signatures,
+                                    aggregates,
+                                    effectful_functions,
+                                )?;
+                            }
+                        }
+                        ParamMode::Shared => {
+                            if check_unique_expr(
+                                arg,
+                                env,
+                                signatures,
+                                aggregates,
+                                effectful_functions,
+                            )? {
+                                env.last_forget = Some(arg.span);
+                            }
+                        }
                     }
                 }
-                Ok(*unique_ret)
+                Ok(match ret_mode {
+                    ParamMode::Unique => true,
+                    ParamMode::Preserve => preserved_unique,
+                    ParamMode::Shared => false,
+                })
             } else {
                 for arg in args {
                     check_unique_expr(arg, env, signatures, aggregates, effectful_functions)?;
@@ -1789,14 +2054,18 @@ fn bind_unique_pattern_payloads(pattern: &Pattern, env: &mut UniqueEnv, aggregat
 
 fn type_is_heap(ty: &TypeExpr) -> bool {
     match ty {
-        TypeExpr::Array(_) | TypeExpr::Named(_, _) => true,
-        TypeExpr::Unique(inner, _) => type_is_heap(inner),
+        TypeExpr::Array(_) | TypeExpr::Named(_, _) | TypeExpr::Applied(_, _, _) => true,
+        TypeExpr::Unique(inner, _) | TypeExpr::Preserve { inner, .. } => type_is_heap(inner),
         TypeExpr::Unit(_) | TypeExpr::Nat(_) | TypeExpr::Arrow(_, _, _) => false,
     }
 }
 
-fn type_is_unique(ty: &TypeExpr) -> bool {
-    matches!(ty, TypeExpr::Unique(_, _))
+fn type_mode(ty: &TypeExpr) -> ParamMode {
+    match ty {
+        TypeExpr::Unique(_, _) => ParamMode::Unique,
+        TypeExpr::Preserve { .. } => ParamMode::Preserve,
+        _ => ParamMode::Shared,
+    }
 }
 
 fn declaration_scc_order(functions: &[FnDecl]) -> Vec<Vec<usize>> {

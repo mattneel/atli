@@ -1,0 +1,6 @@
+// expect: 5
+fn id_task[A](x: A) -> A = x
+fn main() -> Nat = scope {
+  h = spawn id_task(5)
+  await h
+}

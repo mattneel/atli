@@ -29,12 +29,14 @@ core in `docs/calculus.md §10`.
   maps that to `(f x) a`. Sprint 12 also threads pipes into prefix forms: `x |> inplace f(args)`
   elaborates as `inplace f(x, args)`, while `x |> freeze` and `x |> move` elaborate as
   `freeze x` and `move x`.
-- Unsupported settled-but-out-of-reduced-core constructs (`if`, type parameters,
-  strings/chars/floats, `use`/modules, and `^u`) diagnose
-  as "not yet in the reduced surface" rather than silently elaborating. Multiple effect
-  labels are no longer unsupported as of Sprint 08; `^`, arrays, `move`, `inplace`, and
-  `freeze` are implemented as of Sprint 11; records/variants are implemented as of Sprint
-  12; `scope`/`spawn`/`await` are implemented as of Sprint 13.
+- Unsupported settled-but-out-of-reduced-core constructs (`if`, strings/chars/floats,
+  `use`/modules, effect-row variables/open rows, constraints/traits, and byte-accurate
+  layout features) diagnose as "not yet in the reduced surface" rather than silently
+  elaborating. Multiple effect labels are no longer unsupported as of Sprint 08; `^`,
+  arrays, `move`, `inplace`, and `freeze` are implemented as of Sprint 11;
+  records/variants are implemented as of Sprint 12; `scope`/`spawn`/`await` are
+  implemented as of Sprint 13; type parameters, `Array[A]`, `Task[T]`, and `^u` are
+  implemented as of Sprint 14.
 
 ## Arithmetic prelude (Sprint 06)
 
@@ -161,3 +163,11 @@ spawn site, so ordinary uniqueness consumption and `move` happen in the parent b
 child is created. The surface `Task` type is opaque: internally the checker records each
 handle binding's result type so `await h` can recover the result while keeping task handles
 local to the enclosing scope.
+
+## Parametric polymorphism and `^u` (Sprint 14)
+
+Surface type parameters on `type` and `fn` declarations are checked for arity and scope, then erased to the existing one-slot core representation. `Array[A]` and `Task[T]` lower to the same core handle/task shapes as their monomorphic predecessors; bare `Array` remains accepted as `Array[Nat]`. Declared generic records and variants reuse the existing data-region layouts because every payload is one i64 slot in tier 1.
+
+Generic functions compile once. Call sites are checked by the surface uniqueness/type-use pass, but the emitted symbol is per function (`map[A, B]` emits one `@atli_fn_map`). This is the §9.4 erasure model: no dictionaries, no boxing, and no instantiation collection until byte-accurate frames make slot sizes type-dependent.
+
+`^u A` is a uniqueness-preservation position. The surface checker treats a `^u` binding as affine and returnable/threadable, but not as definitely unique: `inplace` and `move` require `^A`, not `^u A`. A unique actual argument instantiates `u = 1` and the call result stays unique; a shared actual instantiates `u = ω`. Bare parameters remain shared (`ω`) and consume a unique argument by forgetting.

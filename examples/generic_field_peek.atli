@@ -1,0 +1,4 @@
+// expect-check-error: field `item` is heap-typed
+type Box[A] = { item: A }
+fn bad[A](b: ^Box[A]) -> A = b.item
+fn main() -> Nat = 0

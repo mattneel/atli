@@ -1,0 +1,3 @@
+// expect-check-error: expects 1 type argument
+type Option[A] = None | Some(A)
+fn main() -> Option[Nat, Nat] = None

@@ -62,9 +62,7 @@ impl Parser {
         // Function declarations: `docs/syntax.md §4` and Appendix A `fn_decl`.
         let start = self.expect(&TokenKind::Fn, "expected `fn`")?.span;
         let name = self.expect_ident("expected function name")?;
-        if self.eat(&TokenKind::LBracket).is_some() {
-            return Err(self.error_previous("type parameters are not yet in the reduced surface"));
-        }
+        let type_params = self.type_params()?;
         self.expect(&TokenKind::LParen, "expected `(` after function name")?;
         let params = self.params()?;
         self.expect(&TokenKind::RParen, "expected `)` after parameters")?;
@@ -95,6 +93,7 @@ impl Parser {
         Ok(FnDecl {
             public,
             name,
+            type_params,
             params,
             ret,
             effects,
@@ -108,9 +107,7 @@ impl Parser {
         // Nominal monomorphic aggregate declarations, `docs/syntax.md §3` and calculus §3.
         let start = self.expect(&TokenKind::Type, "expected `type`")?.span;
         let name = self.expect_ident("expected type name")?;
-        if self.eat(&TokenKind::LBracket).is_some() {
-            return Err(self.error_previous("type parameters are not yet in the reduced surface"));
-        }
+        let type_params = self.type_params()?;
         self.expect(&TokenKind::Eq, "expected `=` in type declaration")?;
         let kind = if self.eat(&TokenKind::LBrace).is_some() {
             let mut fields = Vec::new();
@@ -157,7 +154,38 @@ impl Parser {
             TypeDeclKind::Variant(ctors)
         };
         let span = start.join(self.previous().span);
-        Ok(TypeDecl { name, kind, span })
+        Ok(TypeDecl {
+            name,
+            type_params,
+            kind,
+            span,
+        })
+    }
+
+    fn type_params(&mut self) -> Result<Vec<Spanned<Name>>, ParseError> {
+        let mut params = Vec::new();
+        if self.eat(&TokenKind::LBracket).is_none() {
+            return Ok(params);
+        }
+        if !self.at(&TokenKind::RBracket) {
+            loop {
+                let param = self.expect_ident("expected type parameter name")?;
+                if !param.node.chars().next().is_some_and(char::is_uppercase) {
+                    return Err(ParseError {
+                        span: param.span,
+                        message:
+                            "type parameters must be PascalCase identifiers declared in `[...]`"
+                                .into(),
+                    });
+                }
+                params.push(param);
+                if self.eat(&TokenKind::Comma).is_none() {
+                    break;
+                }
+            }
+        }
+        self.expect(&TokenKind::RBracket, "expected `]` after type parameters")?;
+        Ok(params)
     }
 
     fn effect_decl(&mut self) -> Result<EffectDecl, ParseError> {
@@ -213,9 +241,29 @@ impl Parser {
 
     fn ty(&mut self) -> Result<TypeExpr, ParseError> {
         if let Some(caret) = self.eat(&TokenKind::Caret) {
-            let inner = self.ty_atom()?;
-            let span = caret.span.join(inner.span());
-            let unique = TypeExpr::Unique(Box::new(inner), span);
+            let unique = if let TokenKind::Ident(var) = self.peek().kind.clone() {
+                if var.chars().next().is_some_and(char::is_lowercase) {
+                    let var_tok = self.advance().clone();
+                    let inner = self.ty_atom()?;
+                    let span = caret.span.join(inner.span());
+                    TypeExpr::Preserve {
+                        var: match var_tok.kind {
+                            TokenKind::Ident(v) => v,
+                            _ => unreachable!(),
+                        },
+                        inner: Box::new(inner),
+                        span,
+                    }
+                } else {
+                    let inner = self.ty_atom()?;
+                    let span = caret.span.join(inner.span());
+                    TypeExpr::Unique(Box::new(inner), span)
+                }
+            } else {
+                let inner = self.ty_atom()?;
+                let span = caret.span.join(inner.span());
+                TypeExpr::Unique(Box::new(inner), span)
+            };
             if self.eat(&TokenKind::Arrow).is_some() {
                 let right = self.ty()?;
                 let span = unique.span().join(right.span());
@@ -238,8 +286,28 @@ impl Parser {
         match tok.kind {
             TokenKind::Ident(name) if name == "Unit" => Ok(TypeExpr::Unit(tok.span)),
             TokenKind::Ident(name) if name == "Nat" => Ok(TypeExpr::Nat(tok.span)),
-            TokenKind::Ident(name) if name == "Array" => Ok(TypeExpr::Array(tok.span)),
-            TokenKind::Ident(name) => Ok(TypeExpr::Named(name, tok.span)),
+            TokenKind::Ident(name) if name == "Array" => {
+                if self.eat(&TokenKind::LBracket).is_some() {
+                    let args = self.type_args()?;
+                    let end = self
+                        .expect(&TokenKind::RBracket, "expected `]` after type arguments")?
+                        .span;
+                    Ok(TypeExpr::Applied(name, args, tok.span.join(end)))
+                } else {
+                    Ok(TypeExpr::Array(tok.span))
+                }
+            }
+            TokenKind::Ident(name) => {
+                if self.eat(&TokenKind::LBracket).is_some() {
+                    let args = self.type_args()?;
+                    let end = self
+                        .expect(&TokenKind::RBracket, "expected `]` after type arguments")?
+                        .span;
+                    Ok(TypeExpr::Applied(name, args, tok.span.join(end)))
+                } else {
+                    Ok(TypeExpr::Named(name, tok.span))
+                }
+            }
             TokenKind::LParen => {
                 if self.eat(&TokenKind::RParen).is_some() {
                     Ok(TypeExpr::Unit(tok.span.join(self.previous().span)))
@@ -254,6 +322,20 @@ impl Parser {
                 message: "expected type".into(),
             }),
         }
+    }
+
+    fn type_args(&mut self) -> Result<Vec<TypeExpr>, ParseError> {
+        let mut args = Vec::new();
+        if self.at(&TokenKind::RBracket) {
+            return Ok(args);
+        }
+        loop {
+            args.push(self.ty()?);
+            if self.eat(&TokenKind::Comma).is_none() {
+                break;
+            }
+        }
+        Ok(args)
     }
 
     fn effect_row(&mut self) -> Result<(), ParseError> {

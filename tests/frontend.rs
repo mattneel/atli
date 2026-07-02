@@ -141,6 +141,10 @@ fn cli_runs_examples_and_surfaces_witnesses() {
         ("examples/render.atli", "42\n"),
         ("examples/copy_vs_inplace.atli", "2\n"),
         ("examples/copy_functional.atli", "2\n"),
+        ("examples/option.atli", "7\n"),
+        ("examples/list_map.atli", "6\n"),
+        ("examples/preserve.atli", "2\n"),
+        ("examples/spawn_generic.atli", "5\n"),
     ];
     for (path, expected) in cases {
         let (code, stdout, stderr) = run_cli(&["run", path]);
@@ -291,6 +295,10 @@ fn codegen_emit_goldens_pin_certified_arena_literals() {
             "examples/courier.atli",
             "tests/goldens/codegen/courier.mlir",
         ),
+        (
+            "examples/list_map.atli",
+            "tests/goldens/codegen/list_map.mlir",
+        ),
     ] {
         let (code, stdout, stderr) = run_cli(&["emit", path]);
         assert_eq!(code, 0, "{stderr}");
@@ -316,6 +324,10 @@ fn codegen_emit_goldens_pin_certified_arena_literals() {
         if path.ends_with("drop_across_scopes.atli") {
             assert!(stdout.contains("atli_scope_pop"));
             assert!(stdout.contains("H-op-drop"));
+        }
+        if path.ends_with("list_map.atli") {
+            assert_eq!(stdout.matches("func.func @atli_fn_map").count(), 1);
+            assert!(stdout.matches("func.call @atli_fn_map").count() >= 2);
         }
     }
 }
@@ -379,6 +391,10 @@ fn compiled_native_outputs_match_oracle_for_finite_programs() {
         ("fanout", fs::read_to_string("examples/fanout.atli").unwrap(), "9\n"),
         ("courier", fs::read_to_string("examples/courier.atli").unwrap(), "42\n"),
         ("nursery", fs::read_to_string("examples/nursery.atli").unwrap(), "6\n"),
+        ("option", fs::read_to_string("examples/option.atli").unwrap(), "7\n"),
+        ("list_map", fs::read_to_string("examples/list_map.atli").unwrap(), "6\n"),
+        ("preserve", fs::read_to_string("examples/preserve.atli").unwrap(), "2\n"),
+        ("spawn_generic", fs::read_to_string("examples/spawn_generic.atli").unwrap(), "5\n"),
     ];
     for (name, src, expected) in cases {
         let path = format!("target/codegen_cases/{name}.atli");
@@ -706,6 +722,104 @@ module attributes {atli.certified_beta_slots = 0 : i64, atli.arena_overhead_slot
         outputs.len() >= 2,
         "bypassed native race should be nondeterministic across real Atli runtime runs: {outputs:?}"
     );
+}
+
+#[test]
+fn bypassed_preserving_parameter_privilege_diverges_from_copy_oracle() {
+    let _guard = CODEGEN_LOCK.lock().unwrap();
+    if !has_codegen_toolchain() {
+        eprintln!("skipping ^u privilege falsifier: LLVM/MLIR toolchain not found");
+        return;
+    }
+    fs::create_dir_all("target/codegen_cases").unwrap();
+    let twin = r#"
+fn mutate(a: ^Array) -> Nat = {
+  touched = inplace set(a, 0, 1)
+  get(freeze touched, 0)
+}
+fn main() -> Nat = 0
+"#;
+    let source_path = "target/codegen_cases/preserving_privilege_twin.atli";
+    fs::write(source_path, twin).unwrap();
+    let (code, _stdout, stderr) = run_cli(&["build", source_path]);
+    assert_eq!(code, 0, "{stderr}");
+
+    let oracle = eval(
+        Term::Let {
+            var: "a".into(),
+            expr: Box::new(Term::MkArray(
+                Box::new(Term::nat(1)),
+                Box::new(Term::zero()),
+            )),
+            body: Box::new(Term::Let {
+                var: "alias".into(),
+                expr: Box::new(Term::var("a")),
+                body: Box::new(Term::Let {
+                    var: "changed".into(),
+                    expr: Box::new(Term::ArraySet(
+                        Box::new(Term::var("a")),
+                        Box::new(Term::zero()),
+                        Box::new(Term::nat(1)),
+                    )),
+                    body: Box::new(Term::ArrayGet(
+                        Box::new(Term::var("alias")),
+                        Box::new(Term::zero()),
+                    )),
+                }),
+            }),
+        },
+        64,
+        false,
+    );
+    assert_eq!(oracle.final_term, Term::nat(0));
+
+    let mlir = r#"// checker-bypass twin of examples/inplace_on_preserving.atli; linked against the actual Atli shim
+module attributes {atli.certified_beta_slots = 0 : i64, atli.arena_overhead_slots = 0 : i64, atli.growable = false} {
+  func.func private @atli_array_new(%len: i64, %fill: i64) -> i64
+  func.func private @atli_array_get(%handle: i64, %idx: i64) -> i64
+  func.func private @atli_array_inplace_set(%handle: i64, %idx: i64, %value: i64) -> i64
+  func.func @atli_beta_slots() -> i64 {
+    %c0 = arith.constant 0 : i64
+    return %c0 : i64
+  }
+  func.func @atli_fn_mutate(%a: i64) -> i64 {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %_mut = func.call @atli_array_inplace_set(%a, %c0, %c1) : (i64, i64, i64) -> i64
+    %read = func.call @atli_array_get(%a, %c0) : (i64, i64) -> i64
+    return %read : i64
+  }
+  func.func @atli_program_main() -> i64 {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %a = func.call @atli_array_new(%c1, %c0) : (i64, i64) -> i64
+    %_mut = func.call @atli_array_inplace_set(%a, %c0, %c1) : (i64, i64, i64) -> i64
+    %read = func.call @atli_array_get(%a, %c0) : (i64, i64) -> i64
+    return %read : i64
+  }
+}
+"#;
+    let mlir_path = "target/codegen_cases/preserving_privilege_bypass.mlir";
+    let llvm_mlir_path = "target/codegen_cases/preserving_privilege_bypass.llvm.mlir";
+    let llvm_ir_path = "target/codegen_cases/preserving_privilege_bypass.ll";
+    let exe = "target/codegen_cases/preserving_privilege_bypass";
+    fs::write(mlir_path, mlir).unwrap();
+    compile_mlir_with_runtime(
+        mlir_path,
+        llvm_mlir_path,
+        llvm_ir_path,
+        "target/atli/runtime.c",
+        exe,
+    );
+    let output = Command::new(exe)
+        .output()
+        .expect("run preserving privilege falsifier");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "1\n");
 }
 
 #[test]

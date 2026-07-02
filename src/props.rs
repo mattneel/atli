@@ -179,10 +179,13 @@ mod tests {
             CoverageTag::Scope,
             CoverageTag::Spawn,
             CoverageTag::Await,
+            CoverageTag::GenericInstantiation,
+            CoverageTag::PreserveUnique,
+            CoverageTag::PreserveShared,
         ] {
             assert!(
                 counts.get(tag) > 0,
-                "missing aggregate generator coverage for {tag:?}: {counts:?}"
+                "missing aggregate/generic generator coverage for {tag:?}: {counts:?}"
             );
         }
 
@@ -252,11 +255,14 @@ mod tests {
             CoverageTag::RecordFunctionalUpdate,
             CoverageTag::RecordInplaceUpdate,
             CoverageTag::ConstructorPatternDescent,
+            CoverageTag::GenericInstantiation,
+            CoverageTag::PreserveUnique,
+            CoverageTag::PreserveShared,
         ] {
             assert_eq!(
                 counts.get(tag),
                 0,
-                "aggregate tag {tag:?} should disappear when aggregate generators are disabled: {counts:?}"
+                "aggregate/generic tag {tag:?} should disappear when aggregate/generic generators are disabled: {counts:?}"
             );
         }
     }

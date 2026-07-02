@@ -180,6 +180,9 @@ pub enum CoverageTag {
     Scope,
     Spawn,
     Await,
+    GenericInstantiation,
+    PreserveUnique,
+    PreserveShared,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

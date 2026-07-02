@@ -23,8 +23,9 @@ fn pretty_decl(decl: &Decl) -> String {
         ),
         Decl::Type(decl) => match &decl.kind {
             TypeDeclKind::Record(fields) => format!(
-                "type {} = {{ {} }}",
+                "type {}{} = {{ {} }}",
                 decl.name.node,
+                pretty_type_params(&decl.type_params),
                 fields
                     .iter()
                     .map(|field| format!("{}: {}", field.name.node, field.ty))
@@ -32,8 +33,9 @@ fn pretty_decl(decl: &Decl) -> String {
                     .join(", ")
             ),
             TypeDeclKind::Variant(ctors) => format!(
-                "type {} = {}",
+                "type {}{} = {}",
                 decl.name.node,
+                pretty_type_params(&decl.type_params),
                 ctors
                     .iter()
                     .map(|ctor| {
@@ -70,12 +72,28 @@ fn pretty_decl(decl: &Decl) -> String {
             };
             let effects = if func.effects.is_some() { " ! {L}" } else { "" };
             format!(
-                "{public}fn {}({params}) -> {}{effects}{bounded} = {}",
+                "{public}fn {}{}({params}) -> {}{effects}{bounded} = {}",
                 func.name.node,
+                pretty_type_params(&func.type_params),
                 func.ret,
                 pretty_expr(&func.body)
             )
         }
+    }
+}
+
+fn pretty_type_params(params: &[crate::surface::ast::Spanned<String>]) -> String {
+    if params.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "[{}]",
+            params
+                .iter()
+                .map(|param| param.node.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     }
 }
 

@@ -1,0 +1,10 @@
+// expect: 6
+type Option[A] = None | Some(A)
+type List[A] = Nil | Cons(A, List[A])
+fn map[A, B](xs: List[A]) -> List[A] = case xs { Nil -> Nil; Cons(x, rest) -> Cons(x, map(rest)) }
+fn sum(xs: List[Nat]) -> Nat = case xs { Nil -> 0; Cons(x, rest) -> x + sum(rest) }
+fn main() -> Nat = {
+  a = map(Cons(1, Cons(2, Nil)))
+  b = map(Cons(Some(3), Nil))
+  sum(a) + 3
+}

@@ -1,0 +1,8 @@
+// expect-check-error: inplace requires unique `b`, but it is shared
+fn forget[A](x: A) -> A = x
+fn main() -> Nat = {
+  a = mkarray(2, 0)
+  b = forget(inplace set(a, 0, 1))
+  c = inplace set(b, 1, 2)
+  get(freeze c, 1)
+}

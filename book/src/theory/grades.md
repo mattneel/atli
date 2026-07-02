@@ -10,3 +10,6 @@
 
 
 Sprint 11 adds the first consumer of `Q`: a unique `^Array` binding has grade `1`, and the checker spends that single use to license native in-place stores. Functional `set` and `inplace set` are value-equivalent on accepted programs; the allocation counter is where the optimization becomes visible.
+
+
+Sprint 14 spends the same `Q` idea parametrically: `^u` is a preservation variable. A helper can be polymorphic over ownership and still compile once under erasure, but it cannot mutate through `^u` because the shared instantiation would be unsound.

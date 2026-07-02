@@ -1,0 +1,10 @@
+// expect: 2
+fn through[A](x: ^u A) -> ^u A = x
+fn main() -> Nat = {
+  mkarray(2, 0)
+    |> inplace set(0, 1)
+    |> through
+    |> inplace set(1, 2)
+    |> freeze
+    |> get(1)
+}

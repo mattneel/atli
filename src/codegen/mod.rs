@@ -2118,7 +2118,12 @@ fn pipe_to_call(lhs: Expr, rhs: Expr) -> Result<Expr, CodegenError> {
 fn assert_word_type(ty: &TypeExpr) -> Result<(), CodegenError> {
     if matches!(
         ty,
-        TypeExpr::Nat(_) | TypeExpr::Array(_) | TypeExpr::Named(_, _) | TypeExpr::Unique(_, _)
+        TypeExpr::Nat(_)
+            | TypeExpr::Array(_)
+            | TypeExpr::Named(_, _)
+            | TypeExpr::Applied(_, _, _)
+            | TypeExpr::Unique(_, _)
+            | TypeExpr::Preserve { .. }
     ) {
         Ok(())
     } else {

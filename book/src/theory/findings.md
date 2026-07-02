@@ -30,3 +30,8 @@ Records and variants are implemented in v0.3.0. Normative syntax and lowering re
 ## v0.4.1 tasks
 
 Structured concurrency is load-bearing in v0.4.1. The scheduler-independence claim is tested by accepted examples and attacked by the race falsifier; the formal L10 concurrent small-step proof remains pending infrastructure.
+
+
+## v0.5.0 generics
+
+No new finding is introduced by Sprint 14. The release extends the differential chain with generic examples, an erasure golden, fixed-seed coverage tags for generic instantiation and both `^u` grades, and a provenance-pinned `^u` privilege falsifier.

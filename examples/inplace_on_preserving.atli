@@ -1,0 +1,3 @@
+// expect-check-error: uniqueness-preserving parameters grant threading, not mutation
+fn bad[A](x: ^u A) -> ^u A = inplace set(x, 0, 1)
+fn main() -> Nat = 0

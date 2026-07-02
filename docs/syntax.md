@@ -1,14 +1,14 @@
 # Atli Syntax
 
-> **Status: implemented subset + open list (v0.4.1).** This document began as draft-0.
-> The v0.4.1 compiler implements the reduced surface listed below and keeps the rest in
+> **Status: implemented subset + open list (v0.5.0).** This document began as draft-0.
+> The v0.5.0 compiler implements the reduced surface listed below and keeps the rest in
 > the Open list. Normative elaboration details live in [`docs/elaboration.md`](elaboration.md);
 > the core semantics live in [`docs/calculus.md`](calculus.md).
 
-## Implemented in v0.4.1
+## Implemented in v0.5.0
 
-- `fn` / `pub fn` declarations, expression or block bodied.
-- Types: `Unit`, `Nat`, `Array`, unique marker `^T`, arrows, and effect rows `! {A, B}`.
+- `fn` / `pub fn` declarations, expression or block bodied, including rank-1 type parameters (`fn f[A](...)`).
+- Types: `Unit`, `Nat`, `Array[A]` (bare `Array` aliases `Array[Nat]`), `Task[T]`, declared generic record/variant types, unique marker `^T`, uniqueness-preservation marker `^u T`, arrows, and concrete effect rows `! {A, B}`.
 - Expressions: `()`, decimal naturals, variables, unary calls, curried multi-arg calls,
   blocks, `case n { 0 -> e0; p -> e1 }`, pipes, `+ - *` over `Nat` (`-` is monus),
   array builtins `mkarray/get/set/len`, records, variants, field projection/update, constructor and record patterns, and prefix `move`/`inplace`/`freeze`.
@@ -18,7 +18,7 @@
 - Effects: multiple `effect L { op(x: Nat) -> Nat }` declarations, `L.op(e)`, and
   multi-label handlers with `k` or `_` continuation clauses.
 - Mutual top-level recursion: declaration SCCs elaborate to core `fix*` groups.
-- Aggregate declarations: nominal monomorphic records and variants, exhaustive constructor cases, record destructuring, functional update, and in-place record replacement.
+- Aggregate declarations: nominal generic records and variants, exhaustive constructor cases, record destructuring, functional update, and in-place record replacement.
 - Structured concurrency: `scope { ... }`, `spawn f(args)` for top-level functions, opaque
   affine task handles, and `await h`.
 - Example-test directives in leading comments: `expect`, `expect-oracle`,
@@ -26,10 +26,10 @@
 
 ## Still open
 
-Full numeric tower, strings/chars/floats as runtime values, type
-parameters, uniqueness polymorphism (`^u`), modules/`use`, byte-accurate
-frame layout, real measure verification, and the full region grade remain future work.
-Unsupported v0.4.1 constructs diagnose as "not yet in the reduced surface".
+Full numeric tower, strings/chars/floats as runtime values, modules/`use`, byte-accurate
+frame layout, monomorphization, bounded polymorphism/traits, effect-row variables/open
+rows, real measure verification, and the full region grade remain future work.
+Unsupported v0.5.0 constructs diagnose as "not yet in the reduced surface".
 
 ---
 
@@ -179,7 +179,7 @@ px     = origin.x
 
 ```zig
 type Color     = Red | Green | Blue
-type Option[A] = None | Some(A)   // generics are future; monomorphic variants are implemented
+type Option[A] = None | Some(A)   // generic variants are implemented in v0.5.0
 type Shape     = Circle(Nat) | Rect(Nat, Nat)
 ```
 
@@ -204,7 +204,7 @@ unique-out, shared-in ⇒ shared-out) without being written twice:
 ```
 
 Forgetting uniqueness (`^T` → `T`) happens by subsumption and **consumes** the unique
-binding in v0.3.0: after a shared use there is no remaining unique handle to mutate. Write
+binding in v0.5.0: after a shared use there is no remaining unique handle to mutate. Write
 `freeze e` when that shared handoff is intentional.
 
 ### Recursive types
@@ -434,7 +434,7 @@ Signature slot order, left to right: `-> RET ! EFFECTS BOUNDEDNESS =`.
 Concurrency is surfaced through `scope`, `spawn`, and `await`. `scope { … }` bounds child
 task lifetimes: when the scope exits, its children are joined and the scope's region frees
 as one operation. `spawn f(args)` starts a task whose callee is a declared top-level `fn`;
-closures are not spawnable in v0.4.1. `await h` consumes an opaque affine task handle and
+closures are not spawnable in v0.5.0. `await h` consumes an opaque affine task handle and
 returns the task result. This is the surface of **spawn = arena = cancellation**: the task
 tree, the arena tree, and the cancellation tree are the same tree.
 
@@ -538,11 +538,7 @@ record_lit  ::= '.{' (NAME '=' expr)* '}'
   semantics (and whether `perform` of an undeclared operation is allowed) is undecided.
 - **Region (`ρ`) surface.** Fully inferred today; the rare cross-arena `move` may want an
   explicit region annotation (`in r`?). Unspecified.
-- **Uniqueness-variable binding.** Implicit per-signature (as above) is the working rule;
-  whether some cases need explicit declaration is untested.
 - **Module system** in full (§10).
 - **Surface `Int` semantics.** Sprint 06 gives `Nat` subtraction monus semantics; signed
   `Int` arithmetic remains future work.
-- **`freeze` syntax after v0.3.0.** `freeze` is implemented as explicit-intent sugar for
-  consuming subsumption; whether style guidance eventually prefers silent subsumption is
-  a documentation question, not a semantic gap.
+- **Effect-row variables/open rows.** The blocked target is `map[A, B](xs: List[A], f: A -> B ! e) -> List[B] ! e`; v0.5.0 generic higher-order arguments are pure. Syntax `! e` / `! {L | e}` remains open until row unification lands.

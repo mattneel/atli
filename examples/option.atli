@@ -1,0 +1,4 @@
+// expect: 7
+type Option[A] = None | Some(A)
+fn unwrap_or[A](o: Option[A], d: A) -> A = case o { None -> d; Some(x) -> x }
+fn main() -> Nat = unwrap_or(Some(7), 0)

@@ -51,6 +51,7 @@ pub enum Decl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeDecl {
     pub name: Spanned<Name>,
+    pub type_params: Vec<Spanned<Name>>,
     pub kind: TypeDeclKind,
     pub span: Span,
 }
@@ -77,6 +78,7 @@ pub struct ConstructorDecl {
 pub struct FnDecl {
     pub public: bool,
     pub name: Spanned<Name>,
+    pub type_params: Vec<Spanned<Name>>,
     pub params: Vec<Param>,
     pub ret: TypeExpr,
     pub effects: Option<Span>,
@@ -113,7 +115,13 @@ pub enum TypeExpr {
     Nat(Span),
     Array(Span),
     Named(Name, Span),
+    Applied(Name, Vec<TypeExpr>, Span),
     Unique(Box<TypeExpr>, Span),
+    Preserve {
+        var: Name,
+        inner: Box<TypeExpr>,
+        span: Span,
+    },
     Arrow(Box<TypeExpr>, Box<TypeExpr>, Span),
 }
 
@@ -125,7 +133,9 @@ impl TypeExpr {
             | Self::Nat(span)
             | Self::Array(span)
             | Self::Named(_, span)
+            | Self::Applied(_, _, span)
             | Self::Unique(_, span)
+            | Self::Preserve { span, .. }
             | Self::Arrow(_, _, span) => *span,
         }
     }
@@ -284,7 +294,16 @@ impl fmt::Display for TypeExpr {
             Self::Nat(_) => f.write_str("Nat"),
             Self::Array(_) => f.write_str("Array"),
             Self::Named(name, _) => f.write_str(name),
+            Self::Applied(name, args, _) => write!(
+                f,
+                "{name}[{}]",
+                args.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::Unique(inner, _) => write!(f, "^{inner}"),
+            Self::Preserve { var, inner, .. } => write!(f, "^{var} {inner}"),
             Self::Arrow(a, b, _) => write!(f, "{a} -> {b}"),
         }
     }

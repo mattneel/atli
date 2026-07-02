@@ -31,10 +31,10 @@ Run the full example differential:
 cargo run -- test examples/
 ```
 
-## What v0.4.1 includes
+## What v0.5.0 includes
 
 - Surface parser, elaborator, diagnostics, and `atli` CLI.
-- Unary `Nat`, monomorphic `Array`, unique `^Array`, `move`/`inplace`/`freeze`, functions, `case`, arithmetic prelude, `measure`/`div`, multi-label effects, handlers, mutual recursion (`fix*`), structured data, and `scope`/`spawn`/`await`.
+- Unary `Nat`, generic `Array[A]`, unique `^Array`, `^u` uniqueness preservation, generic records/variants/functions, `move`/`inplace`/`freeze`, functions, `case`, arithmetic prelude, `measure`/`div`, multi-label effects, handlers, mutual recursion (`fix*`), structured data, and `scope`/`spawn`/`await`.
 - Reference interpreter and native MLIR→LLVM backend.
 - A graded checker with sealed solver certificates: public consumers can read β only after SCC fixpoint solving completes.
 - Runtime handler-scope stack, growable `div` path, real pthread task runtime, task spawn/thread-id reporting, overflow trap (86), one-shot debug trap (87), bounds trap (88), high-water reporting, and data allocation reporting.
