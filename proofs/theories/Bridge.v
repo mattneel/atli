@@ -145,7 +145,7 @@ Proof.
   split.
   - apply Ty_Perform. apply Ty_Zero.
   - split.
-    + exists TZero. split; reflexivity.
+    + apply Blocked_Here. reflexivity.
     + reflexivity.
 Qed.
 
@@ -282,6 +282,17 @@ Definition resuming_handler : handler :=
   Handler "r" (TVar "r") L "p" "k" (TResume (TVar "k") TZero).
 Definition dropping_handler : handler :=
   Handler "r" (TVar "r") L "p" "k" TZero.
+
+(** B3 anchors: context-rich blocked operations mirror handler-free capture. *)
+
+Example blocked_anchor_finding21_body_is_blocked :
+  blocked_on_operation L (TLet "x" (TPerform L TZero) (TVar "x")).
+Proof. apply Blocked_Let. apply Blocked_Here. reflexivity. Qed.
+
+Example blocked_anchor_handled_term_is_not_blocked :
+  ~ blocked_on_operation L (THandle (TPerform L TZero) dropping_handler).
+Proof. intro H. inversion H. Qed.
+
 Definition finding21_term : term :=
   THandle (TLet "x" (TPerform L TZero) (TVar "x")) resuming_handler.
 

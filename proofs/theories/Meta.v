@@ -1116,14 +1116,325 @@ Theorem step_is_deterministic : forall t u v,
   step t u -> step t v -> u = v.
 Proof. apply step_deterministic. Qed.
 
-(** Finding eighteen / SPEC-GAP(progress-open-effects): the third progress disjunct is
-    an unhandled top-level operation predicted by its row. The executable bridge pins the
-    top-level-perform golden; future context-rich mechanization widens this predicate to
-    the full handler-free-for-label evaluation-context grammar of docs/calculus.md §5. *)
+(** Sprint 16 B3: operation blocking, context-rich (docs/calculus.md §5/§8.1). *)
+
+(* Mirrors capture's handler-free frame grammar: a blocked term is an unhandled
+   [perform L v] under evaluation-context frames with NO enclosing handler
+   (one label: every handler intercepts, so THandle never appears on the spine).
+   Sprint 16 B3 replaces the Sprint 15 top-level-only predicate — finding
+   twenty-one's counterexample was exactly a blocked-under-a-let term the old
+   shape missed. *)
+Inductive blocked_ind : term -> Prop :=
+| Blocked_Here : forall v, is_value v = true -> blocked_ind (TPerform L v)
+| Blocked_PerformArg : forall e, blocked_ind e -> blocked_ind (TPerform L e)
+| Blocked_Succ : forall e, blocked_ind e -> blocked_ind (TSucc e)
+| Blocked_Case : forall scrut e0 x e1,
+    blocked_ind scrut -> blocked_ind (TCaseNat scrut e0 x e1)
+| Blocked_AppFun : forall f a, blocked_ind f -> blocked_ind (TApp f a)
+| Blocked_AppArg : forall f a,
+    is_value f = true -> blocked_ind a -> blocked_ind (TApp f a)
+| Blocked_Let : forall x e body, blocked_ind e -> blocked_ind (TLet x e body)
+| Blocked_ResumeK : forall k arg, blocked_ind k -> blocked_ind (TResume k arg)
+| Blocked_ResumeArg : forall k arg,
+    is_value k = true -> blocked_ind arg -> blocked_ind (TResume k arg).
+
 Definition blocked_on_operation (l : label) (t : term) : Prop :=
-  match l with
-  | L => exists v, is_value v = true /\ t = TPerform L v
-  end.
+  match l with L => blocked_ind t end.
+
+Lemma blocked_not_value : forall t, blocked_ind t -> is_value t = false.
+Proof.
+  intros t Hblocked. induction Hblocked; simpl; try reflexivity.
+  exact IHHblocked.
+Qed.
+
+Lemma blocked_iff_capture : forall t,
+  blocked_ind t <-> exists ctx v, capture t = Some (ctx, v).
+Proof.
+  split.
+  - intros Hblocked. induction Hblocked.
+    + exists [], v. simpl. rewrite H. reflexivity.
+    + destruct IHHblocked as [ctx [v Hcapture]].
+      pose proof (blocked_not_value e Hblocked) as Hnot_value.
+      exists (FPerformArg L :: ctx), v.
+      simpl. rewrite Hnot_value. unfold capture_cons. rewrite Hcapture. reflexivity.
+    + destruct IHHblocked as [ctx [v Hcapture]].
+      pose proof (blocked_not_value e Hblocked) as Hnot_value.
+      exists (FSucc :: ctx), v.
+      simpl. rewrite Hnot_value. unfold capture_cons. rewrite Hcapture. reflexivity.
+    + destruct IHHblocked as [ctx [v Hcapture]].
+      pose proof (blocked_not_value scrut Hblocked) as Hnot_value.
+      exists (FCaseScrut e0 x e1 :: ctx), v.
+      simpl. rewrite Hnot_value. unfold capture_cons. rewrite Hcapture. reflexivity.
+    + destruct IHHblocked as [ctx [v Hcapture]].
+      pose proof (blocked_not_value f Hblocked) as Hnot_value.
+      exists (FAppFun a :: ctx), v.
+      simpl. rewrite Hnot_value. unfold capture_cons. rewrite Hcapture. reflexivity.
+    + destruct IHHblocked as [ctx [v Hcapture]].
+      pose proof (blocked_not_value a Hblocked) as Harg_not_value.
+      exists (FAppArg f :: ctx), v.
+      simpl. rewrite H. rewrite Harg_not_value.
+      unfold capture_cons. rewrite Hcapture. reflexivity.
+    + destruct IHHblocked as [ctx [v Hcapture]].
+      pose proof (blocked_not_value e Hblocked) as Hnot_value.
+      exists (FLet x body :: ctx), v.
+      simpl. rewrite Hnot_value. unfold capture_cons. rewrite Hcapture. reflexivity.
+    + destruct IHHblocked as [ctx [v Hcapture]].
+      pose proof (blocked_not_value k Hblocked) as Hkont_not_value.
+      exists (FResumeK arg :: ctx), v.
+      destruct k as
+        [kx| | |ke|kscrut ke0 kx ke1|kparam kparam_ty kbody|kf ka
+        |kx ke kbody|kfunc kparam kparam_ty kbody ktag|kop karg|kbody kh
+        |kkont karg|kh kctx|kh kctx];
+        cbn [capture is_value] in Hcapture, Hkont_not_value |- *;
+        try discriminate Hcapture; try discriminate Hkont_not_value.
+      * rewrite Hkont_not_value.
+        rewrite Hkont_not_value in Hcapture.
+        unfold capture_cons at 1. rewrite Hcapture. reflexivity.
+      * unfold capture_cons at 1. rewrite Hcapture. reflexivity.
+      * unfold capture_cons at 1. rewrite Hcapture. reflexivity.
+      * unfold capture_cons at 1. rewrite Hcapture. reflexivity.
+      * unfold capture_cons at 1. rewrite Hcapture. reflexivity.
+      * unfold capture_cons at 1. rewrite Hcapture. reflexivity.
+    + destruct IHHblocked as [ctx [v Hcapture]].
+      pose proof (blocked_not_value arg Hblocked) as Harg_not_value.
+      exists (FResumeArg k :: ctx), v.
+      destruct k as
+        [kx| | |ke|kscrut ke0 kx ke1|kparam kparam_ty kbody|kf ka
+        |kx ke kbody|kfunc kparam kparam_ty kbody ktag|kop karg|kbody kh
+        |kkont karg|kh kctx|kh kctx];
+        cbn [capture is_value] in H, Harg_not_value |- *;
+        try discriminate H;
+        try (rewrite H; rewrite Harg_not_value;
+             unfold capture_cons; rewrite Hcapture; reflexivity).
+      * rewrite Harg_not_value. unfold capture_cons at 1. rewrite Hcapture. reflexivity.
+      * rewrite Harg_not_value. unfold capture_cons at 1. rewrite Hcapture. reflexivity.
+      * rewrite Harg_not_value. unfold capture_cons at 1. rewrite Hcapture. reflexivity.
+      * rewrite Harg_not_value. unfold capture_cons at 1. rewrite Hcapture. reflexivity.
+  - assert (Hcons_some : forall f sub ctx v,
+      capture_cons f (capture sub) = Some (ctx, v) ->
+      exists sub_ctx sub_v, capture sub = Some (sub_ctx, sub_v)).
+    {
+      intros f sub ctx v Hcapture.
+      unfold capture_cons in Hcapture.
+      destruct (capture sub) as [[sub_ctx sub_v]|] eqn:Hsub; try discriminate.
+      exists sub_ctx, sub_v. reflexivity.
+    }
+    induction t as
+      [x| | |e IHe|scrut IHscrut e0 IHe0 x e1 IHe1
+      |param param_ty body IHbody|f IHf a IHa|x e IHe body IHbody
+      |func param param_ty body IHbody tag|op arg IHarg|body IHbody h
+      |kont IHkont arg IHarg|h ctx0|h ctx0];
+      intros [ctx [v Hcapture]]; cbn [capture is_value] in Hcapture; try discriminate.
+    + destruct (is_value e) eqn:He; try discriminate.
+      apply Blocked_Succ. apply IHe. eapply Hcons_some. exact Hcapture.
+    + destruct (is_value scrut) eqn:Hscrut; try discriminate.
+      apply Blocked_Case. apply IHscrut. eapply Hcons_some. exact Hcapture.
+    + destruct (is_value f) eqn:Hf.
+      * destruct (is_value a) eqn:Ha; try discriminate.
+        apply Blocked_AppArg; [exact Hf|].
+        apply IHa. eapply Hcons_some. exact Hcapture.
+      * apply Blocked_AppFun. apply IHf. eapply Hcons_some. exact Hcapture.
+    + destruct (is_value e) eqn:He; try discriminate.
+      apply Blocked_Let. apply IHe. eapply Hcons_some. exact Hcapture.
+    + destruct op.
+      destruct (is_value arg) eqn:Harg.
+      * inversion Hcapture; subst. apply Blocked_Here. exact Harg.
+      * apply Blocked_PerformArg. apply IHarg. eapply Hcons_some. exact Hcapture.
+    + destruct kont as
+        [kx| | |ke|kscrut ke0 kx ke1|kparam kparam_ty kbody|kf ka
+        |kx ke kbody|kfunc kparam kparam_ty kbody ktag|kop karg|kbody kh
+        |kkont karg|kh kctx|kh kctx];
+        cbn [capture is_value] in Hcapture.
+      * discriminate.
+      * destruct (is_value arg) eqn:Harg; try discriminate.
+        apply Blocked_ResumeArg; [reflexivity|].
+        apply IHarg. eapply Hcons_some. exact Hcapture.
+      * destruct (is_value arg) eqn:Harg; try discriminate.
+        apply Blocked_ResumeArg; [reflexivity|].
+        apply IHarg. eapply Hcons_some. exact Hcapture.
+      * destruct (is_value (TSucc ke)) eqn:Hkont_value.
+        -- change (is_value ke = true) in Hkont_value.
+           rewrite Hkont_value in Hcapture.
+           destruct (is_value arg) eqn:Harg; try discriminate.
+           apply Blocked_ResumeArg; [exact Hkont_value|].
+           apply IHarg. eapply Hcons_some. exact Hcapture.
+        -- change (is_value ke = false) in Hkont_value.
+           rewrite Hkont_value in Hcapture.
+           apply Blocked_ResumeK. apply IHkont.
+           unfold capture_cons at 1 in Hcapture.
+           destruct (capture_cons FSucc (capture ke)) as [[sub_ctx sub_v]|] eqn:Hsub;
+             [|discriminate Hcapture].
+           exists sub_ctx, sub_v.
+           cbn [capture is_value]. rewrite Hkont_value. rewrite Hsub. reflexivity.
+      * apply Blocked_ResumeK. apply IHkont. eapply Hcons_some. exact Hcapture.
+      * destruct (is_value arg) eqn:Harg; try discriminate.
+        apply Blocked_ResumeArg; [reflexivity|].
+        apply IHarg. eapply Hcons_some. exact Hcapture.
+      * apply Blocked_ResumeK. apply IHkont. eapply Hcons_some. exact Hcapture.
+      * apply Blocked_ResumeK. apply IHkont. eapply Hcons_some. exact Hcapture.
+      * discriminate.
+      * apply Blocked_ResumeK. apply IHkont. eapply Hcons_some. exact Hcapture.
+      * discriminate.
+      * apply Blocked_ResumeK. apply IHkont. eapply Hcons_some. exact Hcapture.
+      * destruct (is_value arg) eqn:Harg; try discriminate.
+        apply Blocked_ResumeArg; [reflexivity|].
+        apply IHarg. eapply Hcons_some. exact Hcapture.
+      * discriminate.
+Qed.
+
+Lemma eff_mem_join_l : forall a b, eff_mem a = true -> eff_mem (eff_join a b) = true.
+Proof. destruct a, b; simpl; intros H; try discriminate; reflexivity. Qed.
+
+Lemma eff_mem_join_r : forall a b, eff_mem b = true -> eff_mem (eff_join a b) = true.
+Proof. destruct a, b; simpl; intros H; try discriminate; reflexivity. Qed.
+
+Lemma typed_stuck_implies_blocked : forall g t ty eps beta,
+  has_type g t ty eps beta -> g = [] ->
+  is_value t = false -> stepf t = None ->
+  blocked_ind t /\ eff_mem eps = true.
+Proof.
+  intros g t ty eps beta Hty.
+  induction Hty; intros Hg Hnot_value Hstuck; subst; simpl in Hnot_value; try discriminate.
+  - simpl in Hstuck.
+    destruct (stepf e) eqn:Hestep; try discriminate.
+    destruct (IHHty eq_refl Hnot_value eq_refl) as [Hblocked Hmem].
+    split; [apply Blocked_Succ; exact Hblocked|exact Hmem].
+  - simpl in Hstuck.
+    destruct (is_value scrut) eqn:Hscrut_value.
+    + match goal with
+      | Hscrut_ty : has_type [] scrut TyNat ?eps_s ?beta_s |- _ =>
+          destruct (canonical_nat [] scrut eps_s beta_s Hscrut_value Hscrut_ty)
+            as [Hzero | [pred [Hsucc Hpred_value]]]
+      end.
+      * subst scrut. simpl in Hstuck. discriminate.
+      * subst scrut. simpl in Hstuck. discriminate.
+    + destruct (stepf scrut) eqn:Hscrut_step; try discriminate.
+      destruct (IHHty1 eq_refl eq_refl eq_refl) as [Hblocked Hmem].
+      split.
+      * apply Blocked_Case. exact Hblocked.
+      * apply eff_mem_join_l. exact Hmem.
+  - simpl in Hstuck.
+    destruct (is_value f) eqn:Hfun_value.
+    + destruct (is_value a) eqn:Harg_value.
+      * match goal with
+        | Hfun_ty : has_type [] f (TyArrow ?arg_ty ?lat_eps ?lat_beta ?ret_ty) ?epsf ?betaf |- _ =>
+            destruct (canonical_arrow [] f arg_ty lat_eps lat_beta ret_ty epsf betaf
+              Hfun_value Hfun_ty) as [param [body Hfun_shape]]
+        end.
+        subst f. simpl in Hstuck. discriminate.
+      * destruct (stepf a) eqn:Harg_step; try discriminate.
+        destruct (IHHty2 eq_refl eq_refl eq_refl) as [Hblocked Hmem].
+        split.
+        -- apply Blocked_AppArg; [exact Hfun_value|exact Hblocked].
+        -- apply eff_mem_join_r. apply eff_mem_join_l. exact Hmem.
+    + destruct (stepf f) eqn:Hfun_step; try discriminate.
+      destruct (IHHty1 eq_refl eq_refl eq_refl) as [Hblocked Hmem].
+      split.
+      * apply Blocked_AppFun. exact Hblocked.
+      * apply eff_mem_join_l. exact Hmem.
+  - simpl in Hstuck.
+    destruct (is_value e) eqn:Hexpr_value; try discriminate.
+    destruct (stepf e) eqn:Hexpr_step; try discriminate.
+    destruct (IHHty1 eq_refl eq_refl eq_refl) as [Hblocked Hmem].
+    split.
+    + apply Blocked_Let. exact Hblocked.
+    + apply eff_mem_join_l. exact Hmem.
+  - simpl in Hstuck.
+    destruct (is_value arg) eqn:Harg_value.
+    + split.
+      * apply Blocked_Here. exact Harg_value.
+      * reflexivity.
+    + destruct (stepf arg) eqn:Harg_step; try discriminate.
+      destruct (IHHty eq_refl eq_refl eq_refl) as [_ Hmem].
+      discriminate Hmem.
+  - simpl in Hstuck.
+    destruct (is_value body) eqn:Hbody_value; try discriminate.
+    destruct (capture body) as [[cap_ctx cap_arg]|] eqn:Hcapture.
+    + destruct (mentions_var op_k op_body); discriminate.
+    + destruct (stepf body) eqn:Hbody_step; try discriminate.
+      destruct (IHHty1 eq_refl eq_refl eq_refl) as [Hblocked _].
+      (* A well-typed handle over a stuck body cannot be stuck — blocked meets handler ⇒ capture succeeds ⇒ steps. *)
+      apply blocked_iff_capture in Hblocked.
+      destruct Hblocked as [ctx [v Hsome]].
+      rewrite Hcapture in Hsome. discriminate.
+  - simpl in Hstuck.
+    destruct (is_value body) eqn:Hbody_value; try discriminate.
+    destruct (capture body) as [[cap_ctx cap_arg]|] eqn:Hcapture.
+    + destruct (mentions_var op_k op_body); discriminate.
+    + destruct (stepf body) eqn:Hbody_step; try discriminate.
+      destruct (IHHty1 eq_refl eq_refl eq_refl) as [Hblocked _].
+      (* A well-typed handle over a stuck body cannot be stuck — blocked meets handler ⇒ capture succeeds ⇒ steps. *)
+      apply blocked_iff_capture in Hblocked.
+      destruct Hblocked as [ctx [v Hsome]].
+      rewrite Hcapture in Hsome. discriminate.
+  - destruct (is_value k) eqn:Hkont_value.
+    + match goal with
+      | Hkont_ty : has_type [] k (TyCont TyNat ?bk ?ret_ty) EffEmpty (BFinite 0) |- _ =>
+          destruct (canonical_cont [] k TyNat bk ret_ty EffEmpty (BFinite 0)
+            Hkont_value Hkont_ty) as
+            [rv [rbody [op_param [op_k [op_body [ctx Hkont_shape]]]]]]
+      end.
+      subst k. simpl in Hstuck.
+      destruct (is_value arg) eqn:Harg_value; try discriminate.
+      destruct (stepf arg) eqn:Harg_step; try discriminate.
+      destruct (IHHty2 eq_refl eq_refl eq_refl) as [_ Hmem].
+      discriminate Hmem.
+    + assert (Hkont_step : stepf k = None).
+      {
+        destruct k as
+          [kx| | |ke|kscrut ke0 kx ke1|kparam kparam_ty kbody|kf ka
+          |kx ke kbody|kfunc kparam kparam_ty kbody ktag|kop karg|kbody kh
+          |kkont karg|kh kctx|kh kctx];
+          try discriminate Hkont_value; try reflexivity.
+        - change ((if is_value (TSucc ke)
+                   then if is_value arg
+                        then None
+                        else match stepf arg with
+                             | Some arg' => Some (TResume (TSucc ke) arg')
+                             | None => None
+                             end
+                   else match stepf (TSucc ke) with
+                        | Some k' => Some (TResume k' arg)
+                        | None => None
+                        end) = None) in Hstuck.
+          rewrite Hkont_value in Hstuck.
+          destruct (stepf (TSucc ke)) eqn:Hke_step; [discriminate|reflexivity].
+        - change (match stepf (TCaseNat kscrut ke0 kx ke1) with
+                  | Some k' => Some (TResume k' arg)
+                  | None => None
+                  end = None) in Hstuck.
+          destruct (stepf (TCaseNat kscrut ke0 kx ke1)) eqn:Hk_step;
+            [discriminate|reflexivity].
+        - change (match stepf (TApp kf ka) with
+                  | Some k' => Some (TResume k' arg)
+                  | None => None
+                  end = None) in Hstuck.
+          destruct (stepf (TApp kf ka)) eqn:Hk_step; [discriminate|reflexivity].
+        - change (match stepf (TLet kx ke kbody) with
+                  | Some k' => Some (TResume k' arg)
+                  | None => None
+                  end = None) in Hstuck.
+          destruct (stepf (TLet kx ke kbody)) eqn:Hk_step; [discriminate|reflexivity].
+        - simpl in Hstuck. discriminate.
+        - change (match stepf (TPerform kop karg) with
+                  | Some k' => Some (TResume k' arg)
+                  | None => None
+                  end = None) in Hstuck.
+          destruct (stepf (TPerform kop karg)) eqn:Hk_step; [discriminate|reflexivity].
+        - change (match stepf (THandle kbody kh) with
+                  | Some k' => Some (TResume k' arg)
+                  | None => None
+                  end = None) in Hstuck.
+          destruct (stepf (THandle kbody kh)) eqn:Hk_step; [discriminate|reflexivity].
+        - change (match stepf (TResume kkont karg) with
+                  | Some k' => Some (TResume k' arg)
+                  | None => None
+                  end = None) in Hstuck.
+          destruct (stepf (TResume kkont karg)) eqn:Hk_step; [discriminate|reflexivity].
+      }
+      destruct (IHHty1 eq_refl eq_refl Hkont_step) as [_ Hmem].
+      discriminate Hmem.
+Qed.
 
 Theorem progress : forall t ty eps beta,
   has_type [] t ty eps beta ->
