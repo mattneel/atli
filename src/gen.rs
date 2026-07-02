@@ -578,10 +578,13 @@ impl Builder {
             Box::new(Term::zero()),
             Box::new(buf),
         );
-        Term::ArraySet(
-            Box::new(with_buf),
-            Box::new(Term::nat(1)),
-            Box::new(Term::nat(len)),
+        Term::Mark(
+            CoverageTag::RecordAggregate,
+            Box::new(Term::ArraySet(
+                Box::new(with_buf),
+                Box::new(Term::nat(1)),
+                Box::new(Term::nat(len)),
+            )),
         )
     }
 
@@ -590,12 +593,15 @@ impl Builder {
         Term::Let {
             var: "record".into(),
             expr: Box::new(self.record_with_buffer(5, 1)),
-            body: Box::new(Term::ArrayGet(
+            body: Box::new(Term::Mark(
+                CoverageTag::DestructureConsume,
                 Box::new(Term::ArrayGet(
-                    Box::new(Term::var("record")),
+                    Box::new(Term::ArrayGet(
+                        Box::new(Term::var("record")),
+                        Box::new(Term::zero()),
+                    )),
                     Box::new(Term::zero()),
                 )),
-                Box::new(Term::zero()),
             )),
         }
     }
@@ -607,10 +613,13 @@ impl Builder {
             expr: Box::new(self.record_with_buffer(0, 1)),
             body: Box::new(Term::Let {
                 var: "updated".into(),
-                expr: Box::new(Term::ArraySet(
-                    Box::new(Term::var("record")),
-                    Box::new(Term::nat(1)),
-                    Box::new(Term::nat(3)),
+                expr: Box::new(Term::Mark(
+                    CoverageTag::RecordFunctionalUpdate,
+                    Box::new(Term::ArraySet(
+                        Box::new(Term::var("record")),
+                        Box::new(Term::nat(1)),
+                        Box::new(Term::nat(3)),
+                    )),
                 )),
                 body: Box::new(Term::ArrayGet(
                     Box::new(Term::var("updated")),
@@ -627,11 +636,14 @@ impl Builder {
             expr: Box::new(self.record_with_buffer(0, 1)),
             body: Box::new(Term::Let {
                 var: "updated".into(),
-                expr: Box::new(Term::Inplace(Box::new(Term::ArraySet(
-                    Box::new(Term::var("record")),
-                    Box::new(Term::nat(1)),
-                    Box::new(Term::nat(4)),
-                )))),
+                expr: Box::new(Term::Mark(
+                    CoverageTag::RecordInplaceUpdate,
+                    Box::new(Term::Inplace(Box::new(Term::ArraySet(
+                        Box::new(Term::var("record")),
+                        Box::new(Term::nat(1)),
+                        Box::new(Term::nat(4)),
+                    )))),
+                )),
                 body: Box::new(Term::ArrayGet(
                     Box::new(Term::var("updated")),
                     Box::new(Term::nat(1)),
@@ -648,9 +660,12 @@ impl Builder {
             expr: Box::new(self.record_with_buffer(0, 1)),
             body: Box::new(Term::Let {
                 var: "buf".into(),
-                expr: Box::new(Term::ArrayGet(
-                    Box::new(Term::var("record")),
-                    Box::new(Term::zero()),
+                expr: Box::new(Term::Mark(
+                    CoverageTag::DestructureConsume,
+                    Box::new(Term::ArrayGet(
+                        Box::new(Term::var("record")),
+                        Box::new(Term::zero()),
+                    )),
                 )),
                 body: Box::new(Term::Let {
                     var: "touched".into(),
@@ -669,7 +684,13 @@ impl Builder {
     }
 
     fn list_nil(&mut self) -> Term {
-        Term::MkArray(Box::new(Term::nat(3)), Box::new(Term::zero()))
+        Term::Mark(
+            CoverageTag::VariantAggregate,
+            Box::new(Term::MkArray(
+                Box::new(Term::nat(3)),
+                Box::new(Term::zero()),
+            )),
+        )
     }
 
     fn list_cons(&mut self, head: u64, tail: Term) -> Term {
@@ -684,7 +705,14 @@ impl Builder {
             Box::new(Term::nat(1)),
             Box::new(Term::nat(head)),
         );
-        Term::ArraySet(Box::new(with_head), Box::new(Term::nat(2)), Box::new(tail))
+        Term::Mark(
+            CoverageTag::VariantAggregate,
+            Box::new(Term::ArraySet(
+                Box::new(with_head),
+                Box::new(Term::nat(2)),
+                Box::new(tail),
+            )),
+        )
     }
 
     fn gen_variant_structural_fold(&mut self) -> Term {
@@ -703,9 +731,12 @@ impl Builder {
             succ_var: is_cons,
             succ_body: Box::new(Term::Let {
                 var: tail.clone(),
-                expr: Box::new(Term::ArrayGet(
-                    Box::new(Term::var(&xs)),
-                    Box::new(Term::nat(2)),
+                expr: Box::new(Term::Mark(
+                    CoverageTag::ConstructorPatternDescent,
+                    Box::new(Term::ArrayGet(
+                        Box::new(Term::var(&xs)),
+                        Box::new(Term::nat(2)),
+                    )),
                 )),
                 body: Box::new(Term::Succ(Box::new(Term::App(
                     Box::new(Term::var(&sum)),
@@ -1182,8 +1213,6 @@ fn derive(term: &Term, env: &Env) -> Derived {
             let mut out = len_d.combine(&fill_d);
             out.ty = Type::Array;
             out.coverage.insert(CoverageTag::Array);
-            out.coverage.insert(CoverageTag::RecordAggregate);
-            out.coverage.insert(CoverageTag::VariantAggregate);
             out
         }
         Term::ArrayGet(array, index) => {
@@ -1192,7 +1221,6 @@ fn derive(term: &Term, env: &Env) -> Derived {
             let mut out = array_d.combine(&index_d);
             out.ty = Type::Nat;
             out.coverage.insert(CoverageTag::Array);
-            out.coverage.insert(CoverageTag::DestructureConsume);
             out
         }
         Term::ArraySet(array, index, value) => {
@@ -1202,7 +1230,6 @@ fn derive(term: &Term, env: &Env) -> Derived {
             let mut out = array_d.combine(&index_d).combine(&value_d);
             out.ty = Type::Array;
             out.coverage.insert(CoverageTag::Array);
-            out.coverage.insert(CoverageTag::RecordFunctionalUpdate);
             out
         }
         Term::ArrayLen(array) => {
@@ -1214,9 +1241,11 @@ fn derive(term: &Term, env: &Env) -> Derived {
         Term::Move(inner) | Term::Inplace(inner) | Term::Freeze(inner) => {
             let mut out = derive(inner, env);
             out.coverage.insert(CoverageTag::Array);
-            if matches!(term, Term::Inplace(_)) {
-                out.coverage.insert(CoverageTag::RecordInplaceUpdate);
-            }
+            out
+        }
+        Term::Mark(tag, inner) => {
+            let mut out = derive(inner, env);
+            out.coverage.insert(*tag);
             out
         }
         Term::Var(name) => Derived::pure(env.lookup(name).unwrap_or(Type::Nat)),
@@ -1377,7 +1406,6 @@ fn derive_app(fun: &Term, arg: &Term, env: &Env) -> Derived {
                             .as_ref()
                             .is_some_and(|current| current.func == rec.func) =>
                 {
-                    out.coverage.insert(CoverageTag::ConstructorPatternDescent);
                     Bound::finite(1)
                 }
                 RecursionTag::Structural => Bound::Omega,
@@ -1571,7 +1599,8 @@ fn term_depth(term: &Term) -> usize {
         | Term::ArrayLen(inner)
         | Term::Move(inner)
         | Term::Inplace(inner)
-        | Term::Freeze(inner) => 1 + term_depth(inner),
+        | Term::Freeze(inner)
+        | Term::Mark(_, inner) => 1 + term_depth(inner),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             1 + term_depth(lhs).max(term_depth(rhs))
         }
@@ -1625,7 +1654,8 @@ fn scan_handlers(term: &Term, in_handler: bool, facts: &mut GenerationFacts) {
         | Term::ArrayLen(inner)
         | Term::Move(inner)
         | Term::Inplace(inner)
-        | Term::Freeze(inner) => scan_handlers(inner, in_handler, facts),
+        | Term::Freeze(inner)
+        | Term::Mark(_, inner) => scan_handlers(inner, in_handler, facts),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             scan_handlers(lhs, in_handler, facts);
             scan_handlers(rhs, in_handler, facts);
@@ -1751,7 +1781,8 @@ fn scan_rec_calls(term: &Term, stack: &mut Vec<RecScan>, facts: &mut GenerationF
         | Term::ArrayLen(inner)
         | Term::Move(inner)
         | Term::Inplace(inner)
-        | Term::Freeze(inner) => scan_rec_calls(inner, stack, facts),
+        | Term::Freeze(inner)
+        | Term::Mark(_, inner) => scan_rec_calls(inner, stack, facts),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             scan_rec_calls(lhs, stack, facts);
             scan_rec_calls(rhs, stack, facts);
@@ -1801,7 +1832,8 @@ fn term_obeys_continuation_usage_under(term: &Term) -> bool {
         | Term::ArrayLen(inner)
         | Term::Move(inner)
         | Term::Inplace(inner)
-        | Term::Freeze(inner) => term_obeys_continuation_usage_under(inner),
+        | Term::Freeze(inner)
+        | Term::Mark(_, inner) => term_obeys_continuation_usage_under(inner),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             term_obeys_continuation_usage_under(lhs) && term_obeys_continuation_usage_under(rhs)
         }
@@ -1853,7 +1885,8 @@ fn free_var_count(term: &Term, name: &str) -> usize {
         | Term::ArrayLen(inner)
         | Term::Move(inner)
         | Term::Inplace(inner)
-        | Term::Freeze(inner) => free_var_count(inner, name),
+        | Term::Freeze(inner)
+        | Term::Mark(_, inner) => free_var_count(inner, name),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             free_var_count(lhs, name) + free_var_count(rhs, name)
         }
@@ -1925,7 +1958,8 @@ fn direct_resume_count(term: &Term, name: &str) -> usize {
         | Term::ArrayLen(inner)
         | Term::Move(inner)
         | Term::Inplace(inner)
-        | Term::Freeze(inner) => direct_resume_count(inner, name),
+        | Term::Freeze(inner)
+        | Term::Mark(_, inner) => direct_resume_count(inner, name),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             direct_resume_count(lhs, name) + direct_resume_count(rhs, name)
         }
@@ -1993,7 +2027,8 @@ fn closed_under(term: &Term, scope: &mut Vec<String>) -> bool {
         | Term::ArrayLen(inner)
         | Term::Move(inner)
         | Term::Inplace(inner)
-        | Term::Freeze(inner) => closed_under(inner, scope),
+        | Term::Freeze(inner)
+        | Term::Mark(_, inner) => closed_under(inner, scope),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             closed_under(lhs, scope) && closed_under(rhs, scope)
         }

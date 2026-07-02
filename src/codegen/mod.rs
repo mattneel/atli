@@ -262,7 +262,8 @@ pub fn contains_effect_syntax(term: &Term) -> bool {
         | Term::ArrayLen(inner)
         | Term::Move(inner)
         | Term::Inplace(inner)
-        | Term::Freeze(inner) => contains_effect_syntax(inner),
+        | Term::Freeze(inner)
+        | Term::Mark(_, inner) => contains_effect_syntax(inner),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             contains_effect_syntax(lhs) || contains_effect_syntax(rhs)
         }

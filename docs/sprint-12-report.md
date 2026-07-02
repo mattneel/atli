@@ -55,10 +55,21 @@ a recursive variant-style structural fold. It also adds generator-owned tagged n
 for heap-field projection from unique records, use-after-destructure, non-exhaustive cases,
 in-place update on shared records, and non-payload structural recursion.
 
+Sprint 13 Task 0 repaired finding fifteen: the aggregate coverage tags are now carried by
+explicit aggregate-origin markers emitted only by record/variant lowering or aggregate generator
+cases, not by every plain array operation. The regression
+`props::aggregate_coverage_assertion_is_falsifiable_when_aggregate_cases_are_disabled` proves the
+assertion can fail by constructing a sample with aggregate generators disabled and observing zero
+aggregate tags. The aggregate affinity discipline is still single-implementation at the surface
+checker/elaborator boundary because records and variants lower to array encodings before
+`derive_witness`; the two honest escape routes are adding core-level aggregate terms or adding an
+independent second aggregate-discipline implementation over the lowered encodings.
+
 ## Verification
 
 - `cargo test -q` — 18 unit/property + 16 frontend + 24 golden + 3 doctests green.
 - Targeted completion checks: `fixed_seed_sample_has_required_coverage_and_distribution`,
+  `aggregate_coverage_assertion_is_falsifiable_when_aggregate_cases_are_disabled`,
   `generated_terms_satisfy_differential_acceptance_with_fixed_seed`,
   `generator_tagged_aggregate_negatives_match_frontend_verdicts`, and
   `bypassed_record_destructure_aliasing_inplace_diverges_from_copy_oracle` all green.

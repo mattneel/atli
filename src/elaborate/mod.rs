@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::core::{FixBinding, Handler, OpClause, RecursionTag, Term, Type};
+use crate::core::{CoverageTag, FixBinding, Handler, OpClause, RecursionTag, Term, Type};
 use crate::grade::{Label, Q};
 use crate::surface::ast::{
     BinaryOp, Boundedness, Decl, Expr, ExprKind, FnDecl, HandleClause, Pattern, PrefixOp, Program,
@@ -446,10 +446,13 @@ impl<'a> Elaborator<'a> {
             ExprKind::Var(name) => {
                 if let Some(ctor) = self.aggregates.constructors.get(name).cloned() {
                     if ctor.payload_count == 0 {
-                        let aggregate = self.aggregate_array(
-                            ctor.slot_count,
-                            vec![Term::nat(ctor.tag)],
-                            expr.span,
+                        let aggregate = Term::Mark(
+                            CoverageTag::VariantAggregate,
+                            Box::new(self.aggregate_array(
+                                ctor.slot_count,
+                                vec![Term::nat(ctor.tag)],
+                                expr.span,
+                            )),
                         );
                         return Ok(self.record(aggregate, expr.span));
                     }
@@ -466,7 +469,14 @@ impl<'a> Elaborator<'a> {
             ExprKind::Prefix { op, expr: inner } => match op {
                 PrefixOp::Move => Term::Move(Box::new(self.expr(inner, env)?)),
                 PrefixOp::Freeze => Term::Freeze(Box::new(self.expr(inner, env)?)),
-                PrefixOp::Inplace => Term::Inplace(Box::new(self.expr(inner, env)?)),
+                PrefixOp::Inplace => {
+                    let lowered = Term::Inplace(Box::new(self.expr(inner, env)?));
+                    if matches!(inner.kind, ExprKind::RecordUpdate { .. }) {
+                        Term::Mark(CoverageTag::RecordInplaceUpdate, Box::new(lowered))
+                    } else {
+                        lowered
+                    }
+                }
             },
             ExprKind::Binary { op, lhs, rhs } => {
                 let (prelude, name) = match op {
@@ -622,10 +632,13 @@ impl<'a> Elaborator<'a> {
                     .iter()
                     .map(|arg| self.expr(arg, env))
                     .collect::<Result<Vec<_>, _>>()?;
-                return Ok(self.aggregate_array(
-                    ctor.slot_count,
-                    std::iter::once(Term::nat(ctor.tag)).chain(values).collect(),
-                    span,
+                return Ok(Term::Mark(
+                    CoverageTag::VariantAggregate,
+                    Box::new(self.aggregate_array(
+                        ctor.slot_count,
+                        std::iter::once(Term::nat(ctor.tag)).chain(values).collect(),
+                        span,
+                    )),
                 ));
             }
         }
@@ -723,9 +736,12 @@ impl<'a> Elaborator<'a> {
                     .clone();
                 lowered = Term::Let {
                     var: field.node.clone(),
-                    expr: Box::new(Term::ArrayGet(
-                        Box::new(Term::var(&tmp)),
-                        Box::new(Term::nat(u64::try_from(info.index).unwrap())),
+                    expr: Box::new(Term::Mark(
+                        CoverageTag::DestructureConsume,
+                        Box::new(Term::ArrayGet(
+                            Box::new(Term::var(&tmp)),
+                            Box::new(Term::nat(u64::try_from(info.index).unwrap())),
+                        )),
                     )),
                     body: Box::new(lowered),
                 };
@@ -800,9 +816,12 @@ impl<'a> Elaborator<'a> {
                 if let Pattern::Bind(name) = arg {
                     branch = Term::Let {
                         var: name.node.clone(),
-                        expr: Box::new(Term::ArrayGet(
-                            Box::new(Term::var(tmp)),
-                            Box::new(Term::nat(u64::try_from(idx + 1).unwrap())),
+                        expr: Box::new(Term::Mark(
+                            CoverageTag::ConstructorPatternDescent,
+                            Box::new(Term::ArrayGet(
+                                Box::new(Term::var(tmp)),
+                                Box::new(Term::nat(u64::try_from(idx + 1).unwrap())),
+                            )),
                         )),
                         body: Box::new(branch),
                     };
@@ -954,7 +973,10 @@ impl<'a> Elaborator<'a> {
                 })?;
             values.push(self.expr(&expr.1, env)?);
         }
-        Ok(self.aggregate_array(values.len(), values, span))
+        Ok(Term::Mark(
+            CoverageTag::RecordAggregate,
+            Box::new(self.aggregate_array(values.len(), values, span)),
+        ))
     }
 
     fn record_field(
@@ -994,10 +1016,13 @@ impl<'a> Elaborator<'a> {
                 span: record.span,
                 message: format!("unknown record field `{field}`"),
             })?;
-        Ok(Term::ArraySet(
-            Box::new(self.expr(record, env)?),
-            Box::new(Term::nat(u64::try_from(info.index).unwrap())),
-            Box::new(self.expr(value, env)?),
+        Ok(Term::Mark(
+            CoverageTag::RecordFunctionalUpdate,
+            Box::new(Term::ArraySet(
+                Box::new(self.expr(record, env)?),
+                Box::new(Term::nat(u64::try_from(info.index).unwrap())),
+                Box::new(self.expr(value, env)?),
+            )),
         ))
     }
 

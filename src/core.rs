@@ -56,6 +56,10 @@ pub enum Term {
     Move(Box<Term>),
     Inplace(Box<Term>),
     Freeze(Box<Term>),
+    /// Coverage-only origin marker. Surface records/variants lower to arrays in tier 1; this
+    /// marker preserves the aggregate origin so generator/checker coverage remains falsifiable
+    /// instead of firing for plain array operations.
+    Mark(CoverageTag, Box<Term>),
     CaseNat {
         scrutinee: Box<Term>,
         zero_body: Box<Term>,
@@ -244,7 +248,7 @@ impl Term {
     pub fn is_value(&self) -> bool {
         match self {
             Self::Unit | Self::Zero | Self::Lam { .. } | Self::Cont(_) | Self::Array(_) => true,
-            Self::Succ(inner) => inner.is_value(),
+            Self::Succ(inner) | Self::Mark(_, inner) => inner.is_value(),
             Self::Var(_)
             | Self::MkArray(_, _)
             | Self::ArrayGet(_, _)
@@ -289,6 +293,7 @@ impl Term {
             Self::Move(inner) => Self::Move(Box::new(inner.subst(name, replacement))),
             Self::Inplace(inner) => Self::Inplace(Box::new(inner.subst(name, replacement))),
             Self::Freeze(inner) => Self::Freeze(Box::new(inner.subst(name, replacement))),
+            Self::Mark(tag, inner) => Self::Mark(*tag, Box::new(inner.subst(name, replacement))),
             Self::CaseNat {
                 scrutinee,
                 zero_body,
@@ -414,6 +419,7 @@ impl Term {
             Self::Move(inner) => Self::Move(Box::new(inner.normalize_cont_ids())),
             Self::Inplace(inner) => Self::Inplace(Box::new(inner.normalize_cont_ids())),
             Self::Freeze(inner) => Self::Freeze(Box::new(inner.normalize_cont_ids())),
+            Self::Mark(tag, inner) => Self::Mark(*tag, Box::new(inner.normalize_cont_ids())),
             Self::CaseNat {
                 scrutinee,
                 zero_body,
@@ -597,6 +603,7 @@ impl fmt::Display for Term {
             Term::Move(inner) => write!(f, "move {inner}"),
             Term::Inplace(inner) => write!(f, "inplace {inner}"),
             Term::Freeze(inner) => write!(f, "freeze {inner}"),
+            Term::Mark(tag, inner) => write!(f, "mark[{tag:?}]({inner})"),
             Term::CaseNat {
                 scrutinee,
                 zero_body,

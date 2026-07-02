@@ -19,3 +19,4 @@
 - Generics: required for `Option[A]`, `Map[K,V]`, and uniqueness polymorphism `^u`.
 - Path `inplace` / borrow splitting: allow safe mutation through aggregate paths (`r.buf`) without destructuring the whole aggregate.
 - Aggregate layout optimization: unbox small records/variants when it preserves the data-region and uniqueness contracts.
+- Independent aggregate discipline: Sprint 13 disclosed that aggregate affinity is single-implementation after surface lowering; close this either with core-level aggregate terms or a second checker/derive-style discipline over the lowered encodings.

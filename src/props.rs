@@ -237,6 +237,28 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_coverage_assertion_is_falsifiable_when_aggregate_cases_are_disabled() {
+        let sample: Vec<_> = (0..SAMPLE_SIZE)
+            .map(|case| generated_from_choices(vec![(case % 15) as u8, 3, 5, 8, 13]))
+            .collect();
+        let counts = coverage_counts(&sample);
+        for tag in [
+            CoverageTag::RecordAggregate,
+            CoverageTag::VariantAggregate,
+            CoverageTag::DestructureConsume,
+            CoverageTag::RecordFunctionalUpdate,
+            CoverageTag::RecordInplaceUpdate,
+            CoverageTag::ConstructorPatternDescent,
+        ] {
+            assert_eq!(
+                counts.get(tag),
+                0,
+                "aggregate tag {tag:?} should disappear when aggregate generators are disabled: {counts:?}"
+            );
+        }
+    }
+
+    #[test]
     fn generated_witnesses_are_complete_and_shrinker_regenerates_them() {
         // The proptest input shrinks choice bytes; every shrink maps through
         // `generated_from_choices`, so the term is rebuilt and the witness is re-derived.

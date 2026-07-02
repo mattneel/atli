@@ -253,11 +253,6 @@ impl Checker {
                 let mut out = len_w.combine(&fill_w);
                 out.ty = Type::Array;
                 out.coverage.insert(CoverageTag::Array);
-                // Aggregate construction lowers to array handles in tier 1
-                // (`docs/calculus.md §3/§9.2`); the tag keeps generated structured-data
-                // coverage visible without changing the verified core representation.
-                out.coverage.insert(CoverageTag::RecordAggregate);
-                out.coverage.insert(CoverageTag::VariantAggregate);
                 Ok(out)
             }
             Term::ArrayGet(array, index) => {
@@ -268,9 +263,6 @@ impl Checker {
                 let mut out = array_w.combine(&index_w);
                 out.ty = Type::Nat;
                 out.coverage.insert(CoverageTag::Array);
-                // Destructure-consume and copy-field peeks are represented by array loads
-                // after elaboration (`docs/calculus.md §4.2`).
-                out.coverage.insert(CoverageTag::DestructureConsume);
                 Ok(out)
             }
             Term::ArraySet(array, index, value) => {
@@ -283,9 +275,6 @@ impl Checker {
                 let mut out = array_w.combine(&index_w).combine(&value_w);
                 out.ty = Type::Array;
                 out.coverage.insert(CoverageTag::Array);
-                // Functional record update lowers to copy-set in the data region
-                // (`docs/calculus.md §5/§9.2`).
-                out.coverage.insert(CoverageTag::RecordFunctionalUpdate);
                 Ok(out)
             }
             Term::ArrayLen(array) => {
@@ -298,10 +287,11 @@ impl Checker {
             Term::Move(inner) | Term::Inplace(inner) | Term::Freeze(inner) => {
                 let mut out = self.infer(inner, env)?;
                 out.coverage.insert(CoverageTag::Array);
-                if matches!(term, Term::Inplace(_)) {
-                    // Licensed in-place record replacement (`docs/calculus.md §4.2/§9.2`).
-                    out.coverage.insert(CoverageTag::RecordInplaceUpdate);
-                }
+                Ok(out)
+            }
+            Term::Mark(tag, inner) => {
+                let mut out = self.infer(inner, env)?;
+                out.coverage.insert(*tag);
                 Ok(out)
             }
             Term::Lam {
@@ -424,7 +414,6 @@ impl Checker {
                                 .as_ref()
                                 .is_some_and(|current| current.func == rec.func) =>
                     {
-                        out.coverage.insert(CoverageTag::ConstructorPatternDescent);
                         BoundExpr::constant(Bound::finite(1))
                     }
                     RecursionTag::Structural => {
@@ -837,7 +826,8 @@ fn free_var_count(term: &Term, name: &str) -> usize {
         | Term::ArrayLen(inner)
         | Term::Move(inner)
         | Term::Inplace(inner)
-        | Term::Freeze(inner) => free_var_count(inner, name),
+        | Term::Freeze(inner)
+        | Term::Mark(_, inner) => free_var_count(inner, name),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             free_var_count(lhs, name) + free_var_count(rhs, name)
         }
@@ -906,7 +896,8 @@ fn direct_resume_count(term: &Term, name: &str) -> usize {
         | Term::ArrayLen(inner)
         | Term::Move(inner)
         | Term::Inplace(inner)
-        | Term::Freeze(inner) => direct_resume_count(inner, name),
+        | Term::Freeze(inner)
+        | Term::Mark(_, inner) => direct_resume_count(inner, name),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             direct_resume_count(lhs, name) + direct_resume_count(rhs, name)
         }

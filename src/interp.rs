@@ -24,6 +24,7 @@ pub enum Rule {
     ArrayLen,
     Move,
     Freeze,
+    Mark,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,6 +185,10 @@ impl Machine {
             Term::Move(inner) => self.step_move(*inner),
             Term::Inplace(inner) => self.step_inplace(*inner),
             Term::Freeze(inner) => self.step_freeze(*inner),
+            Term::Mark(_, inner) => StepResult::Stepped {
+                term: *inner,
+                rule: Rule::Mark,
+            },
             Term::CaseNat {
                 scrutinee,
                 zero_body,
@@ -644,7 +649,8 @@ fn term_mentions_var(term: &Term, name: &str) -> bool {
         | Term::ArrayLen(inner)
         | Term::Move(inner)
         | Term::Inplace(inner)
-        | Term::Freeze(inner) => term_mentions_var(inner, name),
+        | Term::Freeze(inner)
+        | Term::Mark(_, inner) => term_mentions_var(inner, name),
         Term::MkArray(len, fill) | Term::ArrayGet(len, fill) => {
             term_mentions_var(len, name) || term_mentions_var(fill, name)
         }
