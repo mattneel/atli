@@ -157,17 +157,27 @@ Fixpoint stepf (t : term) : option term :=
       match stepf arg with Some arg' => Some (TPerform op arg') | None => None end
   | THandle v (Handler rv rbody op op_param op_k op_body) =>
       if is_value v then Some (subst rv v rbody) (* H-return, §5 *)
-      else match v with
-      | TPerform L arg =>
-          if is_value arg then
-            if mentions_var op_k op_body then
-              Some (subst2 op_param arg op_k (TContVal (Handler rv rbody op op_param op_k op_body) []) op_body) (* H-op-resume, §5 *)
-            else Some (subst op_param arg op_body) (* H-op-drop, §5 *)
-          else None
-      | _ => match stepf v with Some v' => Some (THandle v' (Handler rv rbody op op_param op_k op_body)) | None => None end
+      else match capture v with
+      | Some (ctx, arg) =>
+          if mentions_var op_k op_body then
+            (* H-op-resume, §5: the continuation value carries the installed
+               handler and the captured context. *)
+            Some (subst2 op_param arg op_k
+                    (TContVal (Handler rv rbody op op_param op_k op_body) ctx) op_body)
+          else
+            (* H-op-drop, §5: frame-free abandonment - the captured context is
+               DISCARDED, never materialized. *)
+            Some (subst op_param arg op_body)
+      | None =>
+          match stepf v with
+          | Some v' => Some (THandle v' (Handler rv rbody op op_param op_k op_body))
+          | None => None
+          end
       end
   | TResume (TContVal h ctx) v =>
-      if is_value v then Some v else match stepf v with Some v' => Some (TResume (TContVal h ctx) v') | None => None end
+      if is_value v then
+        Some (THandle (plug ctx v) h) (* H-op-resume completed: deep reinstallation of the handler, §5 *)
+      else match stepf v with Some v' => Some (TResume (TContVal h ctx) v') | None => None end
   | TResume (TUsedContVal _ _) _ => None (* resume-after-use is the retained stuck state, §5/§8.3 *)
   | TResume k arg =>
       match stepf k with
@@ -180,6 +190,8 @@ Fixpoint stepf (t : term) : option term :=
 Inductive step : term -> term -> Prop :=
 | StepByFunction : forall t u, stepf t = Some u -> step t u.
 
+(* Determinism is still by computation: [capture] is a function, so handler
+   dispatch selects at most one successor. *)
 Theorem step_deterministic : forall t u v,
   step t u -> step t v -> u = v.
 Proof.

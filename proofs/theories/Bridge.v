@@ -275,3 +275,29 @@ Proof. reflexivity. Qed.
 Example capture_anchor_direct_perform_empty_ctx :
   capture (TPerform L TZero) = Some ([], TZero).
 Proof. reflexivity. Qed.
+
+(** Finding twenty-one dynamics anchors, Sprint 16 A3: captured handler
+    contexts are resumed deeply and dropped frame-free. *)
+Definition resuming_handler : handler :=
+  Handler "r" (TVar "r") L "p" "k" (TResume (TVar "k") TZero).
+Definition dropping_handler : handler :=
+  Handler "r" (TVar "r") L "p" "k" TZero.
+Definition finding21_term : term :=
+  THandle (TLet "x" (TPerform L TZero) (TVar "x")) resuming_handler.
+
+Example finding21_now_steps :
+  step finding21_term (TResume (TContVal resuming_handler [FLet "x" (TVar "x")]) TZero).
+Proof. apply StepByFunction. reflexivity. Qed.
+
+Example resume_rebuild_anchor :
+  step (TResume (TContVal resuming_handler [FLet "x" (TVar "x")]) TZero)
+       (THandle (TLet "x" TZero (TVar "x")) resuming_handler).
+Proof. apply StepByFunction. reflexivity. Qed.
+
+Example drop_discards_context_anchor :
+  step (THandle (TLet "x" (TPerform L TZero) (TVar "x")) dropping_handler) TZero.
+Proof. apply StepByFunction. reflexivity. Qed.
+
+Example used_cont_resume_still_stuck :
+  stepf (TResume (TUsedContVal resuming_handler []) TZero) = None.
+Proof. reflexivity. Qed.
