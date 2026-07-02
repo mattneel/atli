@@ -1960,6 +1960,266 @@ Proof. destruct a, b; simpl; intros H; try discriminate; reflexivity. Qed.
 Lemma eff_mem_join_r : forall a b, eff_mem b = true -> eff_mem (eff_join a b) = true.
 Proof. destruct a, b; simpl; intros H; try discriminate; reflexivity. Qed.
 
+(** Sprint 16 C3a: capture decomposition types the context (docs/calculus.md §5/§4.6). *)
+
+Lemma capture_decomposition : forall body ctx arg g t eps beta,
+  capture body = Some (ctx, arg) ->
+  has_type g body t eps beta ->
+  is_value arg = true /\
+  has_type g arg TyNat EffEmpty (BFinite 0) /\
+  eff_mem eps = true /\
+  exists eps_p, ctx_types g ctx TyNat t eps_p beta.
+Proof.
+  assert (Hcons_inv : forall f sub ctx arg,
+    capture_cons f (capture sub) = Some (ctx, arg) ->
+    exists sub_ctx sub_arg,
+      capture sub = Some (sub_ctx, sub_arg) /\
+      ctx = f :: sub_ctx /\
+      arg = sub_arg).
+  {
+    intros f sub ctx arg Hcapture.
+    unfold capture_cons in Hcapture.
+    destruct (capture sub) as [[sub_ctx sub_arg]|] eqn:Hsub; try discriminate.
+    injection Hcapture as Hctx Harg.
+    subst ctx arg.
+    exists sub_ctx, sub_arg. repeat split; reflexivity.
+  }
+  intros body cap_ctx cap_arg g t eps beta Hcapture Hty.
+  revert cap_ctx cap_arg g t eps beta Hcapture Hty.
+  induction body as
+    [x| | |e IHe|scrut IHscrut e0 IHe0 x e1 IHe1
+    |param param_ty lam_body IHlam|f IHf a IHa
+    |x e IHe let_body IHlet|func param param_ty fix_body IHfix tag
+    |op perf_arg IHperf|handle_body IHhandle h
+    |kont IHkont resume_arg IHresume_arg|h stored_ctx|h stored_ctx];
+    intros cap_ctx cap_arg g t eps beta Hcapture Hty;
+    cbn [capture is_value] in Hcapture; try discriminate.
+  - destruct (is_value e) eqn:Hvalue; try discriminate.
+    destruct (Hcons_inv FSucc e cap_ctx cap_arg Hcapture) as
+      [sub_ctx [sub_arg [Hsub [Hctx Harg]]]].
+    subst cap_ctx cap_arg.
+    inversion Hty; subst; clear Hty.
+    match goal with
+    | Hchild : has_type g e TyNat ?eps_e ?beta_e |- _ =>
+        destruct (IHe sub_ctx sub_arg g TyNat eps_e beta_e Hsub Hchild) as
+          [Hval [Harg_ty [Hmem [eps_p Hctx_ty]]]];
+        repeat split; try assumption;
+        exists eps_p; apply Ctx_Succ; exact Hctx_ty
+    end.
+  - destruct (is_value scrut) eqn:Hvalue; try discriminate.
+    destruct (Hcons_inv (FCaseScrut e0 x e1) scrut cap_ctx cap_arg Hcapture) as
+      [sub_ctx [sub_arg [Hsub [Hctx Harg]]]].
+    subst cap_ctx cap_arg.
+    inversion Hty; subst; clear Hty.
+    match goal with
+    | Hscrut_ty : has_type g scrut TyNat ?eps_s ?beta_s,
+      Hzero_ty : has_type g e0 ?ret_ty ?eps0 ?beta0,
+      Hsucc_ty : has_type ((x, TyNat) :: g) e1 ?ret_ty ?eps1 ?beta1 |- _ =>
+        destruct (IHscrut sub_ctx sub_arg g TyNat eps_s beta_s Hsub Hscrut_ty) as
+          [Hval [Harg_ty [Hmem [eps_p Hctx_ty]]]];
+        repeat split; try assumption;
+        [apply eff_mem_join_l; exact Hmem
+        |exists (eff_join eps_p (eff_join eps0 eps1));
+         eapply Ctx_CaseScrut; eauto]
+    end.
+  - destruct (is_value f) eqn:Hf_value.
+    + destruct (is_value a) eqn:Ha_value; try discriminate.
+      destruct (Hcons_inv (FAppArg f) a cap_ctx cap_arg Hcapture) as
+        [sub_ctx [sub_arg [Hsub [Hctx Harg]]]].
+      subst cap_ctx cap_arg.
+      inversion Hty; subst; clear Hty.
+      match goal with
+      | Hfun_ty : has_type g f (TyArrow ?arg_ty ?lat_eps ?lat_beta ?ret_ty) ?epsf ?betaf,
+        Harg_ty0 : has_type g a ?arg_ty ?epsa ?betaa |- _ =>
+          destruct (IHa sub_ctx sub_arg g arg_ty epsa betaa Hsub Harg_ty0) as
+            [Hval [Harg_ty [Hmem [eps_p Hctx_ty]]]];
+          repeat split; try assumption;
+          [apply eff_mem_join_r; apply eff_mem_join_l; exact Hmem
+          |exists (eff_join epsf (eff_join eps_p lat_eps));
+           eapply Ctx_AppArg; eauto]
+      end.
+    + destruct (Hcons_inv (FAppFun a) f cap_ctx cap_arg Hcapture) as
+        [sub_ctx [sub_arg [Hsub [Hctx Harg]]]].
+      subst cap_ctx cap_arg.
+      inversion Hty; subst; clear Hty.
+      match goal with
+      | Hfun_ty : has_type g f (TyArrow ?arg_ty ?lat_eps ?lat_beta ?ret_ty) ?epsf ?betaf,
+        Harg_ty0 : has_type g a ?arg_ty ?epsa ?betaa |- _ =>
+          destruct (IHf sub_ctx sub_arg g (TyArrow arg_ty lat_eps lat_beta ret_ty)
+            epsf betaf Hsub Hfun_ty) as
+            [Hval [Harg_ty [Hmem [eps_p Hctx_ty]]]];
+          repeat split; try assumption;
+          [apply eff_mem_join_l; exact Hmem
+          |exists (eff_join eps_p (eff_join epsa lat_eps));
+           eapply Ctx_AppFun; eauto]
+      end.
+  - destruct (is_value e) eqn:Hvalue; try discriminate.
+    destruct (Hcons_inv (FLet x let_body) e cap_ctx cap_arg Hcapture) as
+      [sub_ctx [sub_arg [Hsub [Hctx Harg]]]].
+    subst cap_ctx cap_arg.
+    inversion Hty; subst; clear Hty.
+    match goal with
+    | Hexpr_ty : has_type g e ?expr_ty ?epse ?betae,
+      Hbody_ty : has_type ((x, ?expr_ty) :: g) let_body ?body_ty ?epsb ?betab |- _ =>
+        destruct (IHe sub_ctx sub_arg g expr_ty epse betae Hsub Hexpr_ty) as
+          [Hval [Harg_ty [Hmem [eps_p Hctx_ty]]]];
+        repeat split; try assumption;
+        [apply eff_mem_join_l; exact Hmem
+        |exists (eff_join eps_p epsb); eapply Ctx_Let; eauto]
+    end.
+  - destruct op.
+    cbn [capture is_value] in Hcapture.
+    destruct (is_value perf_arg) eqn:Hvalue.
+    + injection Hcapture as Hctx Harg. subst cap_ctx cap_arg.
+      inversion Hty; subst; clear Hty.
+      match goal with
+      | Harg_ty : has_type g perf_arg TyNat EffEmpty ?arg_beta |- _ =>
+          destruct (value_rows_trivial g perf_arg TyNat EffEmpty arg_beta
+            Hvalue Harg_ty) as [_ Hbeta];
+          subst arg_beta;
+          repeat split; try assumption; try reflexivity;
+          exists EffEmpty; apply Ctx_Nil
+      end.
+    + destruct (Hcons_inv (FPerformArg L) perf_arg cap_ctx cap_arg Hcapture) as
+        [sub_ctx [sub_arg [Hsub [_ _]]]].
+      inversion Hty; subst; clear Hty.
+      match goal with
+      | Harg_ty : has_type g perf_arg TyNat EffEmpty ?arg_beta |- _ =>
+          destruct (IHperf sub_ctx sub_arg g TyNat EffEmpty arg_beta Hsub Harg_ty)
+            as [_ [_ [Hmem _]]];
+          discriminate Hmem
+      end.
+  - inversion Hty; subst; clear Hty.
+    destruct kont as
+      [kx| | |ke|kscrut ke0 kx ke1|kparam kparam_ty kbody|kf ka
+      |kx ke kbody|kfunc kparam kparam_ty kbody ktag|kop karg|kbody0 kh
+      |kkont karg|kh kctx|kh kctx];
+      cbn [capture is_value] in Hcapture.
+    + destruct (Hcons_inv (FResumeK resume_arg) (TVar kx) cap_ctx cap_arg Hcapture) as
+        [sub_ctx [sub_arg [Hsub [_ _]]]].
+      match goal with
+      | Hkont_ty : has_type g (TVar kx) ?kont_ty EffEmpty (BFinite 0) |- _ =>
+          destruct (IHkont sub_ctx sub_arg g kont_ty EffEmpty (BFinite 0)
+            Hsub Hkont_ty) as [_ [_ [Hmem _]]];
+          discriminate Hmem
+      end.
+    + destruct (is_value resume_arg) eqn:Harg_value; try discriminate.
+      destruct (Hcons_inv (FResumeArg TUnit) resume_arg cap_ctx cap_arg Hcapture) as
+        [sub_ctx [sub_arg [Hsub [_ _]]]].
+      match goal with
+      | Harg_ty : has_type g resume_arg TyNat EffEmpty ?arg_beta |- _ =>
+          destruct (IHresume_arg sub_ctx sub_arg g TyNat EffEmpty arg_beta
+            Hsub Harg_ty) as [_ [_ [Hmem _]]];
+          discriminate Hmem
+      end.
+    + destruct (is_value resume_arg) eqn:Harg_value; try discriminate.
+      destruct (Hcons_inv (FResumeArg TZero) resume_arg cap_ctx cap_arg Hcapture) as
+        [sub_ctx [sub_arg [Hsub [_ _]]]].
+      match goal with
+      | Harg_ty : has_type g resume_arg TyNat EffEmpty ?arg_beta |- _ =>
+          destruct (IHresume_arg sub_ctx sub_arg g TyNat EffEmpty arg_beta
+            Hsub Harg_ty) as [_ [_ [Hmem _]]];
+          discriminate Hmem
+      end.
+    + destruct (is_value ke) eqn:Hke_value.
+      * destruct (is_value resume_arg) eqn:Harg_value; try discriminate.
+        destruct (Hcons_inv (FResumeArg (TSucc ke)) resume_arg cap_ctx cap_arg Hcapture) as
+          [sub_ctx [sub_arg [Hsub [_ _]]]].
+        match goal with
+        | Harg_ty : has_type g resume_arg TyNat EffEmpty ?arg_beta |- _ =>
+            destruct (IHresume_arg sub_ctx sub_arg g TyNat EffEmpty arg_beta
+              Hsub Harg_ty) as [_ [_ [Hmem _]]];
+            discriminate Hmem
+        end.
+      * assert (Hcapture_succ :
+          capture_cons (FResumeK resume_arg) (capture (TSucc ke)) =
+          Some (cap_ctx, cap_arg)).
+        { cbn [capture is_value]. rewrite Hke_value. exact Hcapture. }
+        destruct (Hcons_inv (FResumeK resume_arg) (TSucc ke) cap_ctx cap_arg Hcapture_succ) as
+          [sub_ctx [sub_arg [Hsub [_ _]]]].
+        match goal with
+        | Hkont_ty : has_type g (TSucc ke) ?kont_ty EffEmpty (BFinite 0) |- _ =>
+            destruct (IHkont sub_ctx sub_arg g kont_ty EffEmpty (BFinite 0)
+              Hsub Hkont_ty) as [_ [_ [Hmem _]]];
+            discriminate Hmem
+        end.
+    + destruct (Hcons_inv (FResumeK resume_arg) (TCaseNat kscrut ke0 kx ke1)
+        cap_ctx cap_arg Hcapture) as [sub_ctx [sub_arg [Hsub [_ _]]]].
+      match goal with
+      | Hkont_ty : has_type g (TCaseNat kscrut ke0 kx ke1) ?kont_ty EffEmpty (BFinite 0) |- _ =>
+          destruct (IHkont sub_ctx sub_arg g kont_ty EffEmpty (BFinite 0)
+            Hsub Hkont_ty) as [_ [_ [Hmem _]]];
+          discriminate Hmem
+      end.
+    + destruct (is_value resume_arg) eqn:Harg_value; try discriminate.
+      destruct (Hcons_inv (FResumeArg (TLam kparam kparam_ty kbody)) resume_arg
+        cap_ctx cap_arg Hcapture) as [sub_ctx [sub_arg [Hsub [_ _]]]].
+      match goal with
+      | Harg_ty : has_type g resume_arg TyNat EffEmpty ?arg_beta |- _ =>
+          destruct (IHresume_arg sub_ctx sub_arg g TyNat EffEmpty arg_beta
+            Hsub Harg_ty) as [_ [_ [Hmem _]]];
+          discriminate Hmem
+      end.
+    + destruct (Hcons_inv (FResumeK resume_arg) (TApp kf ka) cap_ctx cap_arg Hcapture) as
+        [sub_ctx [sub_arg [Hsub [_ _]]]].
+      match goal with
+      | Hkont_ty : has_type g (TApp kf ka) ?kont_ty EffEmpty (BFinite 0) |- _ =>
+          destruct (IHkont sub_ctx sub_arg g kont_ty EffEmpty (BFinite 0)
+            Hsub Hkont_ty) as [_ [_ [Hmem _]]];
+          discriminate Hmem
+      end.
+    + destruct (Hcons_inv (FResumeK resume_arg) (TLet kx ke kbody) cap_ctx cap_arg Hcapture) as
+        [sub_ctx [sub_arg [Hsub [_ _]]]].
+      match goal with
+      | Hkont_ty : has_type g (TLet kx ke kbody) ?kont_ty EffEmpty (BFinite 0) |- _ =>
+          destruct (IHkont sub_ctx sub_arg g kont_ty EffEmpty (BFinite 0)
+            Hsub Hkont_ty) as [_ [_ [Hmem _]]];
+          discriminate Hmem
+      end.
+    + destruct (Hcons_inv (FResumeK resume_arg) (TFix kfunc kparam kparam_ty kbody ktag)
+        cap_ctx cap_arg Hcapture) as [sub_ctx [sub_arg [Hsub [_ _]]]].
+      match goal with
+      | Hkont_ty : has_type g (TFix kfunc kparam kparam_ty kbody ktag) ?kont_ty EffEmpty (BFinite 0) |- _ =>
+          destruct (IHkont sub_ctx sub_arg g kont_ty EffEmpty (BFinite 0)
+            Hsub Hkont_ty) as [_ [_ [Hmem _]]];
+          discriminate Hmem
+      end.
+    + destruct (Hcons_inv (FResumeK resume_arg) (TPerform kop karg) cap_ctx cap_arg Hcapture) as
+        [sub_ctx [sub_arg [Hsub [_ _]]]].
+      match goal with
+      | Hkont_ty : has_type g (TPerform kop karg) ?kont_ty EffEmpty (BFinite 0) |- _ =>
+          destruct (IHkont sub_ctx sub_arg g kont_ty EffEmpty (BFinite 0)
+            Hsub Hkont_ty) as [_ [_ [Hmem _]]];
+          discriminate Hmem
+      end.
+    + destruct (Hcons_inv (FResumeK resume_arg) (THandle kbody0 kh) cap_ctx cap_arg Hcapture) as
+        [sub_ctx [sub_arg [Hsub [_ _]]]].
+      match goal with
+      | Hkont_ty : has_type g (THandle kbody0 kh) ?kont_ty EffEmpty (BFinite 0) |- _ =>
+          destruct (IHkont sub_ctx sub_arg g kont_ty EffEmpty (BFinite 0)
+            Hsub Hkont_ty) as [_ [_ [Hmem _]]];
+          discriminate Hmem
+      end.
+    + destruct (Hcons_inv (FResumeK resume_arg) (TResume kkont karg) cap_ctx cap_arg Hcapture) as
+        [sub_ctx [sub_arg [Hsub [_ _]]]].
+      match goal with
+      | Hkont_ty : has_type g (TResume kkont karg) ?kont_ty EffEmpty (BFinite 0) |- _ =>
+          destruct (IHkont sub_ctx sub_arg g kont_ty EffEmpty (BFinite 0)
+            Hsub Hkont_ty) as [_ [_ [Hmem _]]];
+          discriminate Hmem
+      end.
+    + destruct (is_value resume_arg) eqn:Harg_value; try discriminate.
+      destruct (Hcons_inv (FResumeArg (TContVal kh kctx)) resume_arg cap_ctx cap_arg Hcapture) as
+        [sub_ctx [sub_arg [Hsub [_ _]]]].
+      match goal with
+      | Harg_ty : has_type g resume_arg TyNat EffEmpty ?arg_beta |- _ =>
+          destruct (IHresume_arg sub_ctx sub_arg g TyNat EffEmpty arg_beta
+            Hsub Harg_ty) as [_ [_ [Hmem _]]];
+          discriminate Hmem
+      end.
+    + discriminate.
+Qed.
+
 Lemma typed_stuck_implies_blocked : forall g t ty eps beta,
   has_type g t ty eps beta -> g = [] ->
   is_value t = false -> stepf t = None ->
