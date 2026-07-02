@@ -1,4 +1,4 @@
-From Coq Require Import Bool.Bool Lists.List Strings.String.
+From Coq Require Import Bool.Bool Lists.List Strings.String Lia.
 Import ListNotations StringSyntax.
 Open Scope string_scope.
 
@@ -2541,12 +2541,451 @@ Proof.
   - simpl in Hm. discriminate Hm.
 Qed.
 
-(** Finding eighteen / SPEC-GAP(preservation-statement-drift): preservation carries the
-    explicit row and boundedness order components claimed by docs/calculus.md §8.2. *)
+(** Sprint 16 C4: §8.2 preservation over the Part A dynamics, including the
+    handler triad and the lazy-capture amendment audit. *)
+Ltac preservation_eff :=
+  repeat match goal with
+  | e : eff |- _ => destruct e
+  end; simpl in *; try discriminate; try reflexivity.
+
+Ltac preservation_bound :=
+  repeat match goal with
+  | b : bound |- _ => destruct b
+  end; simpl in *; try contradiction; auto; try lia.
+
+Lemma preservation_swap_two_heads : forall x tx y ty0 body body_ty eps beta,
+  String.eqb x y = false ->
+  has_type ((x, tx) :: (y, ty0) :: []) body body_ty eps beta ->
+  has_type ((y, ty0) :: (x, tx) :: []) body body_ty eps beta.
+Proof.
+  intros x tx y ty0 body body_ty eps beta Hxy Hbody.
+  eapply typing_context_ext; [exact Hbody|].
+  intro z. simpl.
+  destruct (String.eqb z x) eqn:Hzx;
+    destruct (String.eqb z y) eqn:Hzy; try reflexivity.
+  apply String.eqb_eq in Hzx.
+  apply String.eqb_eq in Hzy.
+  subst z x.
+  rewrite String.eqb_refl in Hxy.
+  discriminate.
+Qed.
+
+Lemma preservation_stepf : forall g t ty eps beta,
+  has_type g t ty eps beta -> g = [] ->
+  forall u, stepf t = Some u ->
+  exists eps' beta',
+    has_type [] u ty eps' beta' /\ eff_sub eps' eps = true /\ bound_le beta' beta.
+Proof.
+  intros g t ty eps beta Hty.
+  induction Hty; intros Hg u Hstep; subst; simpl in Hstep; try discriminate.
+  - destruct (stepf e) as [e'|] eqn:He; try discriminate.
+    inversion Hstep; subst; clear Hstep.
+    destruct (IHHty eq_refl e' eq_refl) as [eps' [beta' [He' [Heps Hbeta]]]].
+    exists eps', beta'. repeat split; eauto using Ty_Succ.
+  - destruct (is_value scrut) eqn:Hscrut_value.
+    + destruct scrut as
+        [sx| | |pred|sscrut sz sx ss|sparam sty sbody|sf sa
+        |sx se sbody|sfunc sparam sty sbody stag|sop sarg|sbody sh
+        |sk sa|sh sctx|sh sctx];
+        simpl in Hstep; try discriminate.
+      * inversion Hstep; subst; clear Hstep.
+        exists eps0, beta0.
+        split; [assumption|].
+        split; [preservation_eff|preservation_bound].
+      * inversion Hstep; subst; clear Hstep.
+        destruct (value_rows_trivial [] (TSucc pred) TyNat eps_s beta_s
+          Hscrut_value Hty1) as [Heps_s Hbeta_s].
+        subst eps_s beta_s.
+        inversion Hty1; subst.
+        exists eps1, beta1.
+        split.
+        -- match goal with
+           | Hpred : has_type [] pred TyNat EffEmpty (BFinite 0) |- _ =>
+               eapply substitution_preserves_typing_closed; [exact Hty3|exact Hpred]
+           end.
+        -- split; [preservation_eff|preservation_bound].
+    + destruct (stepf scrut) as [scrut'|] eqn:Hscrut_step; try discriminate.
+      inversion Hstep; subst; clear Hstep.
+      destruct (IHHty1 eq_refl scrut' eq_refl) as
+        [eps_s' [beta_s' [Hscrut' [Heps Hbeta]]]].
+      exists (eff_join eps_s' (eff_join eps0 eps1)),
+        (bound_seq beta_s' (bound_join beta0 beta1)).
+      split.
+      * eapply Ty_CaseNat; eauto.
+      * split; [preservation_eff|preservation_bound].
+  - destruct (is_value f) eqn:Hf_value.
+    + destruct (is_value a) eqn:Ha_value.
+      * destruct f as
+          [fx| | |fe|fscrut fz fx fs|fparam fty fbody|ff fa
+          |fx fe fbody|ffunc fparam fty fbody ftag|fop farg|fbody fh
+        |fk farg|fh fctx|fh fctx];
+          simpl in Hstep; try discriminate.
+        inversion Hstep; subst; clear Hstep.
+        destruct (value_rows_trivial [] (TLam fparam fty fbody)
+          (TyArrow arg_ty lat_eps lat_beta ret_ty) epsf betaf
+          Hf_value Hty1) as [Hepsf Hbetaf].
+        destruct (value_rows_trivial [] a arg_ty epsa betaa
+          Ha_value Hty2) as [Hepsa Hbetaa].
+        subst epsf betaf epsa betaa.
+        inversion Hty1; subst.
+        exists lat_eps, lat_beta.
+        split.
+        -- eapply substitution_preserves_typing_closed; eauto.
+        -- split; [preservation_eff|preservation_bound].
+      * destruct (stepf a) as [a'|] eqn:Ha_step; try discriminate.
+        inversion Hstep; subst; clear Hstep.
+        destruct (IHHty2 eq_refl a' eq_refl) as
+          [epsa' [betaa' [Ha' [Heps Hbeta]]]].
+        exists (eff_join epsf (eff_join epsa' lat_eps)),
+          (bound_seq betaf (bound_seq betaa' lat_beta)).
+        split.
+        -- eapply Ty_App; eauto.
+        -- split; [preservation_eff|preservation_bound].
+    + destruct (stepf f) as [f'|] eqn:Hf_step; try discriminate.
+      inversion Hstep; subst; clear Hstep.
+      destruct (IHHty1 eq_refl f' eq_refl) as
+        [epsf' [betaf' [Hf' [Heps Hbeta]]]].
+      exists (eff_join epsf' (eff_join epsa lat_eps)),
+        (bound_seq betaf' (bound_seq betaa lat_beta)).
+      split.
+      * eapply Ty_App; eauto.
+      * split; [preservation_eff|preservation_bound].
+  - destruct (is_value e) eqn:He_value.
+    + inversion Hstep; subst; clear Hstep.
+      destruct (value_rows_trivial [] e a epse betae He_value Hty1) as
+        [Hepse Hbetae].
+      subst epse betae.
+      exists epsb, betab.
+      split.
+      * eapply substitution_preserves_typing_closed; eauto.
+      * split; [preservation_eff|preservation_bound].
+    + destruct (stepf e) as [e'|] eqn:He_step; try discriminate.
+      inversion Hstep; subst; clear Hstep.
+      destruct (IHHty1 eq_refl e' eq_refl) as
+        [epse' [betae' [He' [Heps Hbeta]]]].
+      exists (eff_join epse' epsb), (bound_seq betae' betab).
+      split.
+      * eapply Ty_Let; eauto.
+      * split; [preservation_eff|preservation_bound].
+  - inversion Hstep; subst; clear Hstep.
+    assert (Htfix :
+      has_type [] (TFix f x TyNat body Structural)
+        (TyArrow TyNat eps beta TyNat) EffEmpty (BFinite 0)).
+    { eapply Ty_FixStructural; eauto. }
+    assert (Hbody_swap :
+      has_type ((f, TyArrow TyNat eps beta TyNat) :: (x, TyNat) :: [])
+        body TyNat eps beta).
+    {
+      apply preservation_swap_two_heads.
+      - rewrite String.eqb_sym. exact H.
+      - exact Hty.
+    }
+    exists EffEmpty, (BFinite 0).
+    split.
+    + apply Ty_Lam.
+      eapply substitution_preserves_typing_closed; eauto.
+    + split; [reflexivity|apply bound_le_refl].
+  - inversion Hstep; subst; clear Hstep.
+    assert (Htfix :
+      has_type [] (TFix f x TyNat body Measure)
+        (TyArrow TyNat eps beta TyNat) EffEmpty (BFinite 0)).
+    { eapply Ty_FixMeasure; eauto. }
+    assert (Hbody_swap :
+      has_type ((f, TyArrow TyNat eps beta TyNat) :: (x, TyNat) :: [])
+        body TyNat eps beta).
+    {
+      apply preservation_swap_two_heads.
+      - rewrite String.eqb_sym. exact H.
+      - exact Hty.
+    }
+    exists EffEmpty, (BFinite 0).
+    split.
+    + apply Ty_Lam.
+      eapply substitution_preserves_typing_closed; eauto.
+    + split; [reflexivity|apply bound_le_refl].
+  - inversion Hstep; subst; clear Hstep.
+    assert (Htfix :
+      has_type [] (TFix f x TyNat body Div)
+        (TyArrow TyNat eps BOmega TyNat) EffEmpty (BFinite 0)).
+    { eapply Ty_FixDiv; eauto. }
+    assert (Hbody_swap :
+      has_type ((f, TyArrow TyNat eps BOmega TyNat) :: (x, TyNat) :: [])
+        body TyNat eps BOmega).
+    {
+      apply preservation_swap_two_heads.
+      - rewrite String.eqb_sym. exact H.
+      - exact Hty.
+    }
+    exists EffEmpty, (BFinite 0).
+    split.
+    + apply Ty_Lam.
+      eapply substitution_preserves_typing_closed; eauto.
+    + split; [reflexivity|apply bound_le_refl].
+  - destruct (stepf arg) as [arg'|] eqn:Harg_step; try discriminate.
+    inversion Hstep; subst; clear Hstep.
+    destruct (IHHty eq_refl arg' eq_refl) as
+      [eps_arg' [beta_arg' [Harg' [Heps Hbeta]]]].
+    destruct eps_arg'; simpl in Heps; try discriminate.
+    exists EffL, beta_arg'.
+    split.
+    + apply Ty_Perform. exact Harg'.
+    + split; [reflexivity|exact Hbeta].
+  - destruct (is_value body) eqn:Hbody_value.
+    + inversion Hstep; subst; clear Hstep.
+      destruct (value_rows_trivial [] body t eps_body body_beta
+        Hbody_value Hty1) as [Heps_body Hbody_beta].
+      subst eps_body body_beta.
+      exists EffEmpty, ret_beta.
+      split.
+      * eapply substitution_preserves_typing_closed; eauto.
+      * split; [reflexivity|preservation_bound].
+    + destruct (capture body) as [[cap_ctx cap_arg]|] eqn:Hcapture.
+      * rewrite H0 in Hstep.
+        inversion Hstep; subst; clear Hstep.
+        destruct (capture_decomposition body cap_ctx cap_arg [] t eps_body body_beta
+          Hcapture Hty1) as [Harg_value [Harg_ty [_ [cap_eps Hctx_ty]]]].
+        assert (Hop_body_drop :
+          has_type ((op_param, TyNat) :: []) op_body t EffEmpty op_beta).
+        {
+          eapply typing_drop_unmentioned_head; eauto.
+        }
+        exists EffEmpty, op_beta.
+        split.
+        -- eapply substitution_preserves_typing_closed; eauto.
+        -- split; [reflexivity|preservation_bound].
+      * destruct (stepf body) as [body'|] eqn:Hbody_step; try discriminate.
+        inversion Hstep; subst; clear Hstep.
+        destruct (IHHty1 eq_refl body' eq_refl) as
+          [eps_body' [body_beta' [Hbody' [Heps Hbeta]]]].
+        exists EffEmpty, (bound_seq body_beta' (bound_join ret_beta op_beta)).
+        split.
+        -- eapply Ty_HandleDrop; eauto.
+        -- split; [reflexivity|preservation_bound].
+  - destruct (is_value body) eqn:Hbody_value.
+    + inversion Hstep; subst; clear Hstep.
+      destruct (value_rows_trivial [] body t eps_body body_beta
+        Hbody_value Hty1) as [Heps_body Hbody_beta].
+      subst eps_body body_beta.
+      exists EffEmpty, ret_beta.
+      split.
+      * eapply substitution_preserves_typing_closed; eauto.
+      * split; [reflexivity|preservation_bound].
+    + destruct (capture body) as [[cap_ctx cap_arg]|] eqn:Hcapture.
+      * rewrite H0 in Hstep.
+        inversion Hstep; subst; clear Hstep.
+        destruct (capture_decomposition body cap_ctx cap_arg [] t eps_body body_beta
+          Hcapture Hty1) as [Harg_value [Harg_ty [_ [cap_eps Hctx_ty]]]].
+        set (kont := TContVal (Handler rv rbody L op_param op_k op_body) cap_ctx).
+        assert (Hkont :
+          has_type [] kont (TyCont TyNat bk t) EffEmpty (BFinite 0)).
+        {
+          subst kont.
+          eapply Ty_ContVal; eauto.
+        }
+        assert (Hop_body_swap :
+          has_type ((op_param, TyNat) :: (op_k, TyCont TyNat bk t) :: [])
+            op_body t EffEmpty op_beta).
+        {
+          apply preservation_swap_two_heads.
+          - rewrite String.eqb_sym. exact H1.
+          - exact Hty3.
+        }
+        assert (Hafter_arg :
+          has_type ((op_k, TyCont TyNat bk t) :: [])
+            (subst op_param cap_arg op_body) t EffEmpty op_beta).
+        {
+          eapply substitution_preserves_typing_closed; eauto.
+        }
+        exists EffEmpty, op_beta.
+        split.
+        -- unfold subst2. subst kont.
+           eapply substitution_preserves_typing_closed; eauto.
+        -- split; [reflexivity|preservation_bound].
+      * destruct (stepf body) as [body'|] eqn:Hbody_step; try discriminate.
+        inversion Hstep; subst; clear Hstep.
+        destruct (IHHty1 eq_refl body' eq_refl) as
+          [eps_body' [body_beta' [Hbody' [Heps Hbeta]]]].
+        assert (Hside' :
+          bound_le
+            (bound_seq body_beta'
+              (bound_join ret_beta (bound_seq op_beta body_beta'))) bk).
+        {
+          eapply bound_le_trans; [|exact H2].
+          apply bound_seq_mono.
+          - exact Hbeta.
+          - apply bound_join_mono.
+            + apply bound_le_refl.
+            + apply bound_seq_mono; [apply bound_le_refl|exact Hbeta].
+        }
+        exists EffEmpty,
+          (bound_seq body_beta'
+            (bound_join ret_beta (bound_seq op_beta body_beta'))).
+        split.
+        -- eapply Ty_HandleResume; eauto.
+        -- split.
+           ++ reflexivity.
+           ++ apply bound_seq_mono.
+              ** exact Hbeta.
+              ** apply bound_join_mono.
+                 --- apply bound_le_refl.
+                 --- apply bound_seq_mono; [apply bound_le_refl|exact Hbeta].
+  - assert (Hkont_cong : forall k',
+      stepf k = Some k' ->
+      exists eps' beta',
+        has_type [] (TResume k' arg) t eps' beta' /\
+        eff_sub eps' EffEmpty = true /\
+        bound_le beta' (bound_seq beta bk)).
+    {
+      intros k' Hkont_step.
+      destruct (IHHty1 eq_refl k' Hkont_step) as
+        [eps_k' [beta_k' [Hk' [Heps Hbeta_k]]]].
+      destruct eps_k'; simpl in Heps; try discriminate.
+      destruct beta_k' as [n|]; simpl in Hbeta_k; try contradiction.
+      assert (n = 0) by lia. subst n.
+      exists EffEmpty, (bound_seq beta bk).
+      split.
+      - apply Ty_Resume; assumption.
+      - split; [reflexivity|apply bound_le_refl].
+    }
+    assert (Harg_cong : forall k0 arg',
+      has_type [] k0 (TyCont TyNat bk t) EffEmpty (BFinite 0) ->
+      stepf arg = Some arg' ->
+      exists eps' beta',
+        has_type [] (TResume k0 arg') t eps' beta' /\
+        eff_sub eps' EffEmpty = true /\
+        bound_le beta' (bound_seq beta bk)).
+    {
+      intros k0 arg' Hk0 Harg_step.
+      destruct (IHHty2 eq_refl arg' Harg_step) as
+        [eps_arg' [beta_arg' [Harg' [Heps Hbeta_arg]]]].
+      destruct eps_arg'; simpl in Heps; try discriminate.
+      exists EffEmpty, (bound_seq beta_arg' bk).
+      split.
+      - eapply Ty_Resume; eauto.
+      - split; [reflexivity|apply bound_seq_mono; [exact Hbeta_arg|apply bound_le_refl]].
+    }
+    destruct k as
+      [kx| | |ke|kscrut ke0 kx ke1|kparam kparam_ty kbody|kf ka
+      |kx ke kbody|kfunc kparam kty kbody ktag|kop karg|kbody0 kh
+      |kkont karg|kh kctx|kh kctx];
+      cbn [stepf is_value] in Hstep.
+    + discriminate.
+    + destruct (is_value arg) eqn:Harg_value; try discriminate.
+      destruct (stepf arg) as [arg'|] eqn:Harg_step; try discriminate.
+      inversion Hstep; subst; clear Hstep.
+      eapply Harg_cong; eauto.
+    + destruct (is_value arg) eqn:Harg_value; try discriminate.
+      destruct (stepf arg) as [arg'|] eqn:Harg_step; try discriminate.
+      inversion Hstep; subst; clear Hstep.
+      eapply Harg_cong; eauto.
+    + destruct (is_value ke) eqn:Hke_value.
+      * destruct (is_value arg) eqn:Harg_value; try discriminate.
+        destruct (stepf arg) as [arg'|] eqn:Harg_step; try discriminate.
+        inversion Hstep; subst; clear Hstep.
+        eapply Harg_cong; eauto.
+      * change (match stepf (TSucc ke) with
+                | Some k' => Some (TResume k' arg)
+                | None => None
+                end = Some u) in Hstep.
+        destruct (stepf (TSucc ke)) as [k'|] eqn:Hkont_step; try discriminate.
+        inversion Hstep; subst; clear Hstep.
+        eapply Hkont_cong. exact eq_refl.
+    + change (match stepf (TCaseNat kscrut ke0 kx ke1) with
+              | Some k' => Some (TResume k' arg)
+              | None => None
+              end = Some u) in Hstep.
+      destruct (stepf (TCaseNat kscrut ke0 kx ke1)) as [k'|] eqn:Hkont_step;
+        try discriminate.
+      inversion Hstep; subst; clear Hstep.
+      eapply Hkont_cong. exact eq_refl.
+    + destruct (is_value arg) eqn:Harg_value; try discriminate.
+      destruct (stepf arg) as [arg'|] eqn:Harg_step; try discriminate.
+      inversion Hstep; subst; clear Hstep.
+      eapply Harg_cong; eauto.
+    + change (match stepf (TApp kf ka) with
+              | Some k' => Some (TResume k' arg)
+              | None => None
+              end = Some u) in Hstep.
+      destruct (stepf (TApp kf ka)) as [k'|] eqn:Hkont_step; try discriminate.
+      inversion Hstep; subst; clear Hstep.
+      eapply Hkont_cong. exact eq_refl.
+    + change (match stepf (TLet kx ke kbody) with
+              | Some k' => Some (TResume k' arg)
+              | None => None
+              end = Some u) in Hstep.
+      destruct (stepf (TLet kx ke kbody)) as [k'|] eqn:Hkont_step; try discriminate.
+      inversion Hstep; subst; clear Hstep.
+      eapply Hkont_cong. exact eq_refl.
+    + change (match stepf (TFix kfunc kparam kty kbody ktag) with
+              | Some k' => Some (TResume k' arg)
+              | None => None
+              end = Some u) in Hstep.
+      destruct (stepf (TFix kfunc kparam kty kbody ktag)) as [k'|] eqn:Hkont_step;
+        try discriminate.
+      inversion Hstep; subst; clear Hstep.
+      eapply Hkont_cong. exact eq_refl.
+    + change (match stepf (TPerform kop karg) with
+              | Some k' => Some (TResume k' arg)
+              | None => None
+              end = Some u) in Hstep.
+      destruct (stepf (TPerform kop karg)) as [k'|] eqn:Hkont_step; try discriminate.
+      inversion Hstep; subst; clear Hstep.
+      eapply Hkont_cong. exact eq_refl.
+    + change (match stepf (THandle kbody0 kh) with
+              | Some k' => Some (TResume k' arg)
+              | None => None
+              end = Some u) in Hstep.
+      destruct (stepf (THandle kbody0 kh)) as [k'|] eqn:Hkont_step; try discriminate.
+      inversion Hstep; subst; clear Hstep.
+      eapply Hkont_cong. exact eq_refl.
+    + change (match stepf (TResume kkont karg) with
+              | Some k' => Some (TResume k' arg)
+              | None => None
+              end = Some u) in Hstep.
+      destruct (stepf (TResume kkont karg)) as [k'|] eqn:Hkont_step; try discriminate.
+      inversion Hstep; subst; clear Hstep.
+      eapply Hkont_cong. exact eq_refl.
+    + destruct (is_value arg) eqn:Harg_value.
+      * inversion Hstep; subst; clear Hstep.
+        destruct kh as [rv rbody op_label op_param op_k op_body].
+        destruct op_label.
+        inversion Hty1; subst.
+        destruct (value_rows_trivial [] arg TyNat EffEmpty beta
+          Harg_value Hty2) as [_ Hbeta_arg].
+        subst beta.
+        assert (Hplug :
+          has_type [] (plug kctx arg) t eps_p beta_p).
+        {
+          eapply plug_replacement; eauto.
+        }
+        exists EffEmpty,
+          (bound_seq beta_p
+            (bound_join ret_beta (bound_seq op_beta beta_p))).
+        split.
+        -- eapply Ty_HandleResume; eauto.
+        -- split.
+           ++ reflexivity.
+           ++ rewrite bound_seq_zero_l.
+              match goal with
+              | Hside : bound_le
+                  (bound_seq beta_p
+                    (bound_join ret_beta (bound_seq op_beta beta_p))) bk |- _ =>
+                  exact Hside
+              end.
+      * destruct (stepf arg) as [arg'|] eqn:Harg_step; try discriminate.
+        inversion Hstep; subst; clear Hstep.
+        eapply Harg_cong; eauto.
+    + discriminate.
+Qed.
+
 Theorem preservation : forall t u ty eps beta,
   has_type [] t ty eps beta -> step t u ->
   exists eps' beta', has_type [] u ty eps' beta' /\ eff_sub eps' eps = true /\ bound_le beta' beta.
-Admitted.
+Proof.
+  intros t u ty eps beta Hty Hstep.
+  inversion Hstep; subst.
+  eapply preservation_stepf; eauto.
+Qed.
 
 (* L6 status: Stated-Pending-Infrastructure, owner: future Iris/resource sprint.
    This is deliberately not a theorem yet: the scaffold has no continuation resource/usage
