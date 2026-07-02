@@ -2220,6 +2220,18 @@ Proof.
     + discriminate.
 Qed.
 
+(** Sprint 16 C3b: replacement — a well-typed filler re-types the plugged context (docs/calculus.md §5/§4.6). *)
+
+Lemma plug_replacement : forall g ctx a c eps beta v,
+  ctx_types g ctx a c eps beta ->
+  has_type g v a EffEmpty (BFinite 0) ->
+  has_type g (plug ctx v) c eps beta.
+Proof.
+  intros g ctx a c eps beta v Hctx Hv.
+  induction Hctx; simpl; eauto.
+  all: econstructor; eauto.
+Qed.
+
 Lemma typed_stuck_implies_blocked : forall g t ty eps beta,
   has_type g t ty eps beta -> g = [] ->
   is_value t = false -> stepf t = None ->
