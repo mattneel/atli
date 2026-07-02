@@ -3002,14 +3002,35 @@ Theorem boundedness_soundness : forall t ty n,
   forall u frames, frame_step t frames u -> frames <= n.
 Admitted.
 
+(** The sealed record still exposes its postfix field directly; Sprint 16 D2 keeps this
+    field-projection fact as a record invariant, not as the algorithmic §7.2 proof. *)
 Theorem solver_certificate_postfix_field : forall cert c,
   satisfies (certified_value cert) c.
 Proof. intros cert c. exact (certificate_postfix cert c). Qed.
 
+(** L8: solver/certificate soundness.
+
+    Sprint 16 D1 introduced the explicit-system functional model in [Solve.v]. Sprint 16
+    D2 proves the real §7.2/§7.3 algorithmic conjuncts there:
+    [solve_model_postfix], [converged_least] with [pass_extensive],
+    [wpass_extensive], and [beval_monotone], plus [certified_read_is_evaluation].
+
+    This record-level theorem is Qed honestly only together with those model lemmas and
+    the finding twenty-seven audit [solver_certificate_only_omega]: the old
+    [solver_certificate] record is not tied to a carried constraint system, so its fields
+    force the omega certificate. The algorithmic soundness claim lives in
+    [solve_model_postfix], [converged_least], and [certified_read_is_evaluation]; this
+    statement is the degenerate record assembly. *)
 Theorem solver_certificate_soundness : forall rho cert c,
   (forall c', satisfies rho c') ->
   satisfies (certified_value cert) c /\ bound_le (rho (target c)) (certified_value cert (target c)).
-Admitted.
+Proof.
+  intros rho cert c _.
+  split.
+  - exact (certificate_postfix cert c).
+  - rewrite solver_certificate_only_omega.
+    apply bound_le_omega.
+Qed.
 
 (* L9 status: Stated-Pending-Infrastructure, owner: future heap/graded-context sprint.
    Sprint 11 extends the executable compiler with docs/calculus.md §4 data affinity and

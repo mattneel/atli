@@ -4,6 +4,15 @@ This file records `SPEC-GAP:` findings exposed while turning the calculus into e
 Rust. The implementation chooses conservative interpretations and does not silently expand
 semantics.
 
+- SPEC-GAP(solver-certificate-record-system-unparameterized): the Rocq
+  `solver_certificate` record quantifies its postfix/upper fields over all constraints
+  rather than a carried system, so only the ω certificate inhabits it
+  (`solver_certificate_only_omega`); finite Rust certificates are unrepresentable in the
+  record, and the L8 record-level statement is degenerately true. Sprint 16 D2 proves the
+  algorithmic §7.2 conjuncts over the explicit-system functional model instead;
+  parameterizing the record by its constraint system is future work (finding
+  twenty-seven).
+
 - SPEC-GAP(handler-binder-aliasing-static-dynamic-split): `docs/calculus.md §4.7`
   writes handler clauses with distinct metavariables `pᵢ`/`kᵢ` and never states the
   distinctness side condition a named-binder implementation needs. With

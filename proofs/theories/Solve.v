@@ -161,3 +161,253 @@ Example model_anchor_chain_default_zero :
   let cs := [Constraint 2 (BUnknown 1)] in
   (fst (solve_model cs) 2, snd (solve_model cs)) = (BFinite 0, true).
 Proof. vm_compute. reflexivity. Qed.
+
+(** Sprint 16 D2: the three §7.2 soundness conjuncts over the functional model. *)
+
+Lemma target_in_domain : forall cs c,
+  In c cs -> In (target c) (domain cs).
+Proof.
+  intros cs c Hin.
+  unfold domain.
+  apply in_flat_map.
+  exists c. split; [exact Hin|].
+  simpl. left. reflexivity.
+Qed.
+
+Lemma vals_equal_on_member_eq : forall dom r1 r2 u,
+  vals_equal_on dom r1 r2 = true ->
+  In u dom ->
+  r1 u = r2 u.
+Proof.
+  intros dom r1 r2 u Heq Hin.
+  unfold vals_equal_on in Heq.
+  apply forallb_forall with (x := u) in Heq; [|exact Hin].
+  apply bound_eqb_eq. exact Heq.
+Qed.
+
+Lemma iterate_model_true_stable : forall cs fuel rho0 rho,
+  iterate_model cs fuel rho0 = (rho, true) ->
+  vals_equal_on (domain cs) rho (pass cs rho) = true.
+Proof.
+  intros cs fuel.
+  induction fuel as [|fuel IH]; intros rho0 rho Hiter; simpl in Hiter.
+  - discriminate.
+  - destruct (vals_equal_on (domain cs) rho0 (pass cs rho0)) eqn:Hstable.
+    + inversion Hiter. subst. exact Hstable.
+    + eapply IH. exact Hiter.
+Qed.
+
+Lemma widen_model_true_stable : forall cs fuel rho0 rho,
+  widen_model cs fuel rho0 = (rho, true) ->
+  vals_equal_on (domain cs) rho (wpass cs rho) = true.
+Proof.
+  intros cs fuel.
+  induction fuel as [|fuel IH]; intros rho0 rho Hiter; simpl in Hiter.
+  - discriminate.
+  - destruct (vals_equal_on (domain cs) rho0 (wpass cs rho0)) eqn:Hstable.
+    + inversion Hiter. subst. exact Hstable.
+    + eapply IH. exact Hiter.
+Qed.
+
+Lemma rhs_join_member_le : forall cs rho c u,
+  In c cs -> target c = u -> bound_le (beval rho (rhs c)) (rhs_join cs rho u).
+Proof.
+  induction cs as [|d rest IH]; intros rho c u Hin Htarget.
+  - contradiction.
+  - simpl in Hin.
+    unfold rhs_join. simpl.
+    fold (rhs_join rest rho u).
+    destruct Hin as [Hc|Hin].
+    + subst d. rewrite Htarget, Nat.eqb_refl.
+      apply bound_join_upper_l.
+    + destruct (Nat.eqb (target d) u) eqn:Hdu.
+      * eapply bound_le_trans.
+        -- eapply IH; eauto.
+        -- apply bound_join_upper_r.
+      * eapply IH; eauto.
+Qed.
+
+Lemma bound_join_absorb_le : forall a b,
+  bound_join a b = a -> bound_le b a.
+Proof.
+  destruct a as [m|], b as [n|]; simpl; intro H; try discriminate; auto.
+  injection H as Hmax.
+  rewrite <- Hmax.
+  apply Nat.le_max_r.
+Qed.
+
+Lemma pass_stable_postfix : forall cs rho,
+  vals_equal_on (domain cs) rho (pass cs rho) = true ->
+  forall c, In c cs -> satisfies rho c.
+Proof.
+  intros cs rho Hstable c Hin.
+  unfold satisfies.
+  pose proof (target_in_domain cs c Hin) as Hdom.
+  pose proof (vals_equal_on_member_eq (domain cs) rho (pass cs rho) (target c)
+    Hstable Hdom) as Heq.
+  unfold pass in Heq.
+  eapply bound_le_trans.
+  - eapply rhs_join_member_le; [exact Hin|reflexivity].
+  - apply bound_join_absorb_le. symmetry. exact Heq.
+Qed.
+
+Lemma wpass_stable_postfix : forall cs rho,
+  vals_equal_on (domain cs) rho (wpass cs rho) = true ->
+  forall c, In c cs -> satisfies rho c.
+Proof.
+  intros cs rho Hstable c Hin.
+  unfold satisfies.
+  pose proof (target_in_domain cs c Hin) as Hdom.
+  pose proof (vals_equal_on_member_eq (domain cs) rho (wpass cs rho) (target c)
+    Hstable Hdom) as Heq.
+  unfold wpass in Heq.
+  set (u := target c) in *.
+  set (cand := bound_join (rho u) (rhs_join cs rho u)) in *.
+  destruct (bound_grows (rho u) cand) eqn:Hgrows.
+  - destruct (rho u) as [n|] eqn:Hrho.
+    + discriminate.
+    + simpl in Hgrows. discriminate.
+  - eapply bound_le_trans.
+    + eapply rhs_join_member_le; [exact Hin|reflexivity].
+    + apply bound_join_absorb_le.
+      unfold cand.
+      symmetry. exact Heq.
+Qed.
+
+(* -------- Conjunct 1: post-fixpoint satisfaction (§7.2/§7.3). -------- *)
+Theorem solve_model_postfix : forall cs rho,
+  solve_model cs = (rho, true) ->
+  forall c, In c cs -> satisfies rho c.
+Proof.
+  intros cs rho Hsolve.
+  unfold solve_model in Hsolve.
+  destruct (iterate_model cs solver_threshold_k vbot) as [rho_iter ok_iter] eqn:Hiter.
+  destruct ok_iter.
+  - inversion Hsolve. subst.
+    apply pass_stable_postfix.
+    eapply iterate_model_true_stable. exact Hiter.
+  - destruct (widen_model cs (S (length (domain cs))) rho_iter) as [rho_w ok_w] eqn:Hwiden.
+    destruct ok_w; [|discriminate].
+    inversion Hsolve. subst.
+    apply wpass_stable_postfix.
+    eapply widen_model_true_stable. exact Hwiden.
+Qed.
+
+(* -------- Conjunct 2: widening never under-approximates (§8.5, the §2.3
+   inverted-soundness direction: the goal predicate is >= true size, not a safe
+   set. The model iterates up from bottom, so the convergent branch returns a
+   lower bound of every solution; both passes are extensive, so widening only
+   moves up from those iterates. -------- *)
+Theorem pass_extensive : forall cs rho u, bound_le (rho u) (pass cs rho u).
+Proof.
+  intros cs rho u.
+  unfold pass.
+  apply bound_join_upper_l.
+Qed.
+
+Theorem wpass_extensive : forall cs rho u, bound_le (rho u) (wpass cs rho u).
+Proof.
+  intros cs rho u.
+  unfold wpass.
+  destruct (bound_grows (rho u) (bound_join (rho u) (rhs_join cs rho u))).
+  - apply bound_le_omega.
+  - apply bound_join_upper_l.
+Qed.
+
+Theorem beval_monotone : forall e r1 r2,
+  (forall u, bound_le (r1 u) (r2 u)) -> bound_le (beval r1 e) (beval r2 e).
+Proof.
+  induction e as [b|u|a IHa b IHb|a IHa b IHb]; intros r1 r2 Hle; simpl.
+  - apply bound_le_refl.
+  - apply Hle.
+  - apply bound_seq_mono; auto.
+  - apply bound_join_mono; auto.
+Qed.
+
+Lemma rhs_join_below_solution : forall cs rho rho_sol u,
+  (forall x, bound_le (rho x) (rho_sol x)) ->
+  (forall c, In c cs -> satisfies rho_sol c) ->
+  bound_le (rhs_join cs rho u) (rho_sol u).
+Proof.
+  induction cs as [|c rest IH]; intros rho rho_sol u Hrho Hsol.
+  - simpl. apply bound_le_zero.
+  - unfold rhs_join. simpl.
+    fold (rhs_join rest rho u).
+    destruct (Nat.eqb (target c) u) eqn:Htarget.
+    + apply Nat.eqb_eq in Htarget.
+      apply bound_join_lub.
+      * eapply bound_le_trans.
+        -- apply beval_monotone. exact Hrho.
+        -- pose proof (Hsol c (or_introl eq_refl)) as Hsat.
+           unfold satisfies in Hsat.
+           rewrite Htarget in Hsat. exact Hsat.
+      * apply IH.
+        -- exact Hrho.
+        -- intros c' Hin. apply Hsol. right. exact Hin.
+    + apply IH.
+      * exact Hrho.
+      * intros c' Hin. apply Hsol. right. exact Hin.
+Qed.
+
+Lemma pass_below_solution : forall cs rho rho_sol,
+  (forall u, bound_le (rho u) (rho_sol u)) ->
+  (forall c, In c cs -> satisfies rho_sol c) ->
+  forall u, bound_le (pass cs rho u) (rho_sol u).
+Proof.
+  intros cs rho rho_sol Hrho Hsol u.
+  unfold pass.
+  apply bound_join_lub.
+  - apply Hrho.
+  - apply rhs_join_below_solution; assumption.
+Qed.
+
+Lemma iterate_model_below_solution : forall cs fuel rho0 rho rho_sol,
+  (forall u, bound_le (rho0 u) (rho_sol u)) ->
+  (forall c, In c cs -> satisfies rho_sol c) ->
+  iterate_model cs fuel rho0 = (rho, true) ->
+  forall u, bound_le (rho u) (rho_sol u).
+Proof.
+  intros cs fuel.
+  induction fuel as [|fuel IH]; intros rho0 rho rho_sol Hrho Hsol Hiter u; simpl in Hiter.
+  - discriminate.
+  - destruct (vals_equal_on (domain cs) rho0 (pass cs rho0)) eqn:Hstable.
+    + inversion Hiter. subst. apply Hrho.
+    + eapply IH.
+      * exact (pass_below_solution cs rho0 rho_sol Hrho Hsol).
+      * exact Hsol.
+      * exact Hiter.
+Qed.
+
+Theorem converged_least : forall cs rho,
+  iterate_model cs solver_threshold_k vbot = (rho, true) ->
+  forall rho_sol, (forall c, In c cs -> satisfies rho_sol c) ->
+  forall u, bound_le (rho u) (rho_sol u).
+Proof.
+  intros cs rho Hiter rho_sol Hsol u.
+  eapply iterate_model_below_solution.
+  - intros x. unfold vbot. apply bound_le_zero.
+  - exact Hsol.
+  - exact Hiter.
+Qed.
+
+(* -------- Conjunct 3: certificate-equals-evaluation (§7.3's sealed read). ---- *)
+Theorem certified_read_is_evaluation : forall rho e,
+  certified_read rho e = beval rho e.
+Proof. reflexivity. Qed.
+
+(* -------- Finding twenty-seven: the v0.5.x sealed-record statement audit. ----
+   [solver_certificate]'s field quantifications range over all constraints; the record is
+   not indexed by the solved system. Its postfix field already forces every certified
+   value to omega: the record admits exactly the omega certificate, and finite Rust
+   certificates are unrepresentable in it. The L8 statement over this record is therefore
+   true but degenerate; the algorithmic content of §7.2 soundness lives in the model
+   lemmas above. Refactoring the record to carry its constraint system is carried-forward
+   work. -------- *)
+Theorem solver_certificate_only_omega : forall (cert : solver_certificate) u,
+  certified_value cert u = BOmega.
+Proof.
+  intros cert u.
+  pose proof (certificate_postfix cert (Constraint u (BConst BOmega))) as Hpost.
+  unfold satisfies in Hpost. simpl in Hpost.
+  destruct (certified_value cert u); [contradiction|reflexivity].
+Qed.

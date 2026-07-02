@@ -170,6 +170,13 @@ Theorem bound_join_mono : forall a a' b b',
   bound_le a a' -> bound_le b b' -> bound_le (bound_join a b) (bound_join a' b').
 Proof. destruct a, a', b, b'; simpl; auto; lia. Qed.
 
+Theorem bound_join_lub : forall a b c,
+  bound_le a c -> bound_le b c -> bound_le (bound_join a b) c.
+Proof. destruct a, b, c; simpl; auto; lia. Qed.
+
+Theorem bound_le_omega : forall a, bound_le a BOmega.
+Proof. destruct a; simpl; auto. Qed.
+
 Theorem bound_seq_upper_l : forall a b, bound_le a (bound_seq a b).
 Proof. destruct a, b; simpl; auto; lia. Qed.
 
