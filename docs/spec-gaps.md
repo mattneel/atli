@@ -18,6 +18,17 @@ semantics.
   aliased resuming clauses ill-typed. The Rust-side repair (checker rejection of
   aliased clauses) is carried-forward work.
 
+- SPEC-GAP(fix-binder-aliasing-static-dynamic-split): `docs/calculus.md §4.8`'s
+  `fix f. λx. e` uses distinct metavariables `f`/`x`; the mechanized rules bound the
+  parameter innermost (param wins statically) while unfold substitutes the function
+  name (func wins dynamically). `TFix "f" "f" TyNat (TVar "f") Structural` was
+  closed, well-typed, and stepped to a wrongly-typed lambda -- a second live L4
+  counterexample (finding twenty-four, the finding-twenty-two pattern at §4.8).
+  Sprint 16 repairs the mechanized side conservatively with an `f ≠ x` premise on all
+  three fix rules. The Rust checker types fix through a dedicated RecContext rather
+  than shadowed env bindings; a surface-level probe of aliased fix names is
+  carried-forward work.
+
 - SPEC-GAP(deep-handler-resume-accounting-recursive): under §5's deep reinstallation,
   `resume` re-enters the handle, so a resuming clause's continuation bound must cover the
   rebuilt handle's whole demand: `β_k ⊒ β ⊕ (β_r ⊔ (βᵢ ⊕ β))`, §6.2's

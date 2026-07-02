@@ -42,12 +42,13 @@ Example structural_fix_typable_like_rust_checker : exists beta lat_eps lat_beta,
 Proof.
   eexists. eexists. eexists. unfold structural_fix_golden.
   eapply Ty_FixStructural.
-  eapply Ty_CaseNat.
-  - apply Ty_Var. reflexivity.
-  - apply Ty_Zero.
-  - eapply Ty_App.
+  - reflexivity.
+  - eapply Ty_CaseNat.
     + apply Ty_Var. reflexivity.
-    + apply Ty_Var. reflexivity.
+    + apply Ty_Zero.
+    + eapply Ty_App.
+      * apply Ty_Var. reflexivity.
+      * apply Ty_Var. reflexivity.
 Qed.
 
 Example div_fix_typable_like_rust_checker :
@@ -55,11 +56,12 @@ Example div_fix_typable_like_rust_checker :
 Proof.
   unfold div_fix_golden.
   eapply Ty_FixDiv with (eps := EffEmpty) (beta := BOmega).
-  change EffEmpty with (eff_join EffEmpty (eff_join EffEmpty EffEmpty)).
-  change BOmega with (bound_seq (BFinite 0) (bound_seq (BFinite 0) BOmega)).
-  eapply Ty_App with (arg_ty := TyNat) (lat_eps := EffEmpty) (lat_beta := BOmega).
-  - apply Ty_Var. reflexivity.
-  - apply Ty_Var. reflexivity.
+  - reflexivity.
+  - change EffEmpty with (eff_join EffEmpty (eff_join EffEmpty EffEmpty)).
+    change BOmega with (bound_seq (BFinite 0) (bound_seq (BFinite 0) BOmega)).
+    eapply Ty_App with (arg_ty := TyNat) (lat_eps := EffEmpty) (lat_beta := BOmega).
+    + apply Ty_Var. reflexivity.
+    + apply Ty_Var. reflexivity.
 Qed.
 
 
@@ -82,11 +84,12 @@ Proof.
     change BOmega with (bound_seq (BFinite 0) (bound_seq (BFinite 0) BOmega)).
     eapply Ty_App with (arg_ty := TyNat) (lat_eps := EffEmpty) (lat_beta := BOmega).
     + eapply Ty_FixDiv with (eps := EffEmpty) (beta := BOmega).
-      change EffEmpty with (eff_join EffEmpty (eff_join EffEmpty EffEmpty)).
-      change BOmega with (bound_seq (BFinite 0) (bound_seq (BFinite 0) BOmega)).
-      eapply Ty_App with (arg_ty := TyNat) (lat_eps := EffEmpty) (lat_beta := BOmega).
-      * apply Ty_Var. reflexivity.
-      * apply Ty_Var. reflexivity.
+      * reflexivity.
+      * change EffEmpty with (eff_join EffEmpty (eff_join EffEmpty EffEmpty)).
+        change BOmega with (bound_seq (BFinite 0) (bound_seq (BFinite 0) BOmega)).
+        eapply Ty_App with (arg_ty := TyNat) (lat_eps := EffEmpty) (lat_beta := BOmega).
+        -- apply Ty_Var. reflexivity.
+        -- apply Ty_Var. reflexivity.
     + apply Ty_Zero.
   - apply Ty_Zero.
 Qed.
@@ -102,11 +105,12 @@ Proof.
     change BOmega with (bound_seq (BFinite 0) (bound_seq (BFinite 0) BOmega)).
     eapply Ty_App with (arg_ty := TyNat) (lat_eps := EffEmpty) (lat_beta := BOmega).
     + eapply Ty_FixDiv with (eps := EffEmpty) (beta := BOmega).
-      change EffEmpty with (eff_join EffEmpty (eff_join EffEmpty EffEmpty)).
-      change BOmega with (bound_seq (BFinite 0) (bound_seq (BFinite 0) BOmega)).
-      eapply Ty_App with (arg_ty := TyNat) (lat_eps := EffEmpty) (lat_beta := BOmega).
-      * apply Ty_Var. reflexivity.
-      * apply Ty_Var. reflexivity.
+      * reflexivity.
+      * change EffEmpty with (eff_join EffEmpty (eff_join EffEmpty EffEmpty)).
+        change BOmega with (bound_seq (BFinite 0) (bound_seq (BFinite 0) BOmega)).
+        eapply Ty_App with (arg_ty := TyNat) (lat_eps := EffEmpty) (lat_beta := BOmega).
+        -- apply Ty_Var. reflexivity.
+        -- apply Ty_Var. reflexivity.
     + apply Ty_Zero.
 Qed.
 
@@ -444,6 +448,19 @@ Example finding22_aliased_resuming_handle_untypable :
 Proof.
   intros t eps beta Hty.
   inversion Hty; subst; simpl in *; discriminate.
+Qed.
+
+(** Finding twenty-four anchors, Sprint 16: fix binder aliasing. *)
+Definition aliased_fix : term := TFix "f" "f" TyNat (TVar "f") Structural.
+
+Example finding24_unfold_substitutes_function_name :
+  step aliased_fix (TLam "f" TyNat aliased_fix).
+Proof. apply StepByFunction. reflexivity. Qed.
+
+Example finding24_aliased_fix_untypable :
+  forall ty eps beta, ~ has_type [] aliased_fix ty eps beta.
+Proof.
+  intros ty eps beta Hty. inversion Hty; subst; simpl in *; discriminate.
 Qed.
 
 Definition div_cost_handler : handler :=

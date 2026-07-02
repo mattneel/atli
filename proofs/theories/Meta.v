@@ -1051,12 +1051,15 @@ Proof.
   - eapply Ty_Let.
     + apply IHHty1. exact Hpres.
     + apply IHHty2. apply lookup_preserve_cons. exact Hpres.
-  - apply Ty_FixStructural. apply IHHty.
-    apply lookup_preserve_cons. apply lookup_preserve_cons. exact Hpres.
-  - apply Ty_FixMeasure. apply IHHty.
-    apply lookup_preserve_cons. apply lookup_preserve_cons. exact Hpres.
-  - eapply Ty_FixDiv. apply IHHty.
-    apply lookup_preserve_cons. apply lookup_preserve_cons. exact Hpres.
+  - apply Ty_FixStructural.
+    + assumption.
+    + apply IHHty. apply lookup_preserve_cons. apply lookup_preserve_cons. exact Hpres.
+  - apply Ty_FixMeasure.
+    + assumption.
+    + apply IHHty. apply lookup_preserve_cons. apply lookup_preserve_cons. exact Hpres.
+  - eapply Ty_FixDiv.
+    + assumption.
+    + apply IHHty. apply lookup_preserve_cons. apply lookup_preserve_cons. exact Hpres.
   - apply Ty_Perform. apply IHHty. exact Hpres.
   - eapply Ty_HandleDrop.
     + apply IHHty1. exact Hpres.
