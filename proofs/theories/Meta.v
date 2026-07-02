@@ -1101,6 +1101,139 @@ Proof.
   intros x tx Hlookup. discriminate Hlookup.
 Qed.
 
+(** Sprint 16 C4a: typing depends only on mentioned variables. *)
+
+Ltac solve_mentions_in_whole :=
+  simpl;
+  repeat match goal with
+  | H : ?b = true |- context[?b] => rewrite H
+  | H : ?b = false |- context[?b] => rewrite H
+  | |- context[true || ?b] => simpl
+  | |- context[false || ?b] => simpl
+  | |- context[?b || true] => rewrite orb_true_r
+  | |- context[?b || false] => rewrite orb_false_r
+  end;
+  reflexivity.
+
+Lemma mentions_char_cons : forall (g g' : ctx) y ty0 (sub whole : term),
+  (forall z, mentions_var z whole = true -> lookup z g = lookup z g') ->
+  (forall z, String.eqb z y = false -> mentions_var z sub = true -> mentions_var z whole = true) ->
+  (forall z, mentions_var z sub = true ->
+     lookup z ((y, ty0) :: g) = lookup z ((y, ty0) :: g')).
+Proof.
+  intros g g' y ty0 sub whole Hchar Hmentions z Hz.
+  simpl.
+  destruct (String.eqb z y) eqn:Hzy; [reflexivity|].
+  apply Hchar. eapply Hmentions; eauto.
+Qed.
+
+Lemma mentions_char_cons_two : forall (g g' : ctx) y1 ty1 y2 ty2 (sub whole : term),
+  (forall z, mentions_var z whole = true -> lookup z g = lookup z g') ->
+  (forall z,
+    String.eqb z y1 = false ->
+    String.eqb z y2 = false ->
+    mentions_var z sub = true ->
+    mentions_var z whole = true) ->
+  (forall z, mentions_var z sub = true ->
+     lookup z ((y1, ty1) :: (y2, ty2) :: g) =
+     lookup z ((y1, ty1) :: (y2, ty2) :: g')).
+Proof.
+  intros g g' y1 ty1 y2 ty2 sub whole Hchar Hmentions z Hz.
+  simpl.
+  destruct (String.eqb z y1) eqn:Hzy1; [reflexivity|].
+  destruct (String.eqb z y2) eqn:Hzy2; [reflexivity|].
+  apply Hchar. eapply Hmentions; eauto.
+Qed.
+
+Lemma typing_strengthen : forall g t ty eps beta,
+  has_type g t ty eps beta ->
+  forall g', (forall z, mentions_var z t = true -> lookup z g = lookup z g') ->
+  has_type g' t ty eps beta.
+Proof.
+  intros g t ty eps beta Hty.
+  induction Hty; intros g' Hchar.
+  - apply Ty_Var.
+    rewrite <- (Hchar x).
+    + exact H.
+    + simpl. apply String.eqb_refl.
+  - apply Ty_Unit.
+  - apply Ty_Zero.
+  - apply Ty_Succ. apply IHHty. intros z Hz. apply Hchar. exact Hz.
+  - eapply Ty_CaseNat.
+    + apply IHHty1. intros z Hz. apply Hchar. solve_mentions_in_whole.
+    + apply IHHty2. intros z Hz. apply Hchar. solve_mentions_in_whole.
+    + apply IHHty3.
+      eapply mentions_char_cons; [exact Hchar|].
+      intros z Hzx Hz. solve_mentions_in_whole.
+  - apply Ty_Lam. apply IHHty.
+    eapply mentions_char_cons; [exact Hchar|].
+    intros z Hzx Hz. solve_mentions_in_whole.
+  - eapply Ty_App.
+    + apply IHHty1. intros z Hz. apply Hchar. solve_mentions_in_whole.
+    + apply IHHty2. intros z Hz. apply Hchar. solve_mentions_in_whole.
+  - eapply Ty_Let.
+    + apply IHHty1. intros z Hz. apply Hchar. solve_mentions_in_whole.
+    + apply IHHty2.
+      eapply mentions_char_cons; [exact Hchar|].
+      intros z Hzx Hz. solve_mentions_in_whole.
+  - apply Ty_FixStructural.
+    + assumption.
+    + apply IHHty.
+      eapply mentions_char_cons_two; [exact Hchar|].
+      intros z Hzx Hzf Hz. solve_mentions_in_whole.
+  - apply Ty_FixMeasure.
+    + assumption.
+    + apply IHHty.
+      eapply mentions_char_cons_two; [exact Hchar|].
+      intros z Hzx Hzf Hz. solve_mentions_in_whole.
+  - eapply Ty_FixDiv.
+    + assumption.
+    + apply IHHty.
+      eapply mentions_char_cons_two; [exact Hchar|].
+      intros z Hzx Hzf Hz. solve_mentions_in_whole.
+  - apply Ty_Perform. apply IHHty. intros z Hz. apply Hchar. exact Hz.
+  - eapply Ty_HandleDrop.
+    + apply IHHty1. intros z Hz. apply Hchar. solve_mentions_in_whole.
+    + apply IHHty2.
+      eapply mentions_char_cons; [exact Hchar|].
+      intros z Hzrv Hz. solve_mentions_in_whole.
+    + apply IHHty3.
+      eapply mentions_char_cons_two; [exact Hchar|].
+      intros z Hzk Hzp Hz. solve_mentions_in_whole.
+    + assumption.
+    + assumption.
+  - eapply Ty_HandleResume.
+    + apply IHHty1. intros z Hz. apply Hchar. solve_mentions_in_whole.
+    + apply IHHty2.
+      eapply mentions_char_cons; [exact Hchar|].
+      intros z Hzrv Hz. solve_mentions_in_whole.
+    + apply IHHty3.
+      eapply mentions_char_cons_two; [exact Hchar|].
+      intros z Hzk Hzp Hz. solve_mentions_in_whole.
+    + assumption.
+    + assumption.
+    + assumption.
+    + assumption.
+  - eapply Ty_Resume.
+    + apply IHHty1. intros z Hz. apply Hchar. solve_mentions_in_whole.
+    + apply IHHty2. intros z Hz. apply Hchar. solve_mentions_in_whole.
+  - eapply Ty_ContVal; eauto.
+Qed.
+
+Lemma typing_drop_unmentioned_head : forall y b g t ty eps beta,
+  has_type ((y, b) :: g) t ty eps beta ->
+  mentions_var y t = false ->
+  has_type g t ty eps beta.
+Proof.
+  intros y b g t ty eps beta Hty Hy.
+  eapply typing_strengthen; [exact Hty|].
+  intros z Hz.
+  simpl.
+  destruct (String.eqb z y) eqn:Hzy.
+  - apply String.eqb_eq in Hzy. subst z. rewrite Hy in Hz. discriminate.
+  - reflexivity.
+Qed.
+
 (** Sprint 16 C1a: counting-function stability under closed substitution. *)
 
 Lemma mentions_false_free_var_count_mut :
