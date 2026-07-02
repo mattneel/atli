@@ -39,6 +39,16 @@ Proof-ledger changes are explicit history: every `proofs/ADMITTED_COUNT` change,
 down, must occur in the same commit as a report ledger note naming each theorem that
 moved and the direction (`Admitted` stated, `Qed` discharged, or SPI reclassified).
 
+
+## Definition integrity
+
+The semantic substrate is protected machinery: `stepf`, `step`, `frame_step`, `has_type`,
+`is_value`, and the grade algebra. Logic is frozen except for explicit fidelity repairs
+against the paper spec. Any semantic-substrate change must be itemized in the sprint report
+against the exact `docs/calculus.md` section it implements. Every core Prop/bool relation
+must have falsifiability anchors: at least one positive and one negative bridge/golden whose
+reason to exist is that a degenerate definition would fail to compile.
+
 ## Differential and falsifier provenance
 
 Acceptance differentials and falsifiers must exercise the same production path they claim to validate. A backend falsifier must compile through the Atli emitter/MLIR/LLVM pipeline and link against the actual generated runtime shim, unless it is explicitly labeled as a non-acceptance sanity check. Hand-written C, summary IR, or bypassed shims cannot discharge criteria about native lowering. Reports must name the provenance of every falsifier.

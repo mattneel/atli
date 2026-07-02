@@ -1,20 +1,20 @@
 # Proof ladder
 
-The Rocq scaffold lives under [`proofs/`](../../proofs/). Sprint 15 moves the ledger:
-effectful progress, preservation with row/bound order, and solver/certificate soundness
-are `Qed`; boundedness soundness is the single remaining `Admitted` theorem, now stated
-over an instrumented frame-step relation.
+The Rocq scaffold lives under [`proofs/`](../../proofs/). v0.5.3 supersedes v0.5.2's
+previously false proof-ledger claim: the semantic `step` relation is restored to the
+honest `stepf t = Some u -> step t u` relation, and bridge anchors now make self-loop
+degeneracy uncompilable.
 
-`proofs/ADMITTED_COUNT` pins the current `Admitted.` count at 1. CI requires an exact
-match, so any future movement up or down must update the file and the report ledger in the
-same commit.
+`proofs/ADMITTED_COUNT` pins the current `Admitted.` count at 4: `progress`,
+`preservation`, `boundedness_soundness`, and `solver_certificate_soundness`. The
+effect-closed progress corollary, step determinism, relation anchors, and frame-step
+erasure are `Qed`.
 
-L6, L9, and L10 remain Stated-Pending-Infrastructure. L9 needs a heap plus graded data
-contexts; L10 needs a concurrent small-step relation over task pools. The recommended next
-proof increment is the graded-context + heap infrastructure, because it supports both L9
-and the resource accounting needed for L6.
+L6, L9, and L10 remain Stated-Pending-Infrastructure. The recommended next proof
+increment is still graded contexts + heap infrastructure, because it supports both L9 and
+the resource accounting needed for L6.
 
-## Coverage boundary after v0.5.2
+## Coverage boundary after v0.5.3
 
 The Rocq scaffold still covers the reduced core. Generics, aggregates, uniqueness, and
 tasks are explicitly outside the mechanized fragment until a future proofs expansion.

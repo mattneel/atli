@@ -1,11 +1,11 @@
 # Atli Syntax
 
-> **Status: implemented subset + open list (v0.5.2).** This document began as draft-0.
-> The v0.5.2 compiler implements the reduced surface listed below and keeps the rest in
+> **Status: implemented subset + open list (v0.5.3).** This document began as draft-0.
+> The v0.5.3 compiler implements the reduced surface listed below and keeps the rest in
 > the Open list. Normative elaboration details live in [`docs/elaboration.md`](elaboration.md);
 > the core semantics live in [`docs/calculus.md`](calculus.md).
 
-## Implemented in v0.5.2
+## Implemented in v0.5.3
 
 - `fn` / `pub fn` declarations, expression or block bodied, including rank-1 type parameters (`fn f[A](...)`).
 - Types: `Unit`, `Nat`, `Array[A]` (bare `Array` aliases `Array[Nat]`), `Task[T]`, declared generic record/variant types, unique marker `^T`, uniqueness-preservation marker `^u T`, arrows, and concrete effect rows `! {A, B}`.
@@ -29,7 +29,7 @@
 Full numeric tower, strings/chars/floats as runtime values, modules/`use`, byte-accurate
 frame layout, monomorphization, bounded polymorphism/traits, effect-row variables/open
 rows, real measure verification, and the full region grade remain future work.
-Unsupported v0.5.2 constructs diagnose as "not yet in the reduced surface".
+Unsupported v0.5.3 constructs diagnose as "not yet in the reduced surface".
 
 ---
 
@@ -179,7 +179,7 @@ px     = origin.x
 
 ```zig
 type Color     = Red | Green | Blue
-type Option[A] = None | Some(A)   // generic variants are implemented in v0.5.2
+type Option[A] = None | Some(A)   // generic variants are implemented in v0.5.3
 type Shape     = Circle(Nat) | Rect(Nat, Nat)
 ```
 
@@ -204,7 +204,7 @@ unique-out, shared-in ⇒ shared-out) without being written twice:
 ```
 
 Forgetting uniqueness (`^T` → `T`) happens by subsumption and **consumes** the unique
-binding in v0.5.2: after a shared use there is no remaining unique handle to mutate. Write
+binding in v0.5.3: after a shared use there is no remaining unique handle to mutate. Write
 `freeze e` when that shared handoff is intentional.
 
 ### Recursive types
@@ -434,7 +434,7 @@ Signature slot order, left to right: `-> RET ! EFFECTS BOUNDEDNESS =`.
 Concurrency is surfaced through `scope`, `spawn`, and `await`. `scope { … }` bounds child
 task lifetimes: when the scope exits, its children are joined and the scope's region frees
 as one operation. `spawn f(args)` starts a task whose callee is a declared top-level `fn`;
-closures are not spawnable in v0.5.2. `await h` consumes an opaque affine task handle and
+closures are not spawnable in v0.5.3. `await h` consumes an opaque affine task handle and
 returns the task result. This is the surface of **spawn = arena = cancellation**: the task
 tree, the arena tree, and the cancellation tree are the same tree.
 
@@ -541,4 +541,4 @@ record_lit  ::= '.{' (NAME '=' expr)* '}'
 - **Module system** in full (§10).
 - **Surface `Int` semantics.** Sprint 06 gives `Nat` subtraction monus semantics; signed
   `Int` arithmetic remains future work.
-- **Effect-row variables/open rows.** The blocked target is `map[A, B](xs: List[A], f: A -> B ! e) -> List[B] ! e`; v0.5.2 generic higher-order arguments are pure. Syntax `! e` / `! {L | e}` remains open until row unification lands.
+- **Effect-row variables/open rows.** The blocked target is `map[A, B](xs: List[A], f: A -> B ! e) -> List[B] ! e`; v0.5.3 generic higher-order arguments are pure. Syntax `! e` / `! {L | e}` remains open until row unification lands.

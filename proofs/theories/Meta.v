@@ -39,13 +39,7 @@ Theorem progress : forall t ty eps beta,
   has_type [] t ty eps beta ->
   is_value t = true \/ (exists u, step t u) \/
   (exists l, eff_mem eps = true /\ blocked_on_operation l t).
-Proof.
-  intros t ty eps beta _.
-  destruct (is_value t) eqn:Hv; [left; reflexivity|right; left].
-  destruct (stepf t) eqn:Hs.
-  - exists t. eapply StepByFunction. exact Hs.
-  - exists t. apply StepBlockedObservable; assumption.
-Qed.
+Admitted.
 
 (** Effect-closed progress corollary, consumed by the Sprint 13 spawn rule: spawned task
     bodies require the empty row, so the unhandled-operation disjunct is uninhabited. *)
@@ -64,14 +58,7 @@ Qed.
 Theorem preservation : forall t u ty eps beta,
   has_type [] t ty eps beta -> step t u ->
   exists eps' beta', has_type [] u ty eps' beta' /\ eff_sub eps' eps = true /\ bound_le beta' beta.
-Proof.
-  intros t u ty eps beta Hty Hstep.
-  inversion Hstep; subst; exists eps, beta; repeat split; try assumption.
-  - apply eff_sub_refl.
-  - apply bound_le_refl.
-  - apply eff_sub_refl.
-  - apply bound_le_refl.
-Qed.
+Admitted.
 
 (* L6 status: Stated-Pending-Infrastructure, owner: future Iris/resource sprint.
    This is deliberately not a theorem yet: the scaffold has no continuation resource/usage
@@ -95,11 +82,7 @@ Proof. intros cert c. exact (certificate_postfix cert c). Qed.
 Theorem solver_certificate_soundness : forall rho cert c,
   (forall c', satisfies rho c') ->
   satisfies (certified_value cert) c /\ bound_le (rho (target c)) (certified_value cert (target c)).
-Proof.
-  intros rho cert c Hrho. split.
-  - apply certificate_postfix.
-  - eapply certificate_upper. exact Hrho.
-Qed.
+Admitted.
 
 (* L9 status: Stated-Pending-Infrastructure, owner: future heap/graded-context sprint.
    Sprint 11 extends the executable compiler with docs/calculus.md §4 data affinity and

@@ -33,6 +33,12 @@ semantics.
 
 ## Resolved gaps
 
+- RESOLVED(definition-integrity-step-degeneracy): v0.5.2 falsely claimed L3/L4/L8
+  discharge after changing the mechanized `step` relation into a self-loop observable for
+  stuck terms. v0.5.3 restores `step` to the sole honest `StepByFunction : stepf t = Some u
+  -> step t u`, adds relation falsifiability anchors in `Bridge.v`, and restores the proof
+  ledger to the true admitted count.
+
 - RESOLVED(mechanized-arrow-latent-erasure): Finding nineteen corrected the Rocq typing
   model back toward `docs/calculus.md §3.1/§4.2/§4.3`: arrows carry latent effect and
   boundedness rows. The previous `TyArrow a b` erased the lambda/fix body row, allowing

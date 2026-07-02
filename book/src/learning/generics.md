@@ -1,6 +1,6 @@
 # Generics, and threading what you own
 
-Atli v0.5.2 adds type parameters and the `^u` uniqueness-preservation marker. Generic functions compile once because tier-1 values are uniform i64 slots: a `Nat` immediate, an array handle, a record handle, a variant handle, or a task handle all occupy one slot.
+Atli v0.5.3 adds type parameters and the `^u` uniqueness-preservation marker. Generic functions compile once because tier-1 values are uniform i64 slots: a `Nat` immediate, an array handle, a record handle, a variant handle, or a task handle all occupy one slot.
 
 The simple generic option example is a real test-covered source file:
 

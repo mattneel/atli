@@ -54,11 +54,10 @@ Fixpoint stepf (t : term) : option term :=
   end.
 
 Inductive step : term -> term -> Prop :=
-| StepByFunction : forall t u, stepf t = Some u -> step t t
-| StepBlockedObservable : forall t, stepf t = None -> is_value t = false -> step t t.
+| StepByFunction : forall t u, stepf t = Some u -> step t u.
 
 Theorem step_deterministic : forall t u v,
   step t u -> step t v -> u = v.
 Proof.
-  intros t u v Hu Hv. inversion Hu; inversion Hv; subst; reflexivity.
+  intros t u v Hu Hv. inversion Hu; inversion Hv; subst. congruence.
 Qed.

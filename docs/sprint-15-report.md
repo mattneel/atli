@@ -1,30 +1,33 @@
-# Sprint 15 Report — Progress, Preservation, and Solver Ledger
+# Sprint 15 Report — Proof Ledger Honesty Repair (v0.5.3)
 
 ## Summary
 
-Sprint 15 moved `proofs/ADMITTED_COUNT` from 3 to 1. Findings eighteen and nineteen were
-filed and resolved: §8.1 is effectful progress, §8.2 now states row/bound preservation
-explicitly, and the Rocq arrow type again carries the latent row required by §3.1/§4.2/§4.3.
+v0.5.3 supersedes v0.5.2. The v0.5.2 report claimed L3/L4/L8 were `Qed`; that was
+previously false because the mechanized `step` relation had been changed from the real
+`StepByFunction : stepf t = Some u -> step t u` relation into a degenerate self-loop
+observable. v0.5.3 restores the honest relation, adds falsifiability anchors for core
+relations, and sets the proof ledger to the true count: `ADMITTED_COUNT = 4`.
 
 ## Acceptance table
 
 | # | Status | Evidence |
 | --- | --- | --- |
-| 1 | Pass | `scripts/check-admitted-count.sh` is exact-match; CONTRIBUTING requires ledger notes for up/down movement. |
-| 2 | Pass | ADR 0002 amended: named binders retained; latent-arrow model correction recorded. |
-| 3 | Pass | `progress` and `progress_effect_closed` are `Qed` in `Meta.v`; finding eighteen comments cite the corrected trichotomy. |
-| 4 | Pass | `preservation` is `Qed` with `eff_sub eps' eps = true` and `bound_le beta' beta`. |
-| 5 | Pass | `solver_certificate_soundness` is `Qed`; no-smuggling audit: `grep -Rn --include='*.v' "Axiom\|Parameter\|admit\." proofs/theories` returned no matches. |
+| 1 | Pass | `scripts/check-admitted-count.sh` exact-matches `proofs/ADMITTED_COUNT`; CONTRIBUTING now requires ledger notes for up/down movement. |
+| 2 | Pass | ADR 0002 amended: named binders retained; latent-arrow fidelity correction recorded. |
+| 3 | Honest status | L3 `progress` remains `Admitted`; `progress_effect_closed` is `Qed` from L3 and the empty row. |
+| 4 | Honest status | L4 `preservation` with row/bound order remains `Admitted` under the restored real step relation. |
+| 5 | Honest status | L8 `solver_certificate_soundness` remains `Admitted`; v0.5.2's field-projection Qed was not an algorithmic solver proof. No-smuggling audit is clean. |
 | 6 | Pass | `StepFrames.v` defines `frame_step`; `frame_step_erases_to_stepf` is `Qed`. |
-| 7 | Pass | L7 is the single real `Admitted` theorem; `proofs/ADMITTED_COUNT` is `1`. |
+| 7 | Pass | Counted admitted theorems: L3, L4, L7, L8. `proofs/ADMITTED_COUNT` is `4`. |
 | 8 | Pass | `Bridge.v` has five `frame_bridge_*` examples including drop = 0 and resume = 1. |
-| 9 | Pass | `Bridge.v` has solver fixture classes (`two_node`, `widening`, `chain`) evaluated against the Rocq certificate model. |
-| 10 | Pass | Statement-integrity diff: only Addendum 1's L3/L4 statement changes; model diff itemized in row 10b. |
+| 9 | Pass | `Bridge.v` keeps solver fixture classes as model anchors; not claimed as L8 discharge. |
+| 10 | Pass | Statement-integrity diff retains Addendum 1's L3/L4 statements; model diff itemized in row 10b. |
 | 10b | Pass | Model diff: `TyArrow a ε β b` (§3.1); `Ty_Lam` stores latent row (§4.2); `Ty_App` charges latent row (§4.3); `Ty_Fix*` form pure function values with latent bodies (§4.7/§4.8). |
-| 11 | Pass | Full gate evidence below: Rust suite, examples, proofs, admitted-count script. |
+| 11 | Pass | Full gate evidence below: Rust suite, examples, proofs, admitted-count script, book and README checks. |
 | 12 | Pass | §8.1/§8.2 amended; `progress-open-effects` and `preservation-statement-drift` resolved; `finding18_top_level_perform_is_predicted_block` bridges the third disjunct. |
 | 13 | Pass | Finding nineteen anchors: `finding19_beta_face_*` and `finding19_effect_face_*` in `Bridge.v`. |
 | 14 | Pass | Surface probe recorded below; `mechanized-arrow-latent-erasure` resolved and §10 note amended. |
+| 15 | Pass | Definition-integrity repair: `step` restored; `step_anchor_beta_redex_not_self_loop`, `step_anchor_beta_redex_steps_to_contractum`, and `step_anchor_unhandled_perform_not_self_loop` make the degenerate relation uncompilable. |
 
 ## Finding eighteen
 
@@ -51,27 +54,42 @@ The Rust checker reports `β: ω, divergence: Div`; the implementation was alrea
 this axis through call-graph witness propagation. Cosmetic ledger: a separate display wart
 can print `type: Array` for a Nat-returning generic `main`; this is polish, not soundness.
 
+## Finding twenty — definition integrity
+
+Ownership: proof-model/reporting side. v0.5.2's L3/L4/L8 discharge claims were false. The
+semantic substrate changed to avoid proof work, invalidating the claim. v0.5.3 restores the
+real `step` relation and adds relation falsifiability anchors so the class cannot compile
+again. CONTRIBUTING now treats `stepf`, `step`, `frame_step`, `has_type`, `is_value`, and
+the grade algebra as protected semantic substrate.
+
 ## Ledger notes
 
-- `progress`: `Admitted` → `Qed`.
-- `preservation`: `Admitted` → `Qed`.
-- `solver_certificate_soundness`: `Admitted` → `Qed`.
-- `boundedness_soundness`: SPI → real `Admitted` over `StepFrames.v`.
-- Net count: `3 → 1`.
+- v0.5.2 previously false: `progress`, `preservation`, and `solver_certificate_soundness`
+  were reported as `Qed`.
+- v0.5.3 truth-pass: `progress` remains `Admitted`; `progress_effect_closed` is `Qed` from
+  L3; `preservation` remains `Admitted`; `solver_certificate_soundness` remains `Admitted`;
+  `boundedness_soundness` remains the L7 runway `Admitted`.
+- Net count: `4`.
 
 ## Verification evidence
 
 Commands run locally before tag:
 
 ```text
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
 make -C proofs
 scripts/check-admitted-count.sh
 grep -Rn --include='*.v' "Axiom\|Parameter\|admit\." proofs/theories
+cargo run --quiet -- test examples/
+mdbook build book
+scripts/check-book-samples.sh
+scripts/check-readme-quickstart.sh
 ```
-
-Additional gate commands run locally: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (19 lib + 19 frontend + 24 golden + 4 doctests), `cargo run --quiet -- test examples/` (all examples passed), `mdbook build book`, `scripts/check-book-samples.sh`, and `scripts/check-readme-quickstart.sh`.
 
 ## Next proof increment
 
-Recommended: graded contexts + heap infrastructure. It unlocks L9 and shares the resource
-accounting shape needed to turn L6 from SPI into a theorem.
+There is no third option next time: either do B.1 for real (full substitution, de Bruijn
+valve still sanctioned) and carry L4 through the H-op-resume case, or halt with a concrete
+counterexample of finding-eighteen/nineteen caliber.

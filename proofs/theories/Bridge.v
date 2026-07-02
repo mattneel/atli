@@ -209,3 +209,46 @@ Proof. reflexivity. Qed.
 Example solver_bridge_chain_model_value :
   certified_value omega_cert (target solver_fixture_chain) = BOmega.
 Proof. reflexivity. Qed.
+
+(** Relation falsifiability anchors, finding twenty: these fail under a degenerate
+    self-loop step relation and pin the semantic substrate of docs/calculus.md §5. *)
+Definition beta_id_redex : term := TApp (TLam "x" TyNat (TVar "x")) TZero.
+Definition beta_id_contractum : term := TZero.
+
+Example step_anchor_beta_redex_steps_to_contractum :
+  step beta_id_redex beta_id_contractum.
+Proof. unfold beta_id_redex, beta_id_contractum. apply StepByFunction. reflexivity. Qed.
+
+Example step_anchor_beta_redex_not_self_loop :
+  ~ step beta_id_redex beta_id_redex.
+Proof.
+  intro H. inversion H; subst. unfold beta_id_redex in H0. discriminate H0.
+Qed.
+
+Example step_anchor_unhandled_perform_not_self_loop :
+  ~ step top_level_perform_golden top_level_perform_golden.
+Proof.
+  intro H. inversion H; subst. unfold top_level_perform_golden in H0. discriminate H0.
+Qed.
+
+Example frame_step_anchor_beta_redex_steps_to_contractum :
+  frame_step beta_id_redex 0 beta_id_contractum.
+Proof. unfold beta_id_redex, beta_id_contractum. apply FrameStep. reflexivity. Qed.
+
+Example frame_step_anchor_beta_redex_not_self_loop :
+  ~ frame_step beta_id_redex 0 beta_id_redex.
+Proof.
+  intro H. inversion H; subst. unfold beta_id_redex in H0. discriminate H0.
+Qed.
+
+Example typing_anchor_perform_has_effl_not_empty :
+  has_type [] top_level_perform_golden TyNat EffL (BFinite 0).
+Proof. apply Ty_Perform. apply Ty_Zero. Qed.
+
+Example value_anchor_beta_redex_is_not_value :
+  is_value beta_id_redex = false.
+Proof. reflexivity. Qed.
+
+Example grade_anchor_omega_not_le_finite_zero :
+  ~ bound_le BOmega (BFinite 0).
+Proof. simpl. exact (fun x => x). Qed.
