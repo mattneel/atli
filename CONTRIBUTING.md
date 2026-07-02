@@ -28,7 +28,7 @@ One logical unit per commit. Keep the tree green at every commit. Run `cargo fmt
 
 ## Report format
 
-Each sprint report records acceptance status, verification commands, findings, gaps, generated statistics where relevant, and carried-forward work.
+Each sprint report records acceptance status, verification commands, findings, gaps, generated statistics where relevant, and carried-forward work. If a sprint prompt has numbered acceptance criteria, the report acceptance table must contain exactly one top-level row per criterion number, in prompt order. Sub-criteria may be nested inside that row, but missing, duplicated, or renumbered top-level rows are report failures. Freely-composed green tables are forbidden because they can omit criteria silently.
 
 ## Branch protection recommendation
 
