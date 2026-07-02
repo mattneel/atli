@@ -301,3 +301,36 @@ Proof. apply StepByFunction. reflexivity. Qed.
 Example used_cont_resume_still_stuck :
   stepf (TResume (TUsedContVal resuming_handler []) TZero) = None.
 Proof. reflexivity. Qed.
+
+(** Extended dynamics anchors, Sprint 16 A4: multi-frame capture, congruence fidelity, dispatch priority, nested ownership. *)
+
+Example capture_through_two_frames_anchor :
+  step (THandle (TSucc (TLet "x" (TPerform L TZero) (TVar "x"))) resuming_handler)
+       (TResume (TContVal resuming_handler [FSucc; FLet "x" (TVar "x")]) TZero).
+Proof. apply StepByFunction. reflexivity. Qed.
+
+Example perform_arg_congruence_unstuck_anchor :
+  step (THandle (TPerform L (THandle TZero dropping_handler)) resuming_handler)
+       (THandle (TPerform L TZero) resuming_handler).
+Proof. apply StepByFunction. reflexivity. Qed.
+
+Definition steppable_arg : term := TApp (TLam "y" TyNat (TVar "y")) TZero.
+
+Example capture_beats_argument_congruence_anchor :
+  step (THandle (TApp (TPerform L TZero) steppable_arg) resuming_handler)
+       (TResume (TContVal resuming_handler [FAppFun steppable_arg]) TZero).
+Proof. apply StepByFunction. reflexivity. Qed.
+
+Example nested_same_label_inner_owns_anchor :
+  step (THandle (THandle (TPerform L TZero) dropping_handler) resuming_handler)
+       (THandle TZero resuming_handler).
+Proof. apply StepByFunction. reflexivity. Qed.
+
+Example finding21_rebuilt_body_steps :
+  step (THandle (TLet "x" TZero (TVar "x")) resuming_handler)
+       (THandle TZero resuming_handler).
+Proof. apply StepByFunction. reflexivity. Qed.
+
+Example finding21_completes :
+  step (THandle TZero resuming_handler) TZero.
+Proof. apply StepByFunction. reflexivity. Qed.
