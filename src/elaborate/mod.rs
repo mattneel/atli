@@ -5,10 +5,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::{FixBinding, Handler, OpClause, RecursionTag, Term, Type};
-use crate::grade::Label;
+use crate::grade::{Label, Q};
 use crate::surface::ast::{
-    BinaryOp, Boundedness, Decl, Expr, ExprKind, FnDecl, HandleClause, Pattern, Program, Span,
-    TypeExpr,
+    BinaryOp, Boundedness, Decl, Expr, ExprKind, FnDecl, HandleClause, Pattern, PrefixOp, Program,
+    Span, TypeExpr,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +67,7 @@ struct FunctionSig {
 }
 
 pub fn elaborate_program(program: &Program) -> Result<ElaboratedProgram, ElaborateError> {
+    check_surface_uniqueness(program)?;
     let mut elaborator = Elaborator::new(program)?;
     elaborator.elaborate()
 }
@@ -360,6 +361,11 @@ impl<'a> Elaborator<'a> {
                 Term::var(name)
             }
             ExprKind::Call { callee, args } => self.call(callee, args, env, expr.span)?,
+            ExprKind::Prefix { op, expr: inner } => match op {
+                PrefixOp::Move => Term::Move(Box::new(self.expr(inner, env)?)),
+                PrefixOp::Freeze => Term::Freeze(Box::new(self.expr(inner, env)?)),
+                PrefixOp::Inplace => Term::Inplace(Box::new(self.expr(inner, env)?)),
+            },
             ExprKind::Binary { op, lhs, rhs } => {
                 let (prelude, name) = match op {
                     BinaryOp::Add => (PreludeFn::Add, "__atli_add"),
@@ -458,6 +464,39 @@ impl<'a> Elaborator<'a> {
                 kont: Box::new(self.expr(callee, env)?),
                 arg: Box::new(self.expr(&args[0], env)?),
             });
+        }
+        if let ExprKind::Var(name) = &callee.kind {
+            match name.as_str() {
+                "mkarray" if args.len() == 2 => {
+                    return Ok(Term::MkArray(
+                        Box::new(self.expr(&args[0], env)?),
+                        Box::new(self.expr(&args[1], env)?),
+                    ));
+                }
+                "get" if args.len() == 2 => {
+                    return Ok(Term::ArrayGet(
+                        Box::new(self.expr(&args[0], env)?),
+                        Box::new(self.expr(&args[1], env)?),
+                    ));
+                }
+                "set" if args.len() == 3 => {
+                    return Ok(Term::ArraySet(
+                        Box::new(self.expr(&args[0], env)?),
+                        Box::new(self.expr(&args[1], env)?),
+                        Box::new(self.expr(&args[2], env)?),
+                    ));
+                }
+                "len" if args.len() == 1 => {
+                    return Ok(Term::ArrayLen(Box::new(self.expr(&args[0], env)?)));
+                }
+                "mkarray" | "get" | "set" | "len" => {
+                    return Err(ElaborateError {
+                        span,
+                        message: format!("builtin `{name}` called with wrong arity"),
+                    });
+                }
+                _ => {}
+            }
         }
         let mut out = self.expr(callee, env)?;
         for arg in args {
@@ -698,6 +737,8 @@ fn lower_type(ty: &TypeExpr) -> Result<Type, ElaborateError> {
     match ty {
         TypeExpr::Unit(_) => Ok(Type::Unit),
         TypeExpr::Nat(_) => Ok(Type::Nat),
+        TypeExpr::Array(_) => Ok(Type::Array),
+        TypeExpr::Unique(inner, _) => lower_type(inner),
         TypeExpr::Arrow(arg, ret, _) => Ok(Type::Arrow(
             Box::new(lower_type(arg)?),
             Box::new(lower_type(ret)?),
@@ -764,7 +805,294 @@ fn expr_mentions(expr: &Expr, name: &str) -> bool {
                     }
                 })
         }
+        ExprKind::Prefix { expr, .. } => expr_mentions(expr, name),
     }
+}
+
+#[derive(Debug, Clone)]
+struct UniqueBinding {
+    grade: Q,
+    consumed_at: Option<Span>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct UniqueEnv {
+    bindings: BTreeMap<String, UniqueBinding>,
+}
+
+impl UniqueEnv {
+    fn bind_unique(&mut self, name: &str) {
+        self.bindings.insert(
+            name.to_string(),
+            UniqueBinding {
+                grade: Q::One,
+                consumed_at: None,
+            },
+        );
+    }
+
+    fn consume(&mut self, name: &str, span: Span) -> Result<(), ElaborateError> {
+        if let Some(binding) = self.bindings.get_mut(name) {
+            debug_assert_eq!(binding.grade, Q::One);
+            if let Some(first) = binding.consumed_at {
+                return Err(ElaborateError {
+                    span,
+                    message: format!(
+                        "cannot use `{name}`: consumed here -> bytes {}..{}; used again here -> bytes {}..{}",
+                        first.start, first.end, span.start, span.end
+                    ),
+                });
+            }
+            binding.consumed_at = Some(span);
+        }
+        Ok(())
+    }
+
+    fn require_unique(&mut self, expr: &Expr, what: &str) -> Result<(), ElaborateError> {
+        match &expr.kind {
+            ExprKind::Var(name) if self.bindings.contains_key(name) => {
+                self.consume(name, expr.span)
+            }
+            ExprKind::Call { callee, .. } if is_unique_builtin_result(callee) => Ok(()),
+            ExprKind::Prefix {
+                op: PrefixOp::Move | PrefixOp::Inplace,
+                ..
+            } => Ok(()),
+            ExprKind::Prefix {
+                op: PrefixOp::Freeze,
+                ..
+            } => Err(ElaborateError {
+                span: expr.span,
+                message: format!("{what} requires a unique value, but `freeze` returns shared"),
+            }),
+            ExprKind::Var(name) => Err(ElaborateError {
+                span: expr.span,
+                message: format!("{what} requires unique `{name}`, but it is shared"),
+            }),
+            _ => Err(ElaborateError {
+                span: expr.span,
+                message: format!("{what} requires a unique array target"),
+            }),
+        }
+    }
+
+    fn merge_branch_consumption(&mut self, left: &Self, right: &Self) {
+        for (name, binding) in &mut self.bindings {
+            let l = left.bindings.get(name).and_then(|state| state.consumed_at);
+            let r = right.bindings.get(name).and_then(|state| state.consumed_at);
+            binding.consumed_at = binding.consumed_at.or(l).or(r);
+        }
+    }
+}
+
+fn check_surface_uniqueness(program: &Program) -> Result<(), ElaborateError> {
+    let signatures = program
+        .decls
+        .iter()
+        .filter_map(|decl| match decl {
+            Decl::Fn(func) => Some((
+                func.name.node.clone(),
+                (
+                    func.params
+                        .iter()
+                        .map(|param| type_is_unique(&param.ty))
+                        .collect::<Vec<_>>(),
+                    type_is_unique(&func.ret),
+                ),
+            )),
+            Decl::Effect(_) => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    for decl in &program.decls {
+        let Decl::Fn(func) = decl else {
+            continue;
+        };
+        let mut env = UniqueEnv::default();
+        for param in &func.params {
+            if type_is_unique(&param.ty) {
+                env.bind_unique(&param.name.node);
+            }
+        }
+        check_unique_expr(&func.body, &mut env, &signatures)?;
+    }
+    Ok(())
+}
+
+fn check_unique_expr(
+    expr: &Expr,
+    env: &mut UniqueEnv,
+    signatures: &BTreeMap<String, (Vec<bool>, bool)>,
+) -> Result<bool, ElaborateError> {
+    match &expr.kind {
+        ExprKind::Unit | ExprKind::Nat(_) => Ok(false),
+        ExprKind::Var(name) => {
+            env.consume(name, expr.span)?;
+            Ok(false)
+        }
+        ExprKind::Binary { lhs, rhs, .. } | ExprKind::Pipe { lhs, rhs } => {
+            check_unique_expr(lhs, env, signatures)?;
+            check_unique_expr(rhs, env, signatures)?;
+            Ok(false)
+        }
+        ExprKind::QualifiedCall { args, .. } => {
+            for arg in args {
+                check_unique_expr(arg, env, signatures)?;
+            }
+            Ok(false)
+        }
+        ExprKind::Call { callee, args } => {
+            if let ExprKind::Var(name) = &callee.kind {
+                return check_unique_call(name, args, expr.span, env, signatures);
+            }
+            check_unique_expr(callee, env, signatures)?;
+            for arg in args {
+                check_unique_expr(arg, env, signatures)?;
+            }
+            Ok(false)
+        }
+        ExprKind::Prefix {
+            op: PrefixOp::Move,
+            expr: inner,
+        } => {
+            env.require_unique(inner, "move")?;
+            Ok(true)
+        }
+        ExprKind::Prefix {
+            op: PrefixOp::Freeze,
+            expr: inner,
+        } => {
+            env.require_unique(inner, "freeze")?;
+            Ok(false)
+        }
+        ExprKind::Prefix {
+            op: PrefixOp::Inplace,
+            expr: inner,
+        } => {
+            let ExprKind::Call { callee, args } = &inner.kind else {
+                return Err(ElaborateError {
+                    span: inner.span,
+                    message: "inplace operand must be `set(array, index, value)`".into(),
+                });
+            };
+            if !matches!(&callee.kind, ExprKind::Var(name) if name == "set") || args.len() != 3 {
+                return Err(ElaborateError {
+                    span: inner.span,
+                    message: "inplace operand must be `set(array, index, value)`".into(),
+                });
+            }
+            env.require_unique(&args[0], "inplace")?;
+            check_unique_expr(&args[1], env, signatures)?;
+            check_unique_expr(&args[2], env, signatures)?;
+            Ok(true)
+        }
+        ExprKind::Block { bindings, result } => {
+            for binding in bindings {
+                let unique = check_unique_expr(&binding.expr, env, signatures)?;
+                if unique {
+                    env.bind_unique(&binding.name.node);
+                }
+            }
+            check_unique_expr(result, env, signatures)
+        }
+        ExprKind::CaseNat { scrutinee, arms } => {
+            check_unique_expr(scrutinee, env, signatures)?;
+            let mut branch_envs = Vec::new();
+            let mut result_unique = false;
+            for arm in arms {
+                let mut branch = env.clone();
+                result_unique |= check_unique_expr(&arm.body, &mut branch, signatures)?;
+                branch_envs.push(branch);
+            }
+            if branch_envs.len() == 2 {
+                env.merge_branch_consumption(&branch_envs[0], &branch_envs[1]);
+            }
+            Ok(result_unique)
+        }
+        ExprKind::Handle { body, clauses } => {
+            check_unique_expr(body, env, signatures)?;
+            for clause in clauses {
+                match clause {
+                    HandleClause::Return { body, .. } | HandleClause::Operation { body, .. } => {
+                        check_unique_expr(body, env, signatures)?;
+                    }
+                }
+            }
+            Ok(false)
+        }
+    }
+}
+
+fn check_unique_call(
+    name: &str,
+    args: &[Expr],
+    span: Span,
+    env: &mut UniqueEnv,
+    signatures: &BTreeMap<String, (Vec<bool>, bool)>,
+) -> Result<bool, ElaborateError> {
+    match name {
+        "mkarray" => {
+            if args.len() != 2 {
+                return Err(ElaborateError {
+                    span,
+                    message: "builtin `mkarray` called with wrong arity".into(),
+                });
+            }
+            check_unique_expr(&args[0], env, signatures)?;
+            check_unique_expr(&args[1], env, signatures)?;
+            Ok(true)
+        }
+        "get" | "len" => {
+            let expected = if name == "get" { 2 } else { 1 };
+            if args.len() != expected {
+                return Err(ElaborateError {
+                    span,
+                    message: format!("builtin `{name}` called with wrong arity"),
+                });
+            }
+            check_unique_expr(&args[0], env, signatures)?;
+            for arg in &args[1..] {
+                check_unique_expr(arg, env, signatures)?;
+            }
+            Ok(false)
+        }
+        "set" => {
+            if args.len() != 3 {
+                return Err(ElaborateError {
+                    span,
+                    message: "builtin `set` called with wrong arity".into(),
+                });
+            }
+            for arg in args {
+                check_unique_expr(arg, env, signatures)?;
+            }
+            Ok(true)
+        }
+        _ => {
+            if let Some((unique_params, unique_ret)) = signatures.get(name) {
+                for (idx, arg) in args.iter().enumerate() {
+                    if unique_params.get(idx).copied().unwrap_or(false) {
+                        env.require_unique(arg, "unique parameter")?;
+                    } else {
+                        check_unique_expr(arg, env, signatures)?;
+                    }
+                }
+                Ok(*unique_ret)
+            } else {
+                for arg in args {
+                    check_unique_expr(arg, env, signatures)?;
+                }
+                Ok(false)
+            }
+        }
+    }
+}
+
+fn type_is_unique(ty: &TypeExpr) -> bool {
+    matches!(ty, TypeExpr::Unique(_, _))
+}
+
+fn is_unique_builtin_result(callee: &Expr) -> bool {
+    matches!(&callee.kind, ExprKind::Var(name) if name == "mkarray" || name == "set")
 }
 
 fn declaration_scc_order(functions: &[FnDecl]) -> Vec<Vec<usize>> {

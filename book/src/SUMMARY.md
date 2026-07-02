@@ -7,6 +7,7 @@
 - [The wedge: your first type error](learning/wedge.md)
 - [Witnesses, β, and high-water](learning/witnesses.md)
 - [Mutual recursion and the CLI](learning/cli.md)
+- [Owning things: `^`, `inplace`, and your second type error](learning/uniqueness.md)
 
 # The Reference
 - [Surface subset](reference/surface.md)

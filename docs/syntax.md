@@ -1,16 +1,17 @@
 # Atli Syntax
 
-> **Status: implemented subset + open list (v0.1.0).** This document began as draft-0.
-> The v0.1.0 compiler implements the reduced surface listed below and keeps the rest in
+> **Status: implemented subset + open list (v0.2.0).** This document began as draft-0.
+> The v0.2.0 compiler implements the reduced surface listed below and keeps the rest in
 > the Open list. Normative elaboration details live in [`docs/elaboration.md`](elaboration.md);
 > the core semantics live in [`docs/calculus.md`](calculus.md).
 
-## Implemented in v0.1.0
+## Implemented in v0.2.0
 
 - `fn` / `pub fn` declarations, expression or block bodied.
-- Types: `Unit`, `Nat`, arrows, and effect rows `! {A, B}`.
+- Types: `Unit`, `Nat`, `Array`, unique marker `^T`, arrows, and effect rows `! {A, B}`.
 - Expressions: `()`, decimal naturals, variables, unary calls, curried multi-arg calls,
-  blocks, `case n { 0 -> e0; p -> e1 }`, pipes, and `+ - *` over `Nat` (`-` is monus).
+  blocks, `case n { 0 -> e0; p -> e1 }`, pipes, `+ - *` over `Nat` (`-` is monus),
+  array builtins `mkarray/get/set/len`, and prefix `move`/`inplace`/`freeze`.
 - Recursion: structural by default, `measure e` trusted by the reduced core, and `div`.
   Real Fibonacci uses `measure`; arithmetic calls like `m - 1` are not the peeled
   predecessor required by strict structural recursion.
@@ -23,10 +24,9 @@
 ## Still open
 
 Records, variants, full numeric tower, strings/chars/floats as runtime values, type
-parameters, uniqueness markers (`^`, `^u`), `move`, `inplace`, `freeze`, `scope`,
-`spawn`, modules/`use`, byte-accurate frame layout, real measure verification, and the
-full region grade remain future work. Unsupported v0.1.0 constructs diagnose as "not yet
-in the reduced surface".
+parameters, uniqueness polymorphism (`^u`), `scope`, `spawn`, modules/`use`, byte-accurate
+frame layout, real measure verification, and the full region grade remain future work.
+Unsupported v0.2.0 constructs diagnose as "not yet in the reduced surface".
 
 ---
 
@@ -200,8 +200,9 @@ unique-out, shared-in ⇒ shared-out) without being written twice:
 ^u List[A]                // uniqueness-polymorphic list
 ```
 
-Forgetting uniqueness (`^T` → `T`) is always safe and happens by subsumption — you can
-pass a `^Image` anywhere an `Image` is wanted, for free.
+Forgetting uniqueness (`^T` → `T`) happens by subsumption and **consumes** the unique
+binding in v0.2.0: after a shared use there is no remaining unique handle to mutate. Write
+`freeze e` when that shared handoff is intentional.
 
 ### Recursive types
 
@@ -536,5 +537,6 @@ record_lit  ::= '.{' (NAME '=' expr)* '}'
 - **Module system** in full (§10).
 - **Surface `Int` semantics.** Sprint 06 gives `Nat` subtraction monus semantics; signed
   `Int` arithmetic remains future work.
-- **`freeze` necessity.** Whether it stays as explicit intent or is dropped entirely in
-  favor of silent subsumption.
+- **`freeze` syntax after v0.2.0.** `freeze` is implemented as explicit-intent sugar for
+  consuming subsumption; whether style guidance eventually prefers silent subsumption is
+  a documentation question, not a semantic gap.

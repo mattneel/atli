@@ -13,6 +13,23 @@ if [[ "$actual_check" != "$expected_check" ]]; then
   diff -u <(printf '%s\n' "$expected_check") <(printf '%s\n' "$actual_check") >&2 || true
   exit 1
 fi
+expected_compiled_stdout='55'
+compiled_stdout=$(mktemp)
+compiled_stderr=$(mktemp)
+cargo run --quiet -- run --compiled examples/fib.atli >"$compiled_stdout" 2>"$compiled_stderr"
+if [[ "$(cat "$compiled_stdout")" != "$expected_compiled_stdout" ]]; then
+  echo "README compiled quickstart stdout mismatch" >&2
+  cat "$compiled_stdout" >&2
+  exit 1
+fi
+expected_compiled_stderr='ATLI_HIGH_WATER=1 ATLI_BETA=2 ATLI_DATA_ALLOCS=0'
+if [[ "$(cat "$compiled_stderr")" != "$expected_compiled_stderr" ]]; then
+  echo "README compiled quickstart stderr mismatch" >&2
+  diff -u <(printf '%s\n' "$expected_compiled_stderr") "$compiled_stderr" >&2 || true
+  exit 1
+fi
+rm -f "$compiled_stdout" "$compiled_stderr"
+
 if grep -q 'β: 1' README.md docs/sprint-10-report.md; then
   echo "stale quickstart beta found in docs" >&2
   exit 1

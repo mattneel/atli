@@ -14,6 +14,7 @@ pub type Name = String;
 pub enum Type {
     Unit,
     Nat,
+    Array,
     Arrow(Box<Type>, Box<Type>),
     Cont(Box<Type>, Box<Type>),
 }
@@ -23,6 +24,7 @@ impl fmt::Display for Type {
         match self {
             Type::Unit => f.write_str("Unit"),
             Type::Nat => f.write_str("Nat"),
+            Type::Array => f.write_str("Array"),
             Type::Arrow(arg, ret) => write!(f, "({arg} -> {ret})"),
             Type::Cont(arg, ret) => write!(f, "Cont[{arg},{ret}]"),
         }
@@ -45,6 +47,15 @@ pub enum Term {
     Unit,
     Zero,
     Succ(Box<Term>),
+    /// Runtime array value for `docs/calculus.md §3.2/§5` array reductions.
+    Array(Vec<u64>),
+    MkArray(Box<Term>, Box<Term>),
+    ArrayGet(Box<Term>, Box<Term>),
+    ArraySet(Box<Term>, Box<Term>, Box<Term>),
+    ArrayLen(Box<Term>),
+    Move(Box<Term>),
+    Inplace(Box<Term>),
+    Freeze(Box<Term>),
     CaseNat {
         scrutinee: Box<Term>,
         zero_body: Box<Term>,
@@ -149,6 +160,7 @@ pub enum CoverageTag {
     Perform,
     HandleResuming,
     HandleDropped,
+    Array,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -225,9 +237,16 @@ impl Term {
     #[must_use]
     pub fn is_value(&self) -> bool {
         match self {
-            Self::Unit | Self::Zero | Self::Lam { .. } | Self::Cont(_) => true,
+            Self::Unit | Self::Zero | Self::Lam { .. } | Self::Cont(_) | Self::Array(_) => true,
             Self::Succ(inner) => inner.is_value(),
             Self::Var(_)
+            | Self::MkArray(_, _)
+            | Self::ArrayGet(_, _)
+            | Self::ArraySet(_, _, _)
+            | Self::ArrayLen(_)
+            | Self::Move(_)
+            | Self::Inplace(_)
+            | Self::Freeze(_)
             | Self::CaseNat { .. }
             | Self::App(_, _)
             | Self::Let { .. }
@@ -245,8 +264,25 @@ impl Term {
     pub fn subst(&self, name: &str, replacement: &Self) -> Self {
         match self {
             Self::Var(var) if var == name => replacement.clone(),
-            Self::Var(_) | Self::Unit | Self::Zero | Self::Cont(_) => self.clone(),
+            Self::Var(_) | Self::Unit | Self::Zero | Self::Cont(_) | Self::Array(_) => self.clone(),
             Self::Succ(inner) => Self::Succ(Box::new(inner.subst(name, replacement))),
+            Self::MkArray(len, fill) => Self::MkArray(
+                Box::new(len.subst(name, replacement)),
+                Box::new(fill.subst(name, replacement)),
+            ),
+            Self::ArrayGet(array, index) => Self::ArrayGet(
+                Box::new(array.subst(name, replacement)),
+                Box::new(index.subst(name, replacement)),
+            ),
+            Self::ArraySet(array, index, value) => Self::ArraySet(
+                Box::new(array.subst(name, replacement)),
+                Box::new(index.subst(name, replacement)),
+                Box::new(value.subst(name, replacement)),
+            ),
+            Self::ArrayLen(array) => Self::ArrayLen(Box::new(array.subst(name, replacement))),
+            Self::Move(inner) => Self::Move(Box::new(inner.subst(name, replacement))),
+            Self::Inplace(inner) => Self::Inplace(Box::new(inner.subst(name, replacement))),
+            Self::Freeze(inner) => Self::Freeze(Box::new(inner.subst(name, replacement))),
             Self::CaseNat {
                 scrutinee,
                 zero_body,
@@ -353,8 +389,25 @@ impl Term {
     pub fn normalize_cont_ids(&self) -> Self {
         match self {
             Self::Cont(_) => Self::Cont(ContId(0)),
-            Self::Var(_) | Self::Unit | Self::Zero => self.clone(),
+            Self::Var(_) | Self::Unit | Self::Zero | Self::Array(_) => self.clone(),
             Self::Succ(inner) => Self::Succ(Box::new(inner.normalize_cont_ids())),
+            Self::MkArray(len, fill) => Self::MkArray(
+                Box::new(len.normalize_cont_ids()),
+                Box::new(fill.normalize_cont_ids()),
+            ),
+            Self::ArrayGet(array, index) => Self::ArrayGet(
+                Box::new(array.normalize_cont_ids()),
+                Box::new(index.normalize_cont_ids()),
+            ),
+            Self::ArraySet(array, index, value) => Self::ArraySet(
+                Box::new(array.normalize_cont_ids()),
+                Box::new(index.normalize_cont_ids()),
+                Box::new(value.normalize_cont_ids()),
+            ),
+            Self::ArrayLen(array) => Self::ArrayLen(Box::new(array.normalize_cont_ids())),
+            Self::Move(inner) => Self::Move(Box::new(inner.normalize_cont_ids())),
+            Self::Inplace(inner) => Self::Inplace(Box::new(inner.normalize_cont_ids())),
+            Self::Freeze(inner) => Self::Freeze(Box::new(inner.normalize_cont_ids())),
             Self::CaseNat {
                 scrutinee,
                 zero_body,
@@ -528,6 +581,16 @@ impl fmt::Display for Term {
             Term::Unit => f.write_str("()"),
             Term::Zero => f.write_str("zero"),
             Term::Succ(inner) => write!(f, "succ({inner})"),
+            Term::Array(values) => write!(f, "array{values:?}"),
+            Term::MkArray(len, fill) => write!(f, "mkarray({len}, {fill})"),
+            Term::ArrayGet(array, index) => write!(f, "get({array}, {index})"),
+            Term::ArraySet(array, index, value) => {
+                write!(f, "set({array}, {index}, {value})")
+            }
+            Term::ArrayLen(array) => write!(f, "len({array})"),
+            Term::Move(inner) => write!(f, "move {inner}"),
+            Term::Inplace(inner) => write!(f, "inplace {inner}"),
+            Term::Freeze(inner) => write!(f, "freeze {inner}"),
             Term::CaseNat {
                 scrutinee,
                 zero_body,

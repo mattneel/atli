@@ -85,6 +85,8 @@ pub enum Boundedness {
 pub enum TypeExpr {
     Unit(Span),
     Nat(Span),
+    Array(Span),
+    Unique(Box<TypeExpr>, Span),
     Arrow(Box<TypeExpr>, Box<TypeExpr>, Span),
 }
 
@@ -92,7 +94,11 @@ impl TypeExpr {
     #[must_use]
     pub const fn span(&self) -> Span {
         match self {
-            Self::Unit(span) | Self::Nat(span) | Self::Arrow(_, _, span) => *span,
+            Self::Unit(span)
+            | Self::Nat(span)
+            | Self::Array(span)
+            | Self::Unique(_, span)
+            | Self::Arrow(_, _, span) => *span,
         }
     }
 }
@@ -145,6 +151,17 @@ pub enum ExprKind {
         body: Box<Expr>,
         clauses: Vec<HandleClause>,
     },
+    Prefix {
+        op: PrefixOp,
+        expr: Box<Expr>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrefixOp {
+    Move,
+    Inplace,
+    Freeze,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,6 +224,8 @@ impl fmt::Display for TypeExpr {
         match self {
             Self::Unit(_) => f.write_str("Unit"),
             Self::Nat(_) => f.write_str("Nat"),
+            Self::Array(_) => f.write_str("Array"),
+            Self::Unique(inner, _) => write!(f, "^{inner}"),
             Self::Arrow(a, b, _) => write!(f, "{a} -> {b}"),
         }
     }

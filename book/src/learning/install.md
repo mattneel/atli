@@ -1,6 +1,6 @@
 # Install and run
 
-Atli v0.1.0 is a research compiler with two execution paths: the oracle interpreter and native MLIR lowering. From a clone:
+Atli v0.2.0 is a research compiler with two execution paths: the oracle interpreter and native MLIR lowering. From a clone:
 
 ```sh
 cargo build

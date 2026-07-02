@@ -12,5 +12,6 @@ The executable-spec loop audited the paper spec and implementation repeatedly:
 8. Sprint 06's MLIR artifact was a summary, not load-bearing lowering.
 9. Multi-node SCCs needed real `fix*` implementation evidence.
 10. Lexical handler dispatch needed the runtime handler-scope stack.
+11. README quickstart transcripts hand-typed `β: 1`; the no-rot script now executes and diffs them.
 
 The point is not that nothing was wrong; the point is that every layer had another layer capable of catching it.

@@ -1,7 +1,7 @@
 //! Surface pretty-printer for the implemented Sprint 05 subset.
 
 use crate::surface::ast::{
-    BinaryOp, Boundedness, Decl, Expr, ExprKind, HandleClause, Pattern, Program, TypeExpr,
+    BinaryOp, Boundedness, Decl, Expr, ExprKind, HandleClause, Pattern, PrefixOp, Program, TypeExpr,
 };
 
 #[must_use]
@@ -96,6 +96,14 @@ fn pretty_expr(expr: &Expr) -> String {
                 .collect::<Vec<_>>()
                 .join("; ")
         ),
+        ExprKind::Prefix { op, expr } => {
+            let op = match op {
+                PrefixOp::Move => "move",
+                PrefixOp::Inplace => "inplace",
+                PrefixOp::Freeze => "freeze",
+            };
+            format!("{op} {}", pretty_expr(expr))
+        }
     }
 }
 

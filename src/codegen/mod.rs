@@ -190,7 +190,19 @@ pub fn build(
 pub fn contains_effect_syntax(term: &Term) -> bool {
     match term {
         Term::Perform(_, _) | Term::Handle { .. } | Term::Resume { .. } | Term::Cont(_) => true,
-        Term::Succ(inner) => contains_effect_syntax(inner),
+        Term::Succ(inner)
+        | Term::ArrayLen(inner)
+        | Term::Move(inner)
+        | Term::Inplace(inner)
+        | Term::Freeze(inner) => contains_effect_syntax(inner),
+        Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
+            contains_effect_syntax(lhs) || contains_effect_syntax(rhs)
+        }
+        Term::ArraySet(array, index, value) => {
+            contains_effect_syntax(array)
+                || contains_effect_syntax(index)
+                || contains_effect_syntax(value)
+        }
         Term::CaseNat {
             scrutinee,
             zero_body,
@@ -209,7 +221,7 @@ pub fn contains_effect_syntax(term: &Term) -> bool {
         Term::Let { expr, body, .. } => {
             contains_effect_syntax(expr) || contains_effect_syntax(body)
         }
-        Term::Var(_) | Term::Unit | Term::Zero => false,
+        Term::Var(_) | Term::Unit | Term::Zero | Term::Array(_) => false,
     }
 }
 
@@ -287,6 +299,49 @@ fn runtime_shim() -> String {
        fprintf(stderr, \"ATLI ONE-SHOT VIOLATED\\n\");\n\
        exit(87);\n\
      }\n\
+     void atli_trap_bounds(void) {\n\
+       fprintf(stderr, \"ATLI BOUNDS\\n\");\n\
+       exit(88);\n\
+     }\n\
+     typedef struct { int64_t len; int64_t *data; } AtliArray;\n\
+     static AtliArray atli_arrays[4096];\n\
+     static int64_t atli_array_count = 1;\n\
+     static int64_t atli_data_alloc_count = 0;\n\
+     static AtliArray *atli_array(int64_t handle) {\n\
+       if (handle <= 0 || handle >= atli_array_count) atli_trap_bounds();\n\
+       return &atli_arrays[handle];\n\
+     }\n\
+     int64_t atli_data_allocs(void) { return atli_data_alloc_count; }\n\
+     int64_t atli_array_new(int64_t len, int64_t fill) {\n\
+       if (len < 0 || atli_array_count >= 4096) atli_trap_bounds();\n\
+       int64_t handle = atli_array_count++;\n\
+       atli_arrays[handle].len = len;\n\
+       atli_arrays[handle].data = calloc((size_t)(len ? len : 1), sizeof(int64_t));\n\
+       if (!atli_arrays[handle].data) { fprintf(stderr, \"ATLI OOM\\n\"); exit(90); }\n\
+       for (int64_t i = 0; i < len; ++i) atli_arrays[handle].data[i] = fill;\n\
+       atli_data_alloc_count++;\n\
+       return handle;\n\
+     }\n\
+     int64_t atli_array_len(int64_t handle) { return atli_array(handle)->len; }\n\
+     int64_t atli_array_get(int64_t handle, int64_t idx) {\n\
+       AtliArray *a = atli_array(handle);\n\
+       if (idx < 0 || idx >= a->len) atli_trap_bounds();\n\
+       return a->data[idx];\n\
+     }\n\
+     int64_t atli_array_copy_set(int64_t handle, int64_t idx, int64_t value) {\n\
+       AtliArray *a = atli_array(handle);\n\
+       if (idx < 0 || idx >= a->len) atli_trap_bounds();\n\
+       int64_t out = atli_array_new(a->len, 0);\n\
+       for (int64_t i = 0; i < a->len; ++i) atli_arrays[out].data[i] = a->data[i];\n\
+       atli_arrays[out].data[idx] = value;\n\
+       return out;\n\
+     }\n\
+     int64_t atli_array_inplace_set(int64_t handle, int64_t idx, int64_t value) {\n\
+       AtliArray *a = atli_array(handle);\n\
+       if (idx < 0 || idx >= a->len) atli_trap_bounds();\n\
+       a->data[idx] = value;\n\
+       return handle;\n\
+     }\n\
      typedef struct { int64_t label; int64_t mode; int64_t value; int64_t watermark; } AtliScope;\n\
      static AtliScope atli_scopes[256];\n\
      static int atli_scope_depth = 0;\n\
@@ -312,8 +367,9 @@ fn runtime_shim() -> String {
      int main(void) {\n\
        int64_t result = atli_program_main();\n\
        printf(\"%lld\\n\", (long long)result);\n\
-       fprintf(stderr, \"ATLI_HIGH_WATER=%lld ATLI_BETA=%lld\\n\",\n\
-               (long long)atli_high_water_value(), (long long)atli_beta_slots());\n\
+       fprintf(stderr, \"ATLI_HIGH_WATER=%lld ATLI_BETA=%lld ATLI_DATA_ALLOCS=%lld\\n\",\n\
+               (long long)atli_high_water_value(), (long long)atli_beta_slots(),\n\
+               (long long)atli_data_allocs());\n\
        return 0;\n\
      }\n"
     .into()
@@ -363,6 +419,17 @@ impl<'a> MlirModule<'a> {
         out.push_str("  memref.global \"private\" @atli_high_water : memref<1xi64> = dense<0>\n");
         out.push_str("  func.func private @atli_trap_overflow() -> ()\n");
         out.push_str("  func.func private @atli_trap_one_shot() -> ()\n");
+        out.push_str("  func.func private @atli_trap_bounds() -> ()\n");
+        out.push_str("  func.func private @atli_array_new(%len: i64, %fill: i64) -> i64\n");
+        out.push_str("  func.func private @atli_array_get(%handle: i64, %idx: i64) -> i64\n");
+        out.push_str(
+            "  func.func private @atli_array_copy_set(%handle: i64, %idx: i64, %value: i64) -> i64\n",
+        );
+        out.push_str(
+            "  func.func private @atli_array_inplace_set(%handle: i64, %idx: i64, %value: i64) -> i64\n",
+        );
+        out.push_str("  func.func private @atli_array_len(%handle: i64) -> i64\n");
+        out.push_str("  func.func private @atli_data_allocs() -> i64\n");
         out.push_str("  func.func private @atli_tick() -> ()\n");
         out.push_str(
             "  func.func private @atli_scope_push(%label: i64, %mode: i64, %value: i64, %watermark: i64) -> ()\n",
@@ -427,12 +494,12 @@ impl<'a> MlirModule<'a> {
     }
 
     fn emit_function(&self, func: &FnDecl) -> Result<String, CodegenError> {
-        assert_nat_type(&func.ret)?;
+        assert_word_type(&func.ret)?;
         let mut builder = Builder::new(&self.functions, self.force_dynamic_dispatch);
         let mut params = Vec::new();
         let mut env = BTreeMap::new();
         for param in &func.params {
-            assert_nat_type(&param.ty)?;
+            assert_word_type(&param.ty)?;
             let name = c_ident(&param.name.node);
             params.push(format!("%{name}: i64"));
             env.insert(param.name.node.clone(), format!("%{name}"));
@@ -504,6 +571,7 @@ impl<'a> Builder<'a> {
                 self.binary(*op, &lhs, &rhs, indent)
             }
             ExprKind::Call { callee, args } => self.call(callee, args, env, indent),
+            ExprKind::Prefix { op, expr } => self.prefix(*op, expr, env, indent),
             ExprKind::Pipe { lhs, rhs } => {
                 let desugared = pipe_to_call((**lhs).clone(), (**rhs).clone())?;
                 self.expr(&desugared, env, indent)
@@ -937,6 +1005,13 @@ impl<'a> Builder<'a> {
                 "tier-1 native lowering supports direct function calls only",
             ));
         };
+        match name.as_str() {
+            "mkarray" => return self.array_call("atli_array_new", args, 2, env, indent),
+            "get" => return self.array_call("atli_array_get", args, 2, env, indent),
+            "set" => return self.array_call("atli_array_copy_set", args, 3, env, indent),
+            "len" => return self.array_call("atli_array_len", args, 1, env, indent),
+            _ => {}
+        }
         let arity = *self
             .functions
             .get(name)
@@ -965,6 +1040,84 @@ impl<'a> Builder<'a> {
                 "{result} = func.call @{}({arg_names}) : ({arg_tys}) -> i64",
                 c_func_name(name)
             ),
+        );
+        Ok(Value { name: result })
+    }
+
+    fn prefix(
+        &mut self,
+        op: crate::surface::ast::PrefixOp,
+        expr: &Expr,
+        env: &BTreeMap<String, String>,
+        indent: usize,
+    ) -> Result<Value, CodegenError> {
+        match op {
+            crate::surface::ast::PrefixOp::Move | crate::surface::ast::PrefixOp::Freeze => {
+                self.expr(expr, env, indent)
+            }
+            crate::surface::ast::PrefixOp::Inplace => {
+                let ExprKind::Call { callee, args } = &expr.kind else {
+                    return Err(CodegenError::new(
+                        "inplace operand must be `set(array, index, value)`",
+                    ));
+                };
+                if !matches!(&callee.kind, ExprKind::Var(name) if name == "set") || args.len() != 3
+                {
+                    return Err(CodegenError::new(
+                        "inplace operand must be `set(array, index, value)`",
+                    ));
+                }
+                let values = args
+                    .iter()
+                    .map(|arg| self.expr(arg, env, indent))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let result = self.fresh("inplace_set");
+                self.line(
+                    indent,
+                    "// inplace set, calculus.md §9.2: q=1 licenses bare store, no allocation",
+                );
+                self.line(
+                    indent,
+                    &format!(
+                        "{result} = func.call @atli_array_inplace_set({}, {}, {}) : (i64, i64, i64) -> i64",
+                        values[0].name, values[1].name, values[2].name
+                    ),
+                );
+                Ok(Value { name: result })
+            }
+        }
+    }
+
+    fn array_call(
+        &mut self,
+        runtime: &str,
+        args: &[Expr],
+        arity: usize,
+        env: &BTreeMap<String, String>,
+        indent: usize,
+    ) -> Result<Value, CodegenError> {
+        if args.len() != arity {
+            return Err(CodegenError::new(format!(
+                "builtin `{}` expects {arity} arguments",
+                runtime.strip_prefix("atli_array_").unwrap_or(runtime)
+            )));
+        }
+        let values = args
+            .iter()
+            .map(|arg| self.expr(arg, env, indent))
+            .collect::<Result<Vec<_>, _>>()?;
+        let result = self.fresh(runtime.strip_prefix("atli_array_").unwrap_or("array"));
+        let arg_names = values
+            .iter()
+            .map(|value| value.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let arg_tys = std::iter::repeat_n("i64", values.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.line(
+            indent,
+            &format!("{result} = func.call @{runtime}({arg_names}) : ({arg_tys}) -> i64"),
         );
         Ok(Value { name: result })
     }
@@ -1198,6 +1351,7 @@ fn expr_mentions_outer_only_effect(
             expr_mentions_outer_only_effect(lhs, outer, inner)
                 || expr_mentions_outer_only_effect(rhs, outer, inner)
         }
+        ExprKind::Prefix { expr, .. } => expr_mentions_outer_only_effect(expr, outer, inner),
         ExprKind::Handle { body, clauses } => {
             let Ok(nested) = HandlerCtx::new(clauses) else {
                 return false;
@@ -1237,12 +1391,15 @@ fn pipe_to_call(lhs: Expr, rhs: Expr) -> Result<Expr, CodegenError> {
     }
 }
 
-fn assert_nat_type(ty: &TypeExpr) -> Result<(), CodegenError> {
-    if matches!(ty, TypeExpr::Nat(_)) {
+fn assert_word_type(ty: &TypeExpr) -> Result<(), CodegenError> {
+    if matches!(
+        ty,
+        TypeExpr::Nat(_) | TypeExpr::Array(_) | TypeExpr::Unique(_, _)
+    ) {
         Ok(())
     } else {
         Err(CodegenError::new(
-            "tier-1 native lowering supports first-order Nat functions only",
+            "tier-1 native lowering supports first-order Nat/Array functions only",
         ))
     }
 }
@@ -1257,6 +1414,7 @@ fn expr_mentions_fn(expr: &Expr, name: &str) -> bool {
         ExprKind::Binary { lhs, rhs, .. } | ExprKind::Pipe { lhs, rhs } => {
             expr_mentions_fn(lhs, name) || expr_mentions_fn(rhs, name)
         }
+        ExprKind::Prefix { expr, .. } => expr_mentions_fn(expr, name),
         ExprKind::Block { bindings, result } => {
             bindings.iter().any(|b| expr_mentions_fn(&b.expr, name))
                 || expr_mentions_fn(result, name)
@@ -1406,6 +1564,139 @@ mod tests {
         assert_eq!(output.status.code(), Some(86));
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(stderr.contains("ATLI ARENA OVERFLOW"));
+    }
+
+    #[test]
+    fn bypassed_aliasing_inplace_diverges_from_copy_oracle() {
+        if find_tool("ATLI_CLANG", &["clang-22", "clang"]).is_none()
+            || find_tool(
+                "ATLI_MLIR_OPT",
+                &["mlir-opt", "/usr/lib/llvm-22/bin/mlir-opt"],
+            )
+            .is_none()
+            || find_tool(
+                "ATLI_MLIR_TRANSLATE",
+                &["mlir-translate", "/usr/lib/llvm-22/bin/mlir-translate"],
+            )
+            .is_none()
+        {
+            eprintln!("skipping uniqueness falsifier: LLVM/MLIR toolchain not found");
+            return;
+        }
+
+        let oracle = crate::interp::eval(
+            crate::core::Term::Let {
+                var: "a".into(),
+                expr: Box::new(crate::core::Term::MkArray(
+                    Box::new(crate::core::Term::nat(1)),
+                    Box::new(crate::core::Term::nat(0)),
+                )),
+                body: Box::new(crate::core::Term::Let {
+                    var: "s".into(),
+                    expr: Box::new(crate::core::Term::var("a")),
+                    body: Box::new(crate::core::Term::Let {
+                        var: "_".into(),
+                        expr: Box::new(crate::core::Term::Inplace(Box::new(
+                            crate::core::Term::ArraySet(
+                                Box::new(crate::core::Term::var("a")),
+                                Box::new(crate::core::Term::nat(0)),
+                                Box::new(crate::core::Term::nat(1)),
+                            ),
+                        ))),
+                        body: Box::new(crate::core::Term::ArrayGet(
+                            Box::new(crate::core::Term::var("s")),
+                            Box::new(crate::core::Term::nat(0)),
+                        )),
+                    }),
+                }),
+            },
+            64,
+            false,
+        );
+        assert_eq!(oracle.final_term, crate::core::Term::nat(0));
+
+        let mlir = r#"module attributes {atli.certified_beta_slots = 0 : i64, atli.arena_overhead_slots = 0 : i64, atli.growable = false} {
+  func.func private @atli_array_new(%len: i64, %fill: i64) -> i64
+  func.func private @atli_array_get(%handle: i64, %idx: i64) -> i64
+  func.func private @atli_array_inplace_set(%handle: i64, %idx: i64, %value: i64) -> i64
+  func.func @atli_beta_slots() -> i64 {
+    %c0 = arith.constant 0 : i64
+    return %c0 : i64
+  }
+  func.func @atli_high_water_value() -> i64 {
+    %c0 = arith.constant 0 : i64
+    return %c0 : i64
+  }
+  func.func @atli_program_main() -> i64 {
+    %len = arith.constant 1 : i64
+    %fill = arith.constant 0 : i64
+    %a = func.call @atli_array_new(%len, %fill) : (i64, i64) -> i64
+    %idx = arith.constant 0 : i64
+    %one = arith.constant 1 : i64
+    %_mut = func.call @atli_array_inplace_set(%a, %idx, %one) : (i64, i64, i64) -> i64
+    %read = func.call @atli_array_get(%a, %idx) : (i64, i64) -> i64
+    return %read : i64
+  }
+}
+"#;
+        fs::create_dir_all(BUILD_DIR).unwrap();
+        let mlir_path = Path::new(BUILD_DIR).join("uniqueness_falsifier.mlir");
+        let runtime_path = Path::new(BUILD_DIR).join("uniqueness_falsifier_runtime.c");
+        let llvm_mlir_path = Path::new(BUILD_DIR).join("uniqueness_falsifier.llvm.mlir");
+        let llvm_ir_path = Path::new(BUILD_DIR).join("uniqueness_falsifier.ll");
+        let exe = Path::new(BUILD_DIR).join("uniqueness_falsifier");
+        fs::write(&mlir_path, mlir).unwrap();
+        fs::write(&runtime_path, runtime_shim()).unwrap();
+        run_tool(
+            find_tool(
+                "ATLI_MLIR_OPT",
+                &["mlir-opt", "/usr/lib/llvm-22/bin/mlir-opt"],
+            )
+            .unwrap(),
+            &[
+                mlir_path.as_os_str(),
+                "--convert-scf-to-cf".as_ref(),
+                "--convert-cf-to-llvm".as_ref(),
+                "--convert-func-to-llvm".as_ref(),
+                "--convert-arith-to-llvm".as_ref(),
+                "--finalize-memref-to-llvm".as_ref(),
+                "--reconcile-unrealized-casts".as_ref(),
+                "-o".as_ref(),
+                llvm_mlir_path.as_os_str(),
+            ],
+        )
+        .unwrap();
+        run_tool(
+            find_tool(
+                "ATLI_MLIR_TRANSLATE",
+                &["mlir-translate", "/usr/lib/llvm-22/bin/mlir-translate"],
+            )
+            .unwrap(),
+            &[
+                "--mlir-to-llvmir".as_ref(),
+                llvm_mlir_path.as_os_str(),
+                "-o".as_ref(),
+                llvm_ir_path.as_os_str(),
+            ],
+        )
+        .unwrap();
+        run_tool(
+            find_tool("ATLI_CLANG", &["clang-22", "clang"]).unwrap(),
+            &[
+                llvm_ir_path.as_os_str(),
+                runtime_path.as_os_str(),
+                "-o".as_ref(),
+                exe.as_os_str(),
+            ],
+        )
+        .unwrap();
+        let output = Command::new(&exe).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "1\n");
     }
 
     #[test]

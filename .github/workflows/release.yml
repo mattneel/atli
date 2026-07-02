@@ -46,6 +46,6 @@ jobs:
         with:
           files: atli-linux-x86_64.tar.gz
           body: |
-            Atli v0.1.0 ships the finite-β + effects + mutual-recursion language with oracle and native execution. Certified boundedness grades size native arenas; dynamic handler scopes and the growable `div` path are included.
+            Atli v0.2.0 ships the finite-β + effects + mutual-recursion language plus affine `^Array` uniqueness, `move`, `freeze`, and in-place array updates. Certified boundedness grades size native arenas; unique ownership licenses allocation-free stores while oracle/native values remain equal.
 
-            Not yet included: uniqueness, concurrency, WASM, byte-accurate frame refinement, full proof discharges, and real measure verification. See ROADMAP.md and the Book.
+            Not yet included: `^u` uniqueness polymorphism, early reclamation, concurrency, WASM, byte-accurate frame refinement, full proof discharges, and real measure verification. See ROADMAP.md and the Book.

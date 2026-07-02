@@ -1,4 +1,2 @@
 // expect-check-error: not yet in the reduced surface
-fn bad(x: ^Nat) -> Nat = x
-
-fn main() -> Nat = bad(0)
+fn main() -> Nat = if 1 { 1 } else { 0 }

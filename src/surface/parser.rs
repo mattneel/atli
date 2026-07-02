@@ -1,6 +1,6 @@
 use crate::surface::ast::{
     BinaryOp, Binding, Boundedness, CaseArm, Decl, EffectDecl, Expr, ExprKind, FnDecl,
-    HandleClause, Name, Param, Pattern, Program, Span, Spanned, TypeExpr,
+    HandleClause, Name, Param, Pattern, PrefixOp, Program, Span, Spanned, TypeExpr,
 };
 use crate::surface::lexer::{lex, LexError, Token, TokenKind};
 
@@ -152,8 +152,16 @@ impl Parser {
     }
 
     fn ty(&mut self) -> Result<TypeExpr, ParseError> {
-        if self.at(&TokenKind::Caret) {
-            return Err(self.error_here("uniqueness `^` is not yet in the reduced surface"));
+        if let Some(caret) = self.eat(&TokenKind::Caret) {
+            let inner = self.ty_atom()?;
+            let span = caret.span.join(inner.span());
+            let unique = TypeExpr::Unique(Box::new(inner), span);
+            if self.eat(&TokenKind::Arrow).is_some() {
+                let right = self.ty()?;
+                let span = unique.span().join(right.span());
+                return Ok(TypeExpr::Arrow(Box::new(unique), Box::new(right), span));
+            }
+            return Ok(unique);
         }
         let left = self.ty_atom()?;
         if self.eat(&TokenKind::Arrow).is_some() {
@@ -170,6 +178,7 @@ impl Parser {
         match tok.kind {
             TokenKind::Ident(name) if name == "Unit" => Ok(TypeExpr::Unit(tok.span)),
             TokenKind::Ident(name) if name == "Nat" => Ok(TypeExpr::Nat(tok.span)),
+            TokenKind::Ident(name) if name == "Array" => Ok(TypeExpr::Array(tok.span)),
             TokenKind::Ident(name) => Err(ParseError {
                 span: tok.span,
                 message: format!("type `{name}` is not yet in the reduced surface"),
@@ -333,6 +342,22 @@ impl Parser {
         self.reject_unsupported_expr()?;
         let tok = self.advance().clone();
         match tok.kind {
+            TokenKind::Move | TokenKind::Inplace | TokenKind::Freeze => {
+                let op = match tok.kind {
+                    TokenKind::Move => PrefixOp::Move,
+                    TokenKind::Inplace => PrefixOp::Inplace,
+                    TokenKind::Freeze => PrefixOp::Freeze,
+                    _ => unreachable!("matched prefix token"),
+                };
+                let expr = self.call_expr()?;
+                Ok(Expr::new(
+                    ExprKind::Prefix {
+                        op,
+                        expr: Box::new(expr.clone()),
+                    },
+                    tok.span.join(expr.span),
+                ))
+            }
             TokenKind::Number(value) => Ok(Expr::new(ExprKind::Nat(value), tok.span)),
             TokenKind::Ident(name) => Ok(Expr::new(ExprKind::Var(name), tok.span)),
             TokenKind::Underscore => Ok(Expr::new(ExprKind::Var("_".into()), tok.span)),
@@ -514,12 +539,8 @@ impl Parser {
     fn reject_unsupported_expr(&self) -> Result<(), ParseError> {
         let msg = match self.peek().kind {
             TokenKind::If => Some("if is not yet in the reduced surface; use `case` on Nat"),
-            TokenKind::Move => Some("move is not yet in the reduced surface"),
-            TokenKind::Inplace => Some("inplace is not yet in the reduced surface"),
-            TokenKind::Freeze => Some("freeze is not yet in the reduced surface"),
             TokenKind::Spawn => Some("spawn is not yet in the reduced surface"),
             TokenKind::Scope => Some("scope is not yet in the reduced surface"),
-            TokenKind::Caret => Some("uniqueness `^` is not yet in the reduced surface"),
             TokenKind::LBracket => Some("lists are not yet in the reduced surface"),
             TokenKind::Dot => Some("record literals are not yet in the reduced surface"),
             _ => None,

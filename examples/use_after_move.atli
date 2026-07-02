@@ -1,0 +1,6 @@
+// expect-check-error: used again here
+fn main() -> Nat = {
+  a = mkarray(1, 0)
+  b = move a
+  get(a, 0)
+}

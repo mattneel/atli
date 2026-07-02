@@ -1,0 +1,7 @@
+// expect-check-error: inplace requires unique
+fn main() -> Nat = {
+  a = mkarray(1, 0)
+  s = freeze a
+  b = inplace set(s, 0, 1)
+  0
+}

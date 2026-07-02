@@ -4,6 +4,13 @@ module attributes {atli.certified_beta_slots = 2 : i64, atli.arena_overhead_slot
   memref.global "private" @atli_high_water : memref<1xi64> = dense<0>
   func.func private @atli_trap_overflow() -> ()
   func.func private @atli_trap_one_shot() -> ()
+  func.func private @atli_trap_bounds() -> ()
+  func.func private @atli_array_new(%len: i64, %fill: i64) -> i64
+  func.func private @atli_array_get(%handle: i64, %idx: i64) -> i64
+  func.func private @atli_array_copy_set(%handle: i64, %idx: i64, %value: i64) -> i64
+  func.func private @atli_array_inplace_set(%handle: i64, %idx: i64, %value: i64) -> i64
+  func.func private @atli_array_len(%handle: i64) -> i64
+  func.func private @atli_data_allocs() -> i64
   func.func private @atli_tick() -> ()
   func.func private @atli_scope_push(%label: i64, %mode: i64, %value: i64, %watermark: i64) -> ()
   func.func private @atli_scope_pop() -> ()

@@ -52,6 +52,14 @@ pub fn generated_from_input(input: GenInput) -> GeneratedTerm {
 
 #[must_use]
 pub fn generated_from_choices(choices: Vec<u8>) -> GeneratedTerm {
+    if choices.first().copied() == Some(254) {
+        let mut builder = Builder::new(ChoiceStream::new(choices.into_iter().skip(1).collect()));
+        return build(
+            "array_inplace",
+            builder.gen_array_inplace(),
+            ExpectedOutcome::Safe,
+        );
+    }
     let mut builder = Builder::new(ChoiceStream::new(choices));
     let top_choice = builder.choices.next_mod(15);
     let mut expected = ExpectedOutcome::Safe;
@@ -117,7 +125,7 @@ pub fn fixed_seed_inputs() -> Vec<GenInput> {
     (0..SAMPLE_SIZE)
         .map(|case| {
             let mut choices = Vec::with_capacity(MAX_CHOICES);
-            choices.push((case % 15) as u8);
+            choices.push(if case == 0 { 254 } else { (case % 15) as u8 });
             for _ in 1..MAX_CHOICES {
                 state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
                 choices.push((state >> 32) as u8);
@@ -284,6 +292,7 @@ impl Builder {
         match target {
             Type::Unit => self.gen_unit(env, depth),
             Type::Nat => self.gen_nat(env, depth),
+            Type::Array => Term::MkArray(Box::new(Term::nat(0)), Box::new(Term::nat(0))),
             Type::Arrow(arg, ret) => {
                 let param = self.fresh_name("x");
                 Term::Lam {
@@ -438,6 +447,30 @@ impl Builder {
             }
             6 => self.gen_fix_app(RecursionTag::Structural, depth),
             _ => self.gen_fix_app(RecursionTag::Measure, depth),
+        }
+    }
+
+    fn gen_array_inplace(&mut self) -> Term {
+        // Arrays and prefix forms from `docs/calculus.md §3.2/§5/§9.2`; the generator
+        // exercises the always-copy oracle path for `inplace`, while surface tests enforce q=1.
+        Term::Let {
+            var: "a".into(),
+            expr: Box::new(Term::MkArray(
+                Box::new(Term::nat(2)),
+                Box::new(Term::nat(0)),
+            )),
+            body: Box::new(Term::Let {
+                var: "b".into(),
+                expr: Box::new(Term::Inplace(Box::new(Term::ArraySet(
+                    Box::new(Term::var("a")),
+                    Box::new(Term::nat(1)),
+                    Box::new(Term::nat(7)),
+                )))),
+                body: Box::new(Term::ArrayGet(
+                    Box::new(Term::Freeze(Box::new(Term::var("b")))),
+                    Box::new(Term::nat(1)),
+                )),
+            }),
         }
     }
 
@@ -872,12 +905,49 @@ fn derive(term: &Term, env: &Env) -> Derived {
     match term {
         Term::Unit => Derived::pure(Type::Unit),
         Term::Zero => Derived::pure(Type::Nat),
+        Term::Array(_) => Derived::pure(Type::Array),
         Term::Succ(inner) => {
             let inner = derive(inner, env);
             debug_assert_eq!(inner.ty, Type::Nat);
             let mut out = inner;
             out.ty = Type::Nat;
             out.bound = contextualize(&out);
+            out
+        }
+        Term::MkArray(len, fill) => {
+            let len_d = derive(len, env);
+            let fill_d = derive(fill, env);
+            let mut out = len_d.combine(&fill_d);
+            out.ty = Type::Array;
+            out.coverage.insert(CoverageTag::Array);
+            out
+        }
+        Term::ArrayGet(array, index) => {
+            let array_d = derive(array, env);
+            let index_d = derive(index, env);
+            let mut out = array_d.combine(&index_d);
+            out.ty = Type::Nat;
+            out.coverage.insert(CoverageTag::Array);
+            out
+        }
+        Term::ArraySet(array, index, value) => {
+            let array_d = derive(array, env);
+            let index_d = derive(index, env);
+            let value_d = derive(value, env);
+            let mut out = array_d.combine(&index_d).combine(&value_d);
+            out.ty = Type::Array;
+            out.coverage.insert(CoverageTag::Array);
+            out
+        }
+        Term::ArrayLen(array) => {
+            let mut out = derive(array, env);
+            out.ty = Type::Nat;
+            out.coverage.insert(CoverageTag::Array);
+            out
+        }
+        Term::Move(inner) | Term::Inplace(inner) | Term::Freeze(inner) => {
+            let mut out = derive(inner, env);
+            out.coverage.insert(CoverageTag::Array);
             out
         }
         Term::Var(name) => Derived::pure(env.lookup(name).unwrap_or(Type::Nat)),
@@ -1215,8 +1285,19 @@ fn analyze_facts(term: &Term) -> GenerationFacts {
 
 fn term_depth(term: &Term) -> usize {
     match term {
-        Term::Var(_) | Term::Unit | Term::Zero | Term::Cont(_) => 1,
-        Term::Succ(inner) | Term::Perform(_, inner) => 1 + term_depth(inner),
+        Term::Var(_) | Term::Unit | Term::Zero | Term::Cont(_) | Term::Array(_) => 1,
+        Term::Succ(inner)
+        | Term::Perform(_, inner)
+        | Term::ArrayLen(inner)
+        | Term::Move(inner)
+        | Term::Inplace(inner)
+        | Term::Freeze(inner) => 1 + term_depth(inner),
+        Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
+            1 + term_depth(lhs).max(term_depth(rhs))
+        }
+        Term::ArraySet(array, index, value) => {
+            1 + term_depth(array).max(term_depth(index).max(term_depth(value)))
+        }
         Term::Lam { body, .. } | Term::Fix { body, .. } => 1 + term_depth(body),
         Term::FixGroup { bindings, .. } => {
             1 + bindings
@@ -1259,7 +1340,21 @@ fn scan_handlers(term: &Term, in_handler: bool, facts: &mut GenerationFacts) {
                 scan_handlers(&clause.op_body, true, facts);
             }
         }
-        Term::Succ(inner) | Term::Perform(_, inner) => scan_handlers(inner, in_handler, facts),
+        Term::Succ(inner)
+        | Term::Perform(_, inner)
+        | Term::ArrayLen(inner)
+        | Term::Move(inner)
+        | Term::Inplace(inner)
+        | Term::Freeze(inner) => scan_handlers(inner, in_handler, facts),
+        Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
+            scan_handlers(lhs, in_handler, facts);
+            scan_handlers(rhs, in_handler, facts);
+        }
+        Term::ArraySet(array, index, value) => {
+            scan_handlers(array, in_handler, facts);
+            scan_handlers(index, in_handler, facts);
+            scan_handlers(value, in_handler, facts);
+        }
         Term::Lam { body, .. } | Term::Fix { body, .. } => scan_handlers(body, in_handler, facts),
         Term::FixGroup { bindings, .. } => {
             for binding in bindings {
@@ -1288,7 +1383,7 @@ fn scan_handlers(term: &Term, in_handler: bool, facts: &mut GenerationFacts) {
             scan_handlers(kont, in_handler, facts);
             scan_handlers(arg, in_handler, facts);
         }
-        Term::Var(_) | Term::Unit | Term::Zero | Term::Cont(_) => {}
+        Term::Var(_) | Term::Unit | Term::Zero | Term::Cont(_) | Term::Array(_) => {}
     }
 }
 
@@ -1364,7 +1459,21 @@ fn scan_rec_calls(term: &Term, stack: &mut Vec<RecScan>, facts: &mut GenerationF
                 stack[idx].strict_vars.remove(succ_var);
             }
         }
-        Term::Succ(inner) | Term::Perform(_, inner) => scan_rec_calls(inner, stack, facts),
+        Term::Succ(inner)
+        | Term::Perform(_, inner)
+        | Term::ArrayLen(inner)
+        | Term::Move(inner)
+        | Term::Inplace(inner)
+        | Term::Freeze(inner) => scan_rec_calls(inner, stack, facts),
+        Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
+            scan_rec_calls(lhs, stack, facts);
+            scan_rec_calls(rhs, stack, facts);
+        }
+        Term::ArraySet(array, index, value) => {
+            scan_rec_calls(array, stack, facts);
+            scan_rec_calls(index, stack, facts);
+            scan_rec_calls(value, stack, facts);
+        }
         Term::Lam { body, .. } => scan_rec_calls(body, stack, facts),
         Term::Let { expr, body, .. } => {
             scan_rec_calls(expr, stack, facts);
@@ -1381,7 +1490,7 @@ fn scan_rec_calls(term: &Term, stack: &mut Vec<RecScan>, facts: &mut GenerationF
             scan_rec_calls(kont, stack, facts);
             scan_rec_calls(arg, stack, facts);
         }
-        Term::Var(_) | Term::Unit | Term::Zero | Term::Cont(_) => {}
+        Term::Var(_) | Term::Unit | Term::Zero | Term::Cont(_) | Term::Array(_) => {}
     }
 }
 
@@ -1400,7 +1509,20 @@ fn term_obeys_continuation_usage_under(term: &Term) -> bool {
                         && handler_clause_obeys_k_usage(&clause.op_body, &clause.op_k)
                 })
         }
-        Term::Succ(inner) | Term::Perform(_, inner) => term_obeys_continuation_usage_under(inner),
+        Term::Succ(inner)
+        | Term::Perform(_, inner)
+        | Term::ArrayLen(inner)
+        | Term::Move(inner)
+        | Term::Inplace(inner)
+        | Term::Freeze(inner) => term_obeys_continuation_usage_under(inner),
+        Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
+            term_obeys_continuation_usage_under(lhs) && term_obeys_continuation_usage_under(rhs)
+        }
+        Term::ArraySet(array, index, value) => {
+            term_obeys_continuation_usage_under(array)
+                && term_obeys_continuation_usage_under(index)
+                && term_obeys_continuation_usage_under(value)
+        }
         Term::Lam { body, .. } | Term::Fix { body, .. } => {
             term_obeys_continuation_usage_under(body)
         }
@@ -1423,7 +1545,7 @@ fn term_obeys_continuation_usage_under(term: &Term) -> bool {
                 && term_obeys_continuation_usage_under(zero_body)
                 && term_obeys_continuation_usage_under(succ_body)
         }
-        Term::Var(_) | Term::Unit | Term::Zero | Term::Cont(_) => true,
+        Term::Var(_) | Term::Unit | Term::Zero | Term::Cont(_) | Term::Array(_) => true,
     }
 }
 
@@ -1438,8 +1560,19 @@ fn handler_clause_obeys_k_usage(clause: &Term, k: &str) -> bool {
 fn free_var_count(term: &Term, name: &str) -> usize {
     match term {
         Term::Var(var) => usize::from(var == name),
-        Term::Unit | Term::Zero | Term::Cont(_) => 0,
-        Term::Succ(inner) | Term::Perform(_, inner) => free_var_count(inner, name),
+        Term::Unit | Term::Zero | Term::Cont(_) | Term::Array(_) => 0,
+        Term::Succ(inner)
+        | Term::Perform(_, inner)
+        | Term::ArrayLen(inner)
+        | Term::Move(inner)
+        | Term::Inplace(inner)
+        | Term::Freeze(inner) => free_var_count(inner, name),
+        Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
+            free_var_count(lhs, name) + free_var_count(rhs, name)
+        }
+        Term::ArraySet(array, index, value) => {
+            free_var_count(array, name) + free_var_count(index, name) + free_var_count(value, name)
+        }
         Term::Lam { param, body, .. } => usize::from(param != name) * free_var_count(body, name),
         Term::App(fun, arg) | Term::Resume { kont: fun, arg } => {
             free_var_count(fun, name) + free_var_count(arg, name)
@@ -1499,8 +1632,21 @@ fn direct_resume_count(term: &Term, name: &str) -> usize {
             };
             here + kont_nested + direct_resume_count(arg, name)
         }
-        Term::Var(_) | Term::Unit | Term::Zero | Term::Cont(_) => 0,
-        Term::Succ(inner) | Term::Perform(_, inner) => direct_resume_count(inner, name),
+        Term::Var(_) | Term::Unit | Term::Zero | Term::Cont(_) | Term::Array(_) => 0,
+        Term::Succ(inner)
+        | Term::Perform(_, inner)
+        | Term::ArrayLen(inner)
+        | Term::Move(inner)
+        | Term::Inplace(inner)
+        | Term::Freeze(inner) => direct_resume_count(inner, name),
+        Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
+            direct_resume_count(lhs, name) + direct_resume_count(rhs, name)
+        }
+        Term::ArraySet(array, index, value) => {
+            direct_resume_count(array, name)
+                + direct_resume_count(index, name)
+                + direct_resume_count(value, name)
+        }
         Term::Lam { param, body, .. } => {
             usize::from(param != name) * direct_resume_count(body, name)
         }
@@ -1554,8 +1700,19 @@ fn direct_resume_count(term: &Term, name: &str) -> usize {
 fn closed_under(term: &Term, scope: &mut Vec<String>) -> bool {
     match term {
         Term::Var(name) => scope.contains(name),
-        Term::Unit | Term::Zero | Term::Cont(_) => true,
-        Term::Succ(inner) | Term::Perform(_, inner) => closed_under(inner, scope),
+        Term::Unit | Term::Zero | Term::Cont(_) | Term::Array(_) => true,
+        Term::Succ(inner)
+        | Term::Perform(_, inner)
+        | Term::ArrayLen(inner)
+        | Term::Move(inner)
+        | Term::Inplace(inner)
+        | Term::Freeze(inner) => closed_under(inner, scope),
+        Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
+            closed_under(lhs, scope) && closed_under(rhs, scope)
+        }
+        Term::ArraySet(array, index, value) => {
+            closed_under(array, scope) && closed_under(index, scope) && closed_under(value, scope)
+        }
         Term::Lam { param, body, .. } => {
             scope.push(param.clone());
             let ok = closed_under(body, scope);

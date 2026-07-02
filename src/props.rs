@@ -162,6 +162,10 @@ mod tests {
             assert!(counts.get(tag) > 0, "missing coverage for {tag:?}");
         }
         assert!(counts.get(CoverageTag::LambdaApp) > 0);
+        assert!(
+            counts.get(CoverageTag::Array) > 0,
+            "missing array/uniqueness coverage"
+        );
 
         let distribution = distribution(&sample);
         assert!(

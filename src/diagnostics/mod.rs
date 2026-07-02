@@ -15,6 +15,10 @@ pub enum ExitCode {
 pub trait SourceError {
     fn span(&self) -> Span;
     fn message(&self) -> String;
+
+    fn secondary_span(&self) -> Option<(Span, String)> {
+        None
+    }
 }
 
 impl SourceError for ParseError {
@@ -35,11 +39,20 @@ impl SourceError for ElaborateError {
     fn message(&self) -> String {
         self.message.clone()
     }
+
+    fn secondary_span(&self) -> Option<(Span, String)> {
+        consumed_span_from_message(&self.message)
+            .map(|span| (span, "first consumption here".to_string()))
+    }
 }
 
 #[must_use]
 pub fn render_source_error(path: &str, src: &str, err: &impl SourceError) -> String {
-    render(path, src, err.span(), &err.message())
+    let mut rendered = render(path, src, err.span(), &err.message());
+    if let Some((span, label)) = err.secondary_span() {
+        rendered.push_str(&render_note(path, src, span, &label));
+    }
+    rendered
 }
 
 #[must_use]
@@ -57,6 +70,39 @@ fn continuation_span(message: &str, spans: &SpanTable) -> Option<Span> {
     let start = message.find('`')? + 1;
     let end = message[start..].find('`')? + start;
     spans.span_for_var(&message[start..end])
+}
+
+fn render_note(path: &str, src: &str, span: Span, message: &str) -> String {
+    let (line_no, col_no, line_start, line_end) = line_info(src, span.start);
+    let line = &src[line_start..line_end];
+    let caret_start = span.start.saturating_sub(line_start).min(line.len());
+    let caret_len = span
+        .end
+        .saturating_sub(span.start)
+        .max(1)
+        .min(line.len().saturating_sub(caret_start).max(1));
+    format!(
+        "note: {message}
+ --> {path}:{line_no}:{col_no}
+  |
+{line_no:>2} | {line}
+  | {}{}
+",
+        " ".repeat(caret_start),
+        "^".repeat(caret_len)
+    )
+}
+
+fn consumed_span_from_message(message: &str) -> Option<Span> {
+    let marker = "consumed here -> bytes ";
+    let start = message.find(marker)? + marker.len();
+    let rest = &message[start..];
+    let (lo, rest) = rest.split_once("..")?;
+    let hi = rest.split(';').next()?;
+    Some(Span {
+        start: lo.parse().ok()?,
+        end: hi.parse().ok()?,
+    })
 }
 
 fn render(path: &str, src: &str, span: Span, message: &str) -> String {

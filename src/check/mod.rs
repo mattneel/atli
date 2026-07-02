@@ -228,6 +228,7 @@ impl Checker {
         match term {
             Term::Unit => Ok(PartialWitness::pure(Type::Unit)),
             Term::Zero => Ok(PartialWitness::pure(Type::Nat)),
+            Term::Array(_) => Ok(PartialWitness::pure(Type::Array)),
             Term::Succ(inner) => {
                 let mut out = self.infer(inner, env)?;
                 expect_type(&out.ty, &Type::Nat, term, "Succ", "§4.2")?;
@@ -244,6 +245,50 @@ impl Checker {
                     TypeErrorKind::UnboundVariable(name.clone()),
                 )
             }),
+            Term::MkArray(len, fill) => {
+                let len_w = self.infer(len, env)?;
+                expect_type(&len_w.ty, &Type::Nat, term, "MkArray", "§4.5.1")?;
+                let fill_w = self.infer(fill, env)?;
+                expect_type(&fill_w.ty, &Type::Nat, term, "MkArray", "§4.5.1")?;
+                let mut out = len_w.combine(&fill_w);
+                out.ty = Type::Array;
+                out.coverage.insert(CoverageTag::Array);
+                Ok(out)
+            }
+            Term::ArrayGet(array, index) => {
+                let array_w = self.infer(array, env)?;
+                expect_type(&array_w.ty, &Type::Array, term, "Array-Get", "§4.5.1")?;
+                let index_w = self.infer(index, env)?;
+                expect_type(&index_w.ty, &Type::Nat, term, "Array-Get", "§4.5.1")?;
+                let mut out = array_w.combine(&index_w);
+                out.ty = Type::Nat;
+                out.coverage.insert(CoverageTag::Array);
+                Ok(out)
+            }
+            Term::ArraySet(array, index, value) => {
+                let array_w = self.infer(array, env)?;
+                expect_type(&array_w.ty, &Type::Array, term, "Array-Set", "§4.5.1")?;
+                let index_w = self.infer(index, env)?;
+                expect_type(&index_w.ty, &Type::Nat, term, "Array-Set", "§4.5.1")?;
+                let value_w = self.infer(value, env)?;
+                expect_type(&value_w.ty, &Type::Nat, term, "Array-Set", "§4.5.1")?;
+                let mut out = array_w.combine(&index_w).combine(&value_w);
+                out.ty = Type::Array;
+                out.coverage.insert(CoverageTag::Array);
+                Ok(out)
+            }
+            Term::ArrayLen(array) => {
+                let mut out = self.infer(array, env)?;
+                expect_type(&out.ty, &Type::Array, term, "Array-Len", "§4.5.1")?;
+                out.ty = Type::Nat;
+                out.coverage.insert(CoverageTag::Array);
+                Ok(out)
+            }
+            Term::Move(inner) | Term::Inplace(inner) | Term::Freeze(inner) => {
+                let mut out = self.infer(inner, env)?;
+                out.coverage.insert(CoverageTag::Array);
+                Ok(out)
+            }
             Term::Lam {
                 param,
                 param_ty,
@@ -762,8 +807,19 @@ fn expect_type(
 fn free_var_count(term: &Term, name: &str) -> usize {
     match term {
         Term::Var(var) => usize::from(var == name),
-        Term::Unit | Term::Zero | Term::Cont(_) => 0,
-        Term::Succ(inner) | Term::Perform(_, inner) => free_var_count(inner, name),
+        Term::Unit | Term::Zero | Term::Cont(_) | Term::Array(_) => 0,
+        Term::Succ(inner)
+        | Term::Perform(_, inner)
+        | Term::ArrayLen(inner)
+        | Term::Move(inner)
+        | Term::Inplace(inner)
+        | Term::Freeze(inner) => free_var_count(inner, name),
+        Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
+            free_var_count(lhs, name) + free_var_count(rhs, name)
+        }
+        Term::ArraySet(array, index, value) => {
+            free_var_count(array, name) + free_var_count(index, name) + free_var_count(value, name)
+        }
         Term::Lam { param, body, .. } => usize::from(param != name) * free_var_count(body, name),
         Term::App(fun, arg) | Term::Resume { kont: fun, arg } => {
             free_var_count(fun, name) + free_var_count(arg, name)
@@ -820,8 +876,21 @@ fn direct_resume_count(term: &Term, name: &str) -> usize {
             };
             here + nested + direct_resume_count(arg, name)
         }
-        Term::Var(_) | Term::Unit | Term::Zero | Term::Cont(_) => 0,
-        Term::Succ(inner) | Term::Perform(_, inner) => direct_resume_count(inner, name),
+        Term::Var(_) | Term::Unit | Term::Zero | Term::Cont(_) | Term::Array(_) => 0,
+        Term::Succ(inner)
+        | Term::Perform(_, inner)
+        | Term::ArrayLen(inner)
+        | Term::Move(inner)
+        | Term::Inplace(inner)
+        | Term::Freeze(inner) => direct_resume_count(inner, name),
+        Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
+            direct_resume_count(lhs, name) + direct_resume_count(rhs, name)
+        }
+        Term::ArraySet(array, index, value) => {
+            direct_resume_count(array, name)
+                + direct_resume_count(index, name)
+                + direct_resume_count(value, name)
+        }
         Term::Lam { param, body, .. } => {
             usize::from(param != name) * direct_resume_count(body, name)
         }

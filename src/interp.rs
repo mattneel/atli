@@ -18,6 +18,12 @@ pub enum Rule {
     HReturn,
     HOp,
     Resume,
+    ArrayNew,
+    ArrayGet,
+    ArraySet,
+    ArrayLen,
+    Move,
+    Freeze,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +33,7 @@ pub enum Outcome {
     StuckDoubleResume,
     StuckUnhandledOperation,
     BudgetExhaustedDiv,
+    BoundsTrap,
     InternalMalformed,
 }
 
@@ -36,6 +43,7 @@ pub struct EvalReport {
     pub final_term: Term,
     pub trace: Vec<Rule>,
     pub max_frame: u32,
+    pub data_allocs: u64,
 }
 
 impl EvalReport {
@@ -46,6 +54,7 @@ impl EvalReport {
             final_term: self.final_term.normalize_cont_ids(),
             trace: self.trace.clone(),
             max_frame: self.max_frame,
+            data_allocs: self.data_allocs,
         }
     }
 }
@@ -76,6 +85,17 @@ enum Frame {
         succ_body: Box<Term>,
     },
     Handle(Handler),
+    MkArrayLen(Box<Term>),
+    MkArrayFill(Box<Term>),
+    ArrayGetArray(Box<Term>),
+    ArrayGetIndex(Box<Term>),
+    ArraySetArray(Box<Term>, Box<Term>),
+    ArraySetIndex(Box<Term>, Box<Term>),
+    ArraySetValue(Box<Term>, Box<Term>),
+    ArrayLen,
+    Move,
+    Inplace,
+    Freeze,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +103,7 @@ pub struct Machine {
     next_cont: u64,
     continuations: BTreeMap<u64, Continuation>,
     max_frame: u32,
+    data_allocs: u64,
 }
 
 impl Default for Machine {
@@ -98,6 +119,7 @@ impl Machine {
             next_cont: 0,
             continuations: BTreeMap::new(),
             max_frame: 0,
+            data_allocs: 0,
         }
     }
 
@@ -116,6 +138,7 @@ impl Machine {
                     final_term: current,
                     trace,
                     max_frame: self.max_frame,
+                    data_allocs: self.data_allocs,
                 };
             }
             match self.step(current) {
@@ -129,6 +152,7 @@ impl Machine {
                         final_term: term,
                         trace,
                         max_frame: self.max_frame,
+                        data_allocs: self.data_allocs,
                     };
                 }
             }
@@ -142,6 +166,7 @@ impl Machine {
             final_term: current,
             trace,
             max_frame: self.max_frame,
+            data_allocs: self.data_allocs,
         }
     }
 
@@ -152,6 +177,13 @@ impl Machine {
             // `let x = v in e → e[x := v]` (let), `calculus.md §5`.
             Term::Let { var, expr, body } => self.step_let(var, *expr, *body),
             Term::Succ(inner) => self.step_succ(*inner),
+            Term::MkArray(len, fill) => self.step_mkarray(*len, *fill),
+            Term::ArrayGet(array, index) => self.step_array_get(*array, *index),
+            Term::ArraySet(array, index, value) => self.step_array_set(*array, *index, *value),
+            Term::ArrayLen(array) => self.step_array_len(*array),
+            Term::Move(inner) => self.step_move(*inner),
+            Term::Inplace(inner) => self.step_inplace(*inner),
+            Term::Freeze(inner) => self.step_freeze(*inner),
             Term::CaseNat {
                 scrutinee,
                 zero_body,
@@ -273,6 +305,159 @@ impl Machine {
                     succ_body: Box::new(succ_body),
                 },
             ),
+        }
+    }
+
+    fn step_mkarray(&mut self, len: Term, fill: Term) -> StepResult {
+        if !len.is_value() {
+            return self.step_nested(len, |term| Term::MkArray(Box::new(term), Box::new(fill)));
+        }
+        if !fill.is_value() {
+            return self.step_nested(fill, |term| Term::MkArray(Box::new(len), Box::new(term)));
+        }
+        let Some(len) = nat_to_u64(&len) else {
+            return StepResult::Stuck(
+                Outcome::InternalMalformed,
+                Term::MkArray(Box::new(len), Box::new(fill)),
+            );
+        };
+        let Some(fill) = nat_to_u64(&fill) else {
+            return StepResult::Stuck(
+                Outcome::InternalMalformed,
+                Term::MkArray(Box::new(u64_to_nat(len)), Box::new(fill)),
+            );
+        };
+        self.data_allocs += 1;
+        StepResult::Stepped {
+            term: Term::Array(vec![
+                fill;
+                usize::try_from(len).expect("Nat literal fits usize")
+            ]),
+            rule: Rule::ArrayNew,
+        }
+    }
+
+    fn step_array_get(&mut self, array: Term, index: Term) -> StepResult {
+        if !array.is_value() {
+            return self.step_nested(array, |term| {
+                Term::ArrayGet(Box::new(term), Box::new(index))
+            });
+        }
+        if !index.is_value() {
+            return self.step_nested(index, |term| {
+                Term::ArrayGet(Box::new(array), Box::new(term))
+            });
+        }
+        let (Term::Array(values), Some(index)) = (&array, nat_to_u64(&index)) else {
+            return StepResult::Stuck(
+                Outcome::InternalMalformed,
+                Term::ArrayGet(Box::new(array), Box::new(index)),
+            );
+        };
+        let Some(value) = values.get(usize::try_from(index).expect("index fits usize")) else {
+            return StepResult::Stuck(
+                Outcome::BoundsTrap,
+                Term::ArrayGet(Box::new(array), Box::new(u64_to_nat(index))),
+            );
+        };
+        StepResult::Stepped {
+            term: u64_to_nat(*value),
+            rule: Rule::ArrayGet,
+        }
+    }
+
+    fn step_array_set(&mut self, array: Term, index: Term, value: Term) -> StepResult {
+        if !array.is_value() {
+            return self.step_nested(array, |term| {
+                Term::ArraySet(Box::new(term), Box::new(index), Box::new(value))
+            });
+        }
+        if !index.is_value() {
+            return self.step_nested(index, |term| {
+                Term::ArraySet(Box::new(array), Box::new(term), Box::new(value))
+            });
+        }
+        if !value.is_value() {
+            return self.step_nested(value, |term| {
+                Term::ArraySet(Box::new(array), Box::new(index), Box::new(term))
+            });
+        }
+        let (Term::Array(values), Some(index), Some(value)) =
+            (&array, nat_to_u64(&index), nat_to_u64(&value))
+        else {
+            return StepResult::Stuck(
+                Outcome::InternalMalformed,
+                Term::ArraySet(Box::new(array), Box::new(index), Box::new(value)),
+            );
+        };
+        let idx = usize::try_from(index).expect("index fits usize");
+        if idx >= values.len() {
+            return StepResult::Stuck(
+                Outcome::BoundsTrap,
+                Term::ArraySet(
+                    Box::new(array),
+                    Box::new(u64_to_nat(index)),
+                    Box::new(u64_to_nat(value)),
+                ),
+            );
+        }
+        let mut next = values.clone();
+        next[idx] = value;
+        self.data_allocs += 1;
+        StepResult::Stepped {
+            term: Term::Array(next),
+            rule: Rule::ArraySet,
+        }
+    }
+
+    fn step_array_len(&mut self, array: Term) -> StepResult {
+        if !array.is_value() {
+            return self.step_nested(array, |term| Term::ArrayLen(Box::new(term)));
+        }
+        let Term::Array(values) = array else {
+            return StepResult::Stuck(Outcome::InternalMalformed, Term::ArrayLen(Box::new(array)));
+        };
+        StepResult::Stepped {
+            term: u64_to_nat(u64::try_from(values.len()).expect("array length fits u64")),
+            rule: Rule::ArrayLen,
+        }
+    }
+
+    fn step_move(&mut self, inner: Term) -> StepResult {
+        if inner.is_value() {
+            StepResult::Stepped {
+                term: inner,
+                rule: Rule::Move,
+            }
+        } else {
+            self.step_nested(inner, |term| Term::Move(Box::new(term)))
+        }
+    }
+
+    fn step_freeze(&mut self, inner: Term) -> StepResult {
+        if inner.is_value() {
+            StepResult::Stepped {
+                term: inner,
+                rule: Rule::Freeze,
+            }
+        } else {
+            self.step_nested(inner, |term| Term::Freeze(Box::new(term)))
+        }
+    }
+
+    fn step_inplace(&mut self, inner: Term) -> StepResult {
+        // Oracle semantics for `calculus.md §5` array-inplace remains always-copy:
+        // compiled code cashes q=1 with mutation, while the reference interpreter
+        // preserves the functional `set` result for differential value comparison.
+        if let Term::ArraySet(array, index, value) = inner {
+            self.step_array_set(*array, *index, *value)
+        } else if inner.is_value() {
+            StepResult::Stepped {
+                term: inner,
+                rule: Rule::Move,
+            }
+        } else {
+            self.step_nested(inner, |term| Term::Inplace(Box::new(term)))
         }
     }
 
@@ -461,8 +646,21 @@ pub enum StepResult {
 fn term_mentions_var(term: &Term, name: &str) -> bool {
     match term {
         Term::Var(var) => var == name,
-        Term::Unit | Term::Zero | Term::Cont(_) => false,
-        Term::Succ(inner) | Term::Perform(_, inner) => term_mentions_var(inner, name),
+        Term::Unit | Term::Zero | Term::Cont(_) | Term::Array(_) => false,
+        Term::Succ(inner)
+        | Term::Perform(_, inner)
+        | Term::ArrayLen(inner)
+        | Term::Move(inner)
+        | Term::Inplace(inner)
+        | Term::Freeze(inner) => term_mentions_var(inner, name),
+        Term::MkArray(len, fill) | Term::ArrayGet(len, fill) => {
+            term_mentions_var(len, name) || term_mentions_var(fill, name)
+        }
+        Term::ArraySet(array, index, value) => {
+            term_mentions_var(array, name)
+                || term_mentions_var(index, name)
+                || term_mentions_var(value, name)
+        }
         Term::Lam { param, body, .. } => param != name && term_mentions_var(body, name),
         Term::App(fun, arg) => term_mentions_var(fun, name) || term_mentions_var(arg, name),
         Term::Let { var, expr, body } => {
@@ -521,6 +719,61 @@ fn decompose(term: &Term, frames: Vec<Frame>) -> Option<CapturedPerform> {
             let mut next = frames;
             next.push(Frame::Perform(*label));
             decompose(arg, next)
+        }
+        Term::MkArray(len, fill) if !len.is_value() => {
+            let mut next = frames;
+            next.push(Frame::MkArrayLen(fill.clone()));
+            decompose(len, next)
+        }
+        Term::MkArray(len, fill) if !fill.is_value() => {
+            let mut next = frames;
+            next.push(Frame::MkArrayFill(len.clone()));
+            decompose(fill, next)
+        }
+        Term::ArrayGet(array, index) if !array.is_value() => {
+            let mut next = frames;
+            next.push(Frame::ArrayGetArray(index.clone()));
+            decompose(array, next)
+        }
+        Term::ArrayGet(array, index) if !index.is_value() => {
+            let mut next = frames;
+            next.push(Frame::ArrayGetIndex(array.clone()));
+            decompose(index, next)
+        }
+        Term::ArraySet(array, index, value) if !array.is_value() => {
+            let mut next = frames;
+            next.push(Frame::ArraySetArray(index.clone(), value.clone()));
+            decompose(array, next)
+        }
+        Term::ArraySet(array, index, value) if !index.is_value() => {
+            let mut next = frames;
+            next.push(Frame::ArraySetIndex(array.clone(), value.clone()));
+            decompose(index, next)
+        }
+        Term::ArraySet(array, index, value) if !value.is_value() => {
+            let mut next = frames;
+            next.push(Frame::ArraySetValue(array.clone(), index.clone()));
+            decompose(value, next)
+        }
+        Term::ArrayLen(array) if !array.is_value() => {
+            let mut next = frames;
+            next.push(Frame::ArrayLen);
+            decompose(array, next)
+        }
+        Term::Move(inner) if !inner.is_value() => {
+            let mut next = frames;
+            next.push(Frame::Move);
+            decompose(inner, next)
+        }
+        Term::Inplace(inner) if !inner.is_value() => {
+            let mut next = frames;
+            next.push(Frame::Inplace);
+            decompose(inner, next)
+        }
+        Term::Freeze(inner) if !inner.is_value() => {
+            let mut next = frames;
+            next.push(Frame::Freeze);
+            decompose(inner, next)
         }
         Term::Succ(inner) if !inner.is_value() => {
             let mut next = frames;
@@ -597,6 +850,23 @@ fn plug(mut term: Term, frames: &[Frame]) -> Term {
                 body: body.clone(),
             },
             Frame::Perform(label) => Term::Perform(*label, Box::new(term)),
+            Frame::MkArrayLen(fill) => Term::MkArray(Box::new(term), fill.clone()),
+            Frame::MkArrayFill(len) => Term::MkArray(len.clone(), Box::new(term)),
+            Frame::ArrayGetArray(index) => Term::ArrayGet(Box::new(term), index.clone()),
+            Frame::ArrayGetIndex(array) => Term::ArrayGet(array.clone(), Box::new(term)),
+            Frame::ArraySetArray(index, value) => {
+                Term::ArraySet(Box::new(term), index.clone(), value.clone())
+            }
+            Frame::ArraySetIndex(array, value) => {
+                Term::ArraySet(array.clone(), Box::new(term), value.clone())
+            }
+            Frame::ArraySetValue(array, index) => {
+                Term::ArraySet(array.clone(), index.clone(), Box::new(term))
+            }
+            Frame::ArrayLen => Term::ArrayLen(Box::new(term)),
+            Frame::Move => Term::Move(Box::new(term)),
+            Frame::Inplace => Term::Inplace(Box::new(term)),
+            Frame::Freeze => Term::Freeze(Box::new(term)),
             Frame::ResumeKont(arg) => Term::Resume {
                 kont: Box::new(term),
                 arg: arg.clone(),
@@ -653,4 +923,16 @@ pub fn fix_tag(term: &Term) -> Option<RecursionTag> {
         Term::App(fun, _) => fix_tag(fun),
         _ => None,
     }
+}
+
+fn nat_to_u64(term: &Term) -> Option<u64> {
+    match term {
+        Term::Zero => Some(0),
+        Term::Succ(inner) => nat_to_u64(inner).map(|value| value + 1),
+        _ => None,
+    }
+}
+
+fn u64_to_nat(value: u64) -> Term {
+    Term::nat(value)
 }

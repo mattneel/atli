@@ -36,9 +36,10 @@ fn lexer_tokens_include_spans_and_comments_are_ignored() {
 
 #[test]
 fn parser_reports_reduced_surface_unsupported_constructs() {
-    let err = parse_program("fn bad(x: ^Nat) -> Nat = x").expect_err("unsupported ^");
+    let err =
+        parse_program("fn main() -> Nat = if 1 { 1 } else { 0 }").expect_err("unsupported if");
     assert!(err.message.contains("not yet in the reduced surface"));
-    assert_eq!(err.span.start, 10);
+    assert_eq!(err.span.start, 19);
 }
 
 #[test]
@@ -55,6 +56,9 @@ fn pretty_reparse_elaboration_is_stable_for_examples() {
         "examples/conditional_handler.atli",
         "examples/handler_in_recursion.atli",
         "examples/drop_across_scopes.atli",
+        "examples/render.atli",
+        "examples/copy_vs_inplace.atli",
+        "examples/copy_functional.atli",
         "examples/wedge.atli",
     ] {
         let src = fs::read_to_string(path).expect(path);
@@ -134,6 +138,9 @@ fn cli_runs_examples_and_surfaces_witnesses() {
         ("examples/conditional_handler.atli", "5\n"),
         ("examples/handler_in_recursion.atli", "0\n"),
         ("examples/drop_across_scopes.atli", "9\n"),
+        ("examples/render.atli", "42\n"),
+        ("examples/copy_vs_inplace.atli", "2\n"),
+        ("examples/copy_functional.atli", "2\n"),
     ];
     for (path, expected) in cases {
         let (code, stdout, stderr) = run_cli(&["run", path]);
@@ -173,8 +180,8 @@ fn cli_wedge_rejects_with_source_blame_and_core_is_inspectable() {
 fn cli_unsupported_construct_exits_one_with_clear_diagnostic() {
     let (code, _stdout, stderr) = run_cli(&["check", "examples/unsupported.atli"]);
     assert_eq!(code, 1);
-    assert!(stderr.contains("uniqueness `^` is not yet in the reduced surface"));
-    assert!(stderr.contains("examples/unsupported.atli:2:11"));
+    assert!(stderr.contains("if is not yet in the reduced surface"));
+    assert!(stderr.contains("examples/unsupported.atli:2:20"));
 }
 
 #[test]
@@ -249,6 +256,15 @@ fn codegen_emit_goldens_pin_certified_arena_literals() {
         (
             "examples/drop_across_scopes.atli",
             "tests/goldens/codegen/drop_across_scopes.mlir",
+        ),
+        ("examples/render.atli", "tests/goldens/codegen/render.mlir"),
+        (
+            "examples/copy_vs_inplace.atli",
+            "tests/goldens/codegen/copy_vs_inplace.mlir",
+        ),
+        (
+            "examples/copy_functional.atli",
+            "tests/goldens/codegen/copy_functional.mlir",
         ),
     ] {
         let (code, stdout, stderr) = run_cli(&["emit", path]);
@@ -332,6 +348,9 @@ fn compiled_native_outputs_match_oracle_for_finite_programs() {
         ("block_case", "fn main() -> Nat = { n = 3; case n { 0 -> 9; p -> p + 4 } }\n".into(), "6\n"),
         ("struct", "fn dec(n: Nat) -> Nat = case n { 0 -> 0; p -> dec(p) }\nfn main() -> Nat = dec(4)\n".into(), "0\n"),
         ("measure", "fn down(n: Nat) -> Nat measure n = case n { 0 -> 0; p -> down(p) }\nfn main() -> Nat = down(5)\n".into(), "0\n"),
+        ("render", fs::read_to_string("examples/render.atli").unwrap(), "42\n"),
+        ("copy_vs_inplace", fs::read_to_string("examples/copy_vs_inplace.atli").unwrap(), "2\n"),
+        ("copy_functional", fs::read_to_string("examples/copy_functional.atli").unwrap(), "2\n"),
     ];
     for (name, src, expected) in cases {
         let path = format!("target/codegen_cases/{name}.atli");
@@ -354,6 +373,74 @@ fn compiled_native_outputs_match_oracle_for_finite_programs() {
         );
         let _ = fs::remove_file(name);
     }
+}
+
+#[test]
+fn compiled_array_allocations_and_bounds_are_observable() {
+    let _guard = CODEGEN_LOCK.lock().unwrap();
+    if !has_codegen_toolchain() {
+        eprintln!("skipping array allocation smoke: LLVM/MLIR toolchain not found");
+        return;
+    }
+
+    let render = Command::new(bin())
+        .args(["run", "--compiled", "examples/render.atli"])
+        .output()
+        .expect("compiled render");
+    assert!(
+        render.status.success(),
+        "{}",
+        String::from_utf8_lossy(&render.stderr)
+    );
+    assert_eq!(String::from_utf8(render.stdout).unwrap(), "42\n");
+    assert_eq!(
+        parse_data_allocs(&String::from_utf8(render.stderr).unwrap()),
+        1
+    );
+
+    let inplace = Command::new(bin())
+        .args(["run", "--compiled", "examples/copy_vs_inplace.atli"])
+        .output()
+        .expect("compiled inplace");
+    assert!(
+        inplace.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inplace.stderr)
+    );
+    let functional = Command::new(bin())
+        .args(["run", "--compiled", "examples/copy_functional.atli"])
+        .output()
+        .expect("compiled functional");
+    assert!(
+        functional.status.success(),
+        "{}",
+        String::from_utf8_lossy(&functional.stderr)
+    );
+    let inplace_allocs = parse_data_allocs(&String::from_utf8(inplace.stderr).unwrap());
+    let functional_allocs = parse_data_allocs(&String::from_utf8(functional.stderr).unwrap());
+    assert!(
+        inplace_allocs < functional_allocs,
+        "inplace={inplace_allocs}, functional={functional_allocs}"
+    );
+
+    let bounds = "fn main() -> Nat = get(mkarray(1, 0), 2)\n";
+    let path = "target/bounds_surface_test.atli";
+    fs::write(path, bounds).unwrap();
+    let parsed = parse_program(bounds).unwrap();
+    let elaborated = elaborate_program(&parsed).unwrap();
+    assert_eq!(
+        eval(elaborated.term, 32, false).outcome,
+        atli::interp::Outcome::BoundsTrap
+    );
+    let (code, _stdout, stderr) = run_cli(&["build", path]);
+    assert_eq!(code, 0, "{stderr}");
+    let output = Command::new("./bounds_surface_test")
+        .output()
+        .expect("run bounds binary");
+    assert_eq!(output.status.code(), Some(88));
+    assert!(String::from_utf8(output.stderr)
+        .unwrap()
+        .contains("ATLI BOUNDS"));
 }
 
 #[test]
@@ -459,6 +546,15 @@ fn main() -> Nat = even(4)
         stderr.contains("cyclic groups require `measure` or `div`"),
         "{stderr}"
     );
+}
+
+fn parse_data_allocs(stderr: &str) -> u64 {
+    for part in stderr.split_whitespace() {
+        if let Some(value) = part.strip_prefix("ATLI_DATA_ALLOCS=") {
+            return value.parse().unwrap();
+        }
+    }
+    panic!("missing ATLI_DATA_ALLOCS in {stderr}");
 }
 
 fn parse_high_water(stderr: &str) -> (u64, u64) {

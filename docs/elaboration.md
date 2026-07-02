@@ -27,10 +27,11 @@ core in `docs/calculus.md §10`.
   `docs/calculus.md §4.7`.
 - Pipe desugaring follows `syntax.md §5`: `x |> f(a)` becomes `f(x, a)`, then currying
   maps that to `(f x) a`.
-- Unsupported settled-but-out-of-reduced-core constructs (`^`, records, variants,
-  `inplace`, `move`, `freeze`, `spawn`, `scope`, `if`, type parameters, strings/chars/
-  floats, `use`/modules) diagnose as "not yet in the reduced surface" rather than
-  silently elaborating. Multiple effect labels are no longer unsupported as of Sprint 08.
+- Unsupported settled-but-out-of-reduced-core constructs (records, variants, `spawn`,
+  `scope`, `if`, type parameters, strings/chars/floats, `use`/modules, and `^u`) diagnose
+  as "not yet in the reduced surface" rather than silently elaborating. Multiple effect
+  labels are no longer unsupported as of Sprint 08; `^`, arrays, `move`, `inplace`, and
+  `freeze` are implemented as of Sprint 11.
 
 ## Arithmetic prelude (Sprint 06)
 
@@ -100,3 +101,25 @@ boundedness solver's Tarjan; the two graphs have different domains. A cyclic gro
 structural tag is intentionally rejected by the checker under the conservative §4.8 rule. Cyclic
 surface groups should be annotated `measure n` or `div` until a future precision pass proves
 cross-member structural descent.
+
+## Arrays and affine uniqueness (Sprint 11)
+
+`Array` is the monomorphic Nat-buffer surface type introduced by `docs/calculus.md §3/§9.2`.
+`mkarray(n, v)` elaborates to core `mkarray`; `get(a, i)`, `set(a, i, v)`, and `len(a)`
+elaborate to their corresponding core array terms. `set` is functional in the oracle and
+allocates a copied array; `inplace set(a, i, v)` elaborates to core `inplace (set a i v)`
+and is accepted only when the surface uniqueness pass has consumed a `^Array` handle for
+`a`. The native backend lowers that accepted form to `atli_array_inplace_set`, a bare store
+with no data-region allocation.
+
+The surface `^T` marker is checked before core elaboration. Bindings of unique values are
+affine (`Q = 1` per `docs/calculus.md §4.2`): `move`, `inplace`, passing to a unique
+parameter, or using the value at shared type all consume the binding. Branches conservatively
+join consumption, so a unique binding spent in either `case` arm is spent after the `case`.
+`freeze e` is explicit-intent sugar for consuming subsumption from `^T` to `T`; it returns a
+shared value that may be read without further uniqueness accounting.
+
+The current surface has no local lambda syntax, so the tier-1 capture ban for unique outer
+bindings is enforced at the core/rule level and documented as a future diagnostic expansion
+when local closures land. Top-level unique parameters are not captures; they are ordinary
+arguments and may be threaded through `^` parameters.
