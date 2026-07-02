@@ -4,16 +4,6 @@ This file records `SPEC-GAP:` findings exposed while turning the calculus into e
 Rust. The implementation chooses conservative interpretations and does not silently expand
 semantics.
 
-- SPEC-GAP(mechanized-token-continuation-erasure): Sprint 04's mechanized reduction
-  `TContVal (id : nat)` erased the captured context and installed handler of continuation
-  values. Verified consequences: (a) `THandle (TLet "x" (TPerform L TZero) (TVar "x")) h`
-  is well-typed, closed, non-value, `stepf`-stuck, and not
-  `blocked_on_operation`-shaped -- a live counterexample to the corrected L3 trichotomy;
-  (b) `TResume (TContVal _) v → v` makes resume the identity, so §5's deep-handler
-  reinstallation is unrepresented. Sprint 16 Part A repairs this with `TContVal h ctx`, a
-  `capture` decomposition, deep `H-op-resume`/rebuild dynamics, and a context-typing
-  judgment.
-
 - SPEC-GAP(handler-binder-aliasing-static-dynamic-split): `docs/calculus.md §4.7`
   writes handler clauses with distinct metavariables `pᵢ`/`kᵢ` and never states the
   distinctness side condition a named-binder implementation needs. With
@@ -27,6 +17,17 @@ semantics.
   conservatively: resuming handler typing rules require `op_param ≠ op_k`, making
   aliased resuming clauses ill-typed. The Rust-side repair (checker rejection of
   aliased clauses) is carried-forward work.
+
+- SPEC-GAP(deep-handler-resume-accounting-recursive): under §5's deep reinstallation,
+  `resume` re-enters the handle, so a resuming clause's continuation bound must cover the
+  rebuilt handle's whole demand: `β_k ⊒ β ⊕ (β_r ⊔ (βᵢ ⊕ β))`, §6.2's
+  `β ⊒ c ⊕ β_rec` stated in-rule. `ω` is always admissible (§2.3's safe direction), while
+  a finite `β_k` exists exactly when the residual context and clause costs ground at zero.
+  The mechanized core now types `Cont` with a latent bound and constrains it in-rule. The
+  Rust checker still under-approximates deep-handler re-entry: `src/check/mod.rs` infer
+  for `Resume` charges only the argument, `Type::Cont` carries no bound, and handle
+  computes the literal `βᵢ ⊕ β`. This is the §2.3 miscompile direction; checker
+  alignment is carried-forward work.
 
 - SPEC-GAP(frame-metric-byte-accuracy): Sprint 06 narrows this gap by pinning the unit
   of finite `β` in `docs/calculus.md §9.1`: `β` counts frame slots, and tier 1 defines one
@@ -56,6 +57,14 @@ semantics.
 
 
 ## Resolved gaps
+
+- RESOLVED(mechanized-token-continuation-erasure): Sprint 16 Part A repairs Sprint 04's
+  erased token continuation model. Continuation values now carry the installed handler and
+  captured context as `TContVal h ctx`; `capture` decomposes handler bodies; §5's deep
+  `H-op-resume`/rebuild dynamics are represented directly; and A6 adds `ctx_types`,
+  `Ty_ContVal`, and `Ty_Resume` rules over a `Cont` type with its latent boundedness
+  component. The old `TContVal (id : nat)` identity-resume counterexample is no longer the
+  mechanized semantics.
 
 - RESOLVED(definition-integrity-step-degeneracy): v0.5.2 falsely claimed L3/L4/L8
   discharge after changing the mechanized `step` relation into a self-loop observable for

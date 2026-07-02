@@ -529,6 +529,19 @@ materialization:
 β̂ᵢ  =  βᵢ ⊕ β                 if eᵢ resumes kᵢ exactly once     (β = captured body frame)
 ```
 
+**Mechanization notes (Sprint 16).** The clause metavariables `pᵢ`/`kᵢ` must denote
+distinct binders; a named-binder implementation must enforce `pᵢ ≠ kᵢ` for resuming
+clauses or the static winner (`k`, bound innermost) and the dynamic winner (`p`,
+substituted first) disagree — finding twenty-two. Under §5's deep reinstallation, the
+resuming clause's accounting is recursive: `resume` re-enters the handle, so `σ_kᵢ`'s
+`β` must cover the rebuilt handle's whole demand,
+`β_k ⊒ β ⊕ (β_r ⊔ (βᵢ ⊕ β))` — §6.2's `β ⊒ c ⊕ β_rec` stated in-rule. `ω` is
+always admissible (§2.3's safe direction); a finite `β_k` exists exactly when the
+residual context and clause costs ground at zero. The literal reading of
+`β̂ᵢ = βᵢ ⊕ β` with finite result over-claims for cost-bearing resuming clauses, and the
+Rust checker currently implements that literal reading with a bound-blind `Cont` type —
+see SPEC-GAP(deep-handler-resume-accounting-recursive).
+
 There is deliberately **no** `βᵢ ⊕ (n · β)` case: `kᵢ` is typed `[1]`, so it resumes
 at most once, so the continuation's frame enters **additively, never multiplicatively**.
 There is also no implicit `β` charge for dropped clauses: because capture is lazy,
@@ -1013,7 +1026,9 @@ continuation values and are not reducible away. Sprint 04's `TContVal (id : nat)
 reduction erased them the way the reduced arrow erased the latent row (finding nineteen);
 finding twenty-one is the proof: under the erasure, `H-op` fires only when the `perform`
 is the entire handler body, and `resume` is the identity, so §5's deep-handler
-`H-op-resume` is unrepresented.
+`H-op-resume` is unrepresented. The mechanized `Cont` type now carries its §3.1 latent
+boundedness component; erasing it was the finding-nineteen laundering pattern replayed at
+the continuation type.
 
 Arrays, records, variants, data-affinity, tasks, and parametric polymorphism are now part of the executable compiler
 but remain outside the Rocq scaffold. The proof ladder therefore adds L9 as

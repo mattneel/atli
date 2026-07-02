@@ -10,7 +10,12 @@ Inductive ty : Type :=
 | TyUnit
 | TyNat
 | TyArrow (a : ty) (lat_eps : eff) (lat_beta : bound) (b : ty)
-| TyCont (a b : ty).
+  (* docs/calculus.md §3.1: Cont[σ] A R — a captured continuation carries its row.
+     In the one-label reduced core the discharged effect component is always ∅ and
+     ρ is out of scope, so σ reduces to its boundedness component. Erasing it
+     laundered the rebuilt handle's frame demand through resume (the finding-nineteen
+     arrow pattern, replayed at Cont). *)
+| TyCont (a : ty) (lat_beta : bound) (b : ty).
 
 Inductive rec_tag : Type := Structural | Measure | Div.
 Inductive label : Type := L.

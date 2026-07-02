@@ -359,3 +359,87 @@ Proof. apply StepByFunction. reflexivity. Qed.
 Example finding22_successor_is_stuck :
   stepf (TResume TZero TZero) = None.
 Proof. reflexivity. Qed.
+
+(** Continuation typing anchors, Sprint 16 A6: captured continuations carry their
+    declared latent boundedness, and resuming clauses must satisfy the deep
+    reinstallation accounting side condition. *)
+
+Example contval_types_at_declared_latent :
+  has_type [] (TContVal resuming_handler []) (TyCont TyNat (BFinite 0) TyNat)
+    EffEmpty (BFinite 0).
+Proof.
+  unfold resuming_handler.
+  eapply Ty_ContVal.
+  - apply Ctx_Nil.
+  - apply Ty_Var. reflexivity.
+  - eapply Ty_Resume.
+    + apply Ty_Var. reflexivity.
+    + apply Ty_Zero.
+  - reflexivity.
+  - reflexivity.
+  - reflexivity.
+  - simpl. auto.
+Qed.
+
+Example resuming_handle_types_finite :
+  has_type [] (THandle (TPerform L TZero) resuming_handler) TyNat EffEmpty (BFinite 0).
+Proof.
+  unfold resuming_handler.
+  eapply Ty_HandleResume with
+    (eps_body := EffL) (body_beta := BFinite 0) (ret_beta := BFinite 0)
+    (op_beta := BFinite 0) (bk := BFinite 0).
+  - apply Ty_Perform. apply Ty_Zero.
+  - apply Ty_Var. reflexivity.
+  - change (BFinite 0) with (bound_seq (BFinite 0) (BFinite 0)).
+    eapply Ty_Resume.
+    + apply Ty_Var. reflexivity.
+    + apply Ty_Zero.
+  - reflexivity.
+  - reflexivity.
+  - reflexivity.
+  - simpl. auto.
+Qed.
+
+Example finding22_aliased_resuming_handle_untypable :
+  forall t eps beta, ~ has_type [] (THandle (TPerform L TZero) aliased_handler) t eps beta.
+Proof.
+  intros t eps beta Hty.
+  inversion Hty; subst; simpl in *; discriminate.
+Qed.
+
+Definition div_cost_handler : handler :=
+  Handler "r" (TVar "r") L "p" "k"
+    (TLet "z" (TResume (TVar "k") TZero) (TApp div_fix_golden (TVar "z"))).
+
+Example contval_finite_latent_refuses_divergent_clause :
+  ~ has_type [] (TContVal div_cost_handler []) (TyCont TyNat (BFinite 0) TyNat)
+      EffEmpty (BFinite 0).
+Proof.
+  intro Hty.
+  unfold div_cost_handler in Hty.
+  inversion Hty; subst; clear Hty.
+  match goal with
+  | Hctx : ctx_types [] [] TyNat _ _ _ |- _ =>
+      inversion Hctx; subst; clear Hctx
+  end.
+  match goal with
+  | Hret : has_type [("r", TyNat)] (TVar "r") _ _ _ |- _ =>
+      inversion Hret; subst; clear Hret
+  end.
+  match goal with
+  | Hclause : has_type _ (TLet "z" _ _) _ _ _ |- _ =>
+      inversion Hclause; subst; clear Hclause
+  end.
+  match goal with
+  | Happ : has_type _ (TApp div_fix_golden (TVar "z")) _ _ _ |- _ =>
+      inversion Happ; subst; clear Happ
+  end.
+  unfold div_fix_golden in *.
+  match goal with
+  | Hfix : has_type _ (TFix "f" "x" TyNat (TApp (TVar "f") (TVar "x")) Div) _ _ _ |- _ =>
+      inversion Hfix; subst; clear Hfix
+  end.
+  repeat rewrite bound_seq_omega_r in *.
+  simpl in *.
+  contradiction.
+Qed.
