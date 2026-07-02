@@ -182,7 +182,10 @@ Proof. reflexivity. Qed.
 Example frame_bridge_context_drop_one_step_zero : frame_max_one frame_succ_drop = 0.
 Proof. reflexivity. Qed.
 
-(** Solver bridge: Sprint 03 fixture shapes evaluated by the Rocq certificate model. *)
+(** Solver bridge: Sprint 03 fixture shapes through the ω-degenerate sealed-record
+    path per finding twenty-seven. These anchors intentionally pin [omega_cert] and the
+    [solver_certificate] record path; the Sprint 16 D3 anchors below bridge the
+    algorithmic §7.2 model to the Rust solver outputs. *)
 Definition omega_rho (_ : unknown) : bound := BOmega.
 
 Lemma bound_le_any_omega : forall b, bound_le b BOmega.
@@ -217,6 +220,48 @@ Proof. reflexivity. Qed.
 Example solver_bridge_chain_model_value :
   certified_value omega_cert (target solver_fixture_chain) = BOmega.
 Proof. reflexivity. Qed.
+
+(** Solver model bridge, Sprint 16 D3: Sprint 03 fixture classes through the §7.2 functional model; values equal src/check/solve.rs outputs (cross-cited tests named per anchor). *)
+
+Definition solver_bridge_two_node_system : list constraint :=
+  [solver_fixture_two_node_a; solver_fixture_two_node_b].
+Definition solver_bridge_widening_system : list constraint :=
+  [solver_fixture_widening].
+Definition solver_bridge_chain_system : list constraint :=
+  [solver_fixture_chain].
+
+(* Rust: solver_handles_multi_node_scc pins (finite 1, finite 1). *)
+Example solver_model_bridge_two_node :
+  (fst (solve_model solver_bridge_two_node_system) 0,
+   fst (solve_model solver_bridge_two_node_system) 1,
+   snd (solve_model solver_bridge_two_node_system))
+  = (BFinite 1, BFinite 1, true).
+Proof. vm_compute. reflexivity. Qed.
+
+(* Rust: solver_widens_growing_cycle_to_omega pins ω with widening fired. *)
+Example solver_model_bridge_widening :
+  (fst (solve_model solver_bridge_widening_system) 0,
+   snd (solve_model solver_bridge_widening_system))
+  = (BOmega, true).
+Proof. vm_compute. reflexivity. Qed.
+
+(* Rust: solver_chain_reads_default_zero pins target 2 at finite 0 (unconstrained
+   dependency stays at ⊥ — certificate.value's ZERO default). *)
+Example solver_model_bridge_chain :
+  (fst (solve_model solver_bridge_chain_system) 2,
+   fst (solve_model solver_bridge_chain_system) 1,
+   snd (solve_model solver_bridge_chain_system))
+  = (BFinite 0, BFinite 0, true).
+Proof. vm_compute. reflexivity. Qed.
+
+(* The certified fixture values are genuine post-fixpoints (D2 conjunct 1),
+   unlike the ω-degenerate record path (finding twenty-seven). *)
+Example solver_model_bridge_two_node_postfix :
+  forall c, In c solver_bridge_two_node_system ->
+  satisfies (fst (solve_model solver_bridge_two_node_system)) c.
+Proof.
+  apply solve_model_postfix. vm_compute. reflexivity.
+Qed.
 
 (** Relation falsifiability anchors, finding twenty: these fail under a degenerate
     self-loop step relation and pin the semantic substrate of docs/calculus.md §5. *)

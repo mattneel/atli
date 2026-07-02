@@ -342,6 +342,7 @@ mod tests {
 
     #[test]
     fn solver_handles_multi_node_scc() {
+        // Cross-cites proofs/theories/Bridge.v solver_model_bridge_two_node.
         let mut system = ConstraintSystem::new();
         let a = system.fresh_unknown();
         let b = system.fresh_unknown();
@@ -358,6 +359,7 @@ mod tests {
 
     #[test]
     fn solver_widens_growing_cycle_to_omega() {
+        // Cross-cites proofs/theories/Bridge.v solver_model_bridge_widening.
         let mut system = ConstraintSystem::new();
         let a = system.fresh_unknown();
         system.constrain(
@@ -367,6 +369,20 @@ mod tests {
         let solved = solve(&system);
         assert_eq!(solved.certificate.value(a), Bound::Omega);
         assert!(solved.stats.widening_fires > 0);
+    }
+
+    #[test]
+    fn solver_chain_reads_default_zero() {
+        // Cross-cites proofs/theories/Bridge.v solver_model_bridge_chain: an
+        // unconstrained dependency stays at ⊥ and the chain target reads 0.
+        let mut system = ConstraintSystem::new();
+        let _u0 = system.fresh_unknown();
+        let u1 = system.fresh_unknown();
+        let u2 = system.fresh_unknown();
+        system.constrain(u2, BoundExpr::unknown(u1));
+        let solved = solve(&system);
+        assert_eq!(solved.certificate.value(u2), Bound::ZERO);
+        assert_eq!(solved.certificate.value(u1), Bound::ZERO);
     }
 
     #[test]
