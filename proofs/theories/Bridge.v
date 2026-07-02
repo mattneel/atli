@@ -334,3 +334,28 @@ Proof. apply StepByFunction. reflexivity. Qed.
 Example finding21_completes :
   step (THandle TZero resuming_handler) TZero.
 Proof. apply StepByFunction. reflexivity. Qed.
+
+(** Finding twenty-two anchors, Sprint 16: handler binder aliasing.
+    With op_param = op_k, typing's context order lets the continuation binding
+    shadow (k wins statically) while subst2 substitutes the operation parameter
+    first (param wins dynamically). The aliased resuming handler therefore
+    steps to an untypable stuck term -- a live L4 counterexample under the
+    pre-A6 placeholder rules. A6 adds the freshness premise §4.7 implicitly
+    assumes with its distinct p_i/k_i metavariables. The Rust implementation
+    shares the disagreement faithfully (src/check/mod.rs op-clause binding
+    order vs src/interp.rs substitution order); the Rust-side repair is
+    carried-forward work. *)
+Definition aliased_handler : handler :=
+  Handler "r" (TVar "r") L "k" "k" (TResume (TVar "k") TZero).
+
+Example finding22_aliased_clause_passes_clause_ok :
+  handler_clause_ok "k" (TResume (TVar "k") TZero) = true.
+Proof. reflexivity. Qed.
+
+Example finding22_param_wins_dynamically :
+  step (THandle (TPerform L TZero) aliased_handler) (TResume TZero TZero).
+Proof. apply StepByFunction. reflexivity. Qed.
+
+Example finding22_successor_is_stuck :
+  stepf (TResume TZero TZero) = None.
+Proof. reflexivity. Qed.

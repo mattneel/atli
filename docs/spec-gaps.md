@@ -14,6 +14,20 @@ semantics.
   `capture` decomposition, deep `H-op-resume`/rebuild dynamics, and a context-typing
   judgment.
 
+- SPEC-GAP(handler-binder-aliasing-static-dynamic-split): `docs/calculus.md §4.7`
+  writes handler clauses with distinct metavariables `pᵢ`/`kᵢ` and never states the
+  distinctness side condition a named-binder implementation needs. With
+  `op_param = op_k`, the mechanized typing context binds k innermost (k wins
+  statically) while `subst2` substitutes the parameter first (param wins dynamically):
+  `THandle (TPerform L TZero) (Handler "r" (TVar "r") L "k" "k" (TResume (TVar "k") TZero))`
+  is closed, well-typed, and steps to the untypable stuck term `TResume TZero TZero` --
+  a live counterexample to L4 as stated (finding twenty-two). The Rust
+  checker/interpreter pair shares the same split (`check/mod.rs` binds k after param;
+  `interp.rs` substitutes param first). Sprint 16 A6 repairs the mechanized side
+  conservatively: resuming handler typing rules require `op_param ≠ op_k`, making
+  aliased resuming clauses ill-typed. The Rust-side repair (checker rejection of
+  aliased clauses) is carried-forward work.
+
 - SPEC-GAP(frame-metric-byte-accuracy): Sprint 06 narrows this gap by pinning the unit
   of finite `β` in `docs/calculus.md §9.1`: `β` counts frame slots, and tier 1 defines one
   slot as one `i64` machine word with arena overhead `C = 0`. The remaining gap is byte
