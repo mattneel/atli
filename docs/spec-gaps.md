@@ -4,6 +4,16 @@ This file records `SPEC-GAP:` findings exposed while turning the calculus into e
 Rust. The implementation chooses conservative interpretations and does not silently expand
 semantics.
 
+- SPEC-GAP(mechanized-token-continuation-erasure): Sprint 04's mechanized reduction
+  `TContVal (id : nat)` erased the captured context and installed handler of continuation
+  values. Verified consequences: (a) `THandle (TLet "x" (TPerform L TZero) (TVar "x")) h`
+  is well-typed, closed, non-value, `stepf`-stuck, and not
+  `blocked_on_operation`-shaped -- a live counterexample to the corrected L3 trichotomy;
+  (b) `TResume (TContVal _) v → v` makes resume the identity, so §5's deep-handler
+  reinstallation is unrepresented. Sprint 16 Part A repairs this with `TContVal h ctx`, a
+  `capture` decomposition, deep `H-op-resume`/rebuild dynamics, and a context-typing
+  judgment.
+
 - SPEC-GAP(frame-metric-byte-accuracy): Sprint 06 narrows this gap by pinning the unit
   of finite `β` in `docs/calculus.md §9.1`: `β` counts frame slots, and tier 1 defines one
   slot as one `i64` machine word with arena overhead `C = 0`. The remaining gap is byte

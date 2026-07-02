@@ -42,3 +42,8 @@ latent effect and boundedness row from `docs/calculus.md §3.1/§4.2/§4.3` as
 `TyArrow a ε β b`. This is a fidelity correction, not a new calculus feature; erasing the
 latent row made the Rocq model launder effects and `β` through higher-order calls even
 though the paper and Rust checker already accounted for them.
+
+Sprint 16 note: the de Bruijn question is dissolved -- `subst` is shadow-aware,
+empty-context preservation substitutes only closed values (which cannot be captured), so
+the closed-value substitution lemma is provable over named binders as they stand; no
+representation refactor.

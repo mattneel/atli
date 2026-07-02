@@ -1008,6 +1008,13 @@ Mechanize in Rocq (Iris for the substructural/linearity reasoning). Prove soundn
 - Drop for now in Rocq: records/variants, aggregate heap semantics, regions beyond a single
   arena, arrays, `move`, `inplace`, and `freeze`.
 
+The captured evaluation context and installed handler are load-bearing components of
+continuation values and are not reducible away. Sprint 04's `TContVal (id : nat)`
+reduction erased them the way the reduced arrow erased the latent row (finding nineteen);
+finding twenty-one is the proof: under the erasure, `H-op` fires only when the `perform`
+is the entire handler body, and `resume` is the identity, so §5's deep-handler
+`H-op-resume` is unrepresented.
+
 Arrays, records, variants, data-affinity, tasks, and parametric polymorphism are now part of the executable compiler
 but remain outside the Rocq scaffold. The proof ladder therefore adds L9 as
 `Stated-Pending-Infrastructure`: **uniqueness soundness**, the observational

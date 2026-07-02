@@ -1,5 +1,5 @@
-From Coq Require Import Bool.Bool Strings.String.
-Import StringSyntax.
+From Coq Require Import Bool.Bool Lists.List Strings.String.
+Import ListNotations StringSyntax.
 Open Scope string_scope.
 
 Require Import Atli.Syntax.
@@ -37,14 +37,14 @@ Fixpoint stepf (t : term) : option term :=
       | TPerform L arg =>
           if is_value arg then
             if mentions_var op_k op_body then
-              Some (subst2 op_param arg op_k (TContVal 0) op_body) (* H-op-resume, §5 *)
+              Some (subst2 op_param arg op_k (TContVal (Handler rv rbody op op_param op_k op_body) []) op_body) (* H-op-resume, §5 *)
             else Some (subst op_param arg op_body) (* H-op-drop, §5 *)
           else None
       | _ => match stepf v with Some v' => Some (THandle v' (Handler rv rbody op op_param op_k op_body)) | None => None end
       end
-  | TResume (TContVal _) v =>
-      if is_value v then Some v else match stepf v with Some v' => Some (TResume (TContVal 0) v') | None => None end
-  | TResume (TUsedContVal _) _ => None (* resume-after-use is the retained stuck state, §5/§8.3 *)
+  | TResume (TContVal h ctx) v =>
+      if is_value v then Some v else match stepf v with Some v' => Some (TResume (TContVal h ctx) v') | None => None end
+  | TResume (TUsedContVal _ _) _ => None (* resume-after-use is the retained stuck state, §5/§8.3 *)
   | TResume k arg =>
       match stepf k with
       | Some k' => Some (TResume k' arg)

@@ -83,8 +83,9 @@ Inductive has_type : ctx -> term -> ty -> eff -> bound -> Prop :=
     has_type g k (TyCont TyNat TyNat) EffEmpty (BFinite 0) ->
     has_type g arg TyNat EffEmpty beta ->
     has_type g (TResume k arg) TyNat EffEmpty beta
-| Ty_ContVal : forall g id,
-    has_type g (TContVal id) (TyCont TyNat TyNat) EffEmpty (BFinite 0).
+| Ty_ContVal : forall g h ctx,
+    (* Placeholder parity rule; rebuilt with the ctx_types judgment at Sprint 16 rung A6. *)
+    has_type g (TContVal h ctx) (TyCont TyNat TyNat) EffEmpty (BFinite 0).
 
 Theorem substitution_preserves_unmentioned_typing : forall g t ty eps beta x replacement,
   has_type g t ty eps beta ->
