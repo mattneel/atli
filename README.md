@@ -31,7 +31,7 @@ Run the full example differential:
 cargo run -- test examples/
 ```
 
-## What v0.5.1 includes
+## What v0.5.2 includes
 
 - Surface parser, elaborator, diagnostics, and `atli` CLI.
 - Unary `Nat`, generic `Array[A]`, unique `^Array`, `^u` uniqueness preservation, generic records/variants/functions, `move`/`inplace`/`freeze`, functions, `case`, arithmetic prelude, `measure`/`div`, multi-label effects, handlers, mutual recursion (`fix*`), structured data, and `scope`/`spawn`/`await`.

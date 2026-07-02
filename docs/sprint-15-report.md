@@ -69,7 +69,7 @@ scripts/check-admitted-count.sh
 grep -Rn --include='*.v' "Axiom\|Parameter\|admit\." proofs/theories
 ```
 
-Full Rust/example/book gate evidence is recorded in the release commit output.
+Additional gate commands run locally: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (19 lib + 19 frontend + 24 golden + 4 doctests), `cargo run --quiet -- test examples/` (all examples passed), `mdbook build book`, `scripts/check-book-samples.sh`, and `scripts/check-readme-quickstart.sh`.
 
 ## Next proof increment
 
