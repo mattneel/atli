@@ -1,0 +1,4 @@
+// expect-check-error: peeled predecessor
+type NatList = Nil | Cons(Nat, NatList)
+fn bad(xs: NatList) -> Nat = case xs { Nil -> 0; Cons(x, rest) -> bad(xs) }
+fn main() -> Nat = bad(Nil)

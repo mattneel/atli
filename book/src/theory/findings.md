@@ -15,3 +15,8 @@ The executable-spec loop audited the paper spec and implementation repeatedly:
 11. README quickstart transcripts hand-typed `β: 1`; the no-rot script now executes and diffs them.
 
 The point is not that nothing was wrong; the point is that every layer had another layer capable of catching it.
+
+
+## v0.3.0 structured data
+
+Records and variants are implemented in v0.3.0. Normative syntax and lowering remain in `docs/syntax.md`, `docs/elaboration.md`, and `docs/calculus.md`; this Book chapter links the live examples rather than restating the rules.

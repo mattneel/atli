@@ -1,0 +1,9 @@
+// expect: 42
+type Mailbox = { buf: Array, len: Nat }
+fn touch(m: ^Mailbox) -> ^Mailbox = case m { .{ buf, len } -> .{ buf = inplace set(buf, 0, 42), len = len } }
+fn main() -> Nat = {
+  m = .{ buf = mkarray(1, 0), len = 1 }
+  out = touch(m)
+  frozen = freeze out
+  get(frozen.buf, 0)
+}

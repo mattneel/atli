@@ -1,6 +1,7 @@
 use crate::surface::ast::{
-    BinaryOp, Binding, Boundedness, CaseArm, Decl, EffectDecl, Expr, ExprKind, FnDecl,
-    HandleClause, Name, Param, Pattern, PrefixOp, Program, Span, Spanned, TypeExpr,
+    BinaryOp, Binding, Boundedness, CaseArm, ConstructorDecl, Decl, EffectDecl, Expr, ExprKind,
+    FieldDecl, FnDecl, HandleClause, Name, Param, Pattern, PrefixOp, Program, Span, Spanned,
+    TypeDecl, TypeDeclKind, TypeExpr,
 };
 use crate::surface::lexer::{lex, LexError, Token, TokenKind};
 
@@ -50,6 +51,9 @@ impl Parser {
         if self.at(&TokenKind::Effect) {
             return self.effect_decl().map(Decl::Effect);
         }
+        if self.at(&TokenKind::Type) {
+            return self.type_decl().map(Decl::Type);
+        }
         self.reject_unsupported_decl()?;
         Err(self.error_here("expected declaration"))
     }
@@ -98,6 +102,62 @@ impl Parser {
             body,
             span,
         })
+    }
+
+    fn type_decl(&mut self) -> Result<TypeDecl, ParseError> {
+        // Nominal monomorphic aggregate declarations, `docs/syntax.md §3` and calculus §3.
+        let start = self.expect(&TokenKind::Type, "expected `type`")?.span;
+        let name = self.expect_ident("expected type name")?;
+        if self.eat(&TokenKind::LBracket).is_some() {
+            return Err(self.error_previous("type parameters are not yet in the reduced surface"));
+        }
+        self.expect(&TokenKind::Eq, "expected `=` in type declaration")?;
+        let kind = if self.eat(&TokenKind::LBrace).is_some() {
+            let mut fields = Vec::new();
+            if !self.at(&TokenKind::RBrace) {
+                loop {
+                    let field = self.expect_ident("expected field name")?;
+                    self.expect(&TokenKind::Colon, "expected `:` in record field")?;
+                    let ty = self.ty()?;
+                    fields.push(FieldDecl { name: field, ty });
+                    if self.eat(&TokenKind::Comma).is_none() {
+                        break;
+                    }
+                }
+            }
+            self.expect(&TokenKind::RBrace, "expected `}` after record type")?;
+            TypeDeclKind::Record(fields)
+        } else {
+            let mut ctors = Vec::new();
+            loop {
+                let ctor = self.expect_ident("expected constructor name")?;
+                let mut payloads = Vec::new();
+                if self.eat(&TokenKind::LParen).is_some() {
+                    if !self.at(&TokenKind::RParen) {
+                        loop {
+                            payloads.push(self.ty()?);
+                            if self.eat(&TokenKind::Comma).is_none() {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(
+                        &TokenKind::RParen,
+                        "expected `)` after constructor payloads",
+                    )?;
+                }
+                ctors.push(ConstructorDecl {
+                    name: ctor,
+                    payloads,
+                });
+                if self.eat(&TokenKind::Pipe).is_none() {
+                    break;
+                }
+            }
+            TypeDeclKind::Variant(ctors)
+        };
+        let span = start.join(self.previous().span);
+        Ok(TypeDecl { name, kind, span })
     }
 
     fn effect_decl(&mut self) -> Result<EffectDecl, ParseError> {
@@ -179,10 +239,7 @@ impl Parser {
             TokenKind::Ident(name) if name == "Unit" => Ok(TypeExpr::Unit(tok.span)),
             TokenKind::Ident(name) if name == "Nat" => Ok(TypeExpr::Nat(tok.span)),
             TokenKind::Ident(name) if name == "Array" => Ok(TypeExpr::Array(tok.span)),
-            TokenKind::Ident(name) => Err(ParseError {
-                span: tok.span,
-                message: format!("type `{name}` is not yet in the reduced surface"),
-            }),
+            TokenKind::Ident(name) => Ok(TypeExpr::Named(name, tok.span)),
             TokenKind::LParen => {
                 if self.eat(&TokenKind::RParen).is_some() {
                     Ok(TypeExpr::Unit(tok.span.join(self.previous().span)))
@@ -319,28 +376,38 @@ impl Parser {
         let mut expr = self.primary()?;
         loop {
             if self.eat(&TokenKind::Dot).is_some() {
-                let op = self.expect_ident("expected operation name after `.`")?;
-                self.expect(&TokenKind::LParen, "expected `(` after operation name")?;
-                let args = self.args()?;
-                let rparen = self.expect(&TokenKind::RParen, "expected `)` after arguments")?;
-                let effect = match expr.kind {
-                    ExprKind::Var(name) => name,
-                    _ => {
-                        return Err(ParseError {
-                            span: expr.span,
-                            message: "effect calls must be written as `Effect.op(...)`".into(),
-                        })
-                    }
-                };
-                let span = expr.span.join(rparen.span);
-                expr = Expr::new(
-                    ExprKind::QualifiedCall {
-                        effect,
-                        op: op.node,
-                        args,
-                    },
-                    span,
-                );
+                let field = self.expect_ident("expected field or operation name after `.`")?;
+                if self.eat(&TokenKind::LParen).is_some() {
+                    let args = self.args()?;
+                    let rparen = self.expect(&TokenKind::RParen, "expected `)` after arguments")?;
+                    let effect = match expr.kind {
+                        ExprKind::Var(name) => name,
+                        _ => {
+                            return Err(ParseError {
+                                span: expr.span,
+                                message: "effect calls must be written as `Effect.op(...)`".into(),
+                            })
+                        }
+                    };
+                    let span = expr.span.join(rparen.span);
+                    expr = Expr::new(
+                        ExprKind::QualifiedCall {
+                            effect,
+                            op: field.node,
+                            args,
+                        },
+                        span,
+                    );
+                } else {
+                    let span = expr.span.join(field.span);
+                    expr = Expr::new(
+                        ExprKind::Field {
+                            record: Box::new(expr),
+                            field,
+                        },
+                        span,
+                    );
+                }
             } else if self.eat(&TokenKind::LParen).is_some() {
                 let args = self.args()?;
                 let rparen = self.expect(&TokenKind::RParen, "expected `)` after arguments")?;
@@ -410,6 +477,7 @@ impl Parser {
                 }
             }
             TokenKind::LBrace => self.block_after_lbrace(tok.span),
+            TokenKind::Dot => self.record_after_dot(tok.span),
             TokenKind::Case => self.case_after_keyword(tok.span),
             TokenKind::Handle => self.handle_after_keyword(tok.span),
             _ => Err(ParseError {
@@ -417,6 +485,66 @@ impl Parser {
                 message: "expected expression".into(),
             }),
         }
+    }
+
+    fn record_after_dot(&mut self, dot: Span) -> Result<Expr, ParseError> {
+        // Record literal/update surface, `docs/syntax.md §3/§5`.
+        self.expect(&TokenKind::LBrace, "expected `{` after `.`")?;
+        if self.looks_like_record_update() {
+            let record = self.expr()?;
+            self.expect(&TokenKind::Pipe, "expected `|` in record update")?;
+            let field = self.expect_ident("expected field name in record update")?;
+            self.expect(&TokenKind::Eq, "expected `=` in record update")?;
+            let value = self.expr()?;
+            let end = self
+                .expect(&TokenKind::RBrace, "expected `}` after record update")?
+                .span;
+            return Ok(Expr::new(
+                ExprKind::RecordUpdate {
+                    record: Box::new(record),
+                    field,
+                    value: Box::new(value),
+                },
+                dot.join(end),
+            ));
+        }
+        let mut fields = Vec::new();
+        if !self.at(&TokenKind::RBrace) {
+            loop {
+                let name = self.expect_ident("expected record field")?;
+                self.expect(&TokenKind::Eq, "expected `=` in record literal field")?;
+                let expr = self.expr()?;
+                fields.push((name, expr));
+                if self.eat(&TokenKind::Comma).is_none() {
+                    break;
+                }
+            }
+        }
+        let end = self
+            .expect(&TokenKind::RBrace, "expected `}` after record literal")?
+            .span;
+        Ok(Expr::new(ExprKind::RecordLit(fields), dot.join(end)))
+    }
+
+    fn looks_like_record_update(&self) -> bool {
+        let mut depth = 0usize;
+        let mut idx = self.idx;
+        while let Some(tok) = self.tokens.get(idx) {
+            match tok.kind {
+                TokenKind::LParen | TokenKind::LBrace | TokenKind::LBracket => depth += 1,
+                TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth -= 1;
+                }
+                TokenKind::Pipe if depth == 0 => return true,
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            idx += 1;
+        }
+        false
     }
 
     fn block(&mut self) -> Result<Expr, ParseError> {
@@ -545,7 +673,58 @@ impl Parser {
                 span: tok.span,
                 message: "only `0` literal patterns are in the reduced surface".into(),
             }),
-            TokenKind::Ident(name) => Ok(Pattern::Bind(Spanned::new(name, tok.span))),
+            TokenKind::Ident(name) => {
+                let spanned = Spanned::new(name, tok.span);
+                if self.eat(&TokenKind::LParen).is_some() {
+                    let mut args = Vec::new();
+                    if !self.at(&TokenKind::RParen) {
+                        loop {
+                            args.push(self.pattern()?);
+                            if self.eat(&TokenKind::Comma).is_none() {
+                                break;
+                            }
+                        }
+                    }
+                    let end = self
+                        .expect(&TokenKind::RParen, "expected `)` after constructor pattern")?
+                        .span;
+                    Ok(Pattern::Constructor {
+                        name: spanned,
+                        args,
+                        span: tok.span.join(end),
+                    })
+                } else if spanned.node.chars().next().is_some_and(char::is_uppercase) {
+                    Ok(Pattern::Constructor {
+                        name: spanned,
+                        args: Vec::new(),
+                        span: tok.span,
+                    })
+                } else {
+                    Ok(Pattern::Bind(spanned))
+                }
+            }
+            TokenKind::Dot => {
+                self.expect(
+                    &TokenKind::LBrace,
+                    "expected `{` after `.` in record pattern",
+                )?;
+                let mut fields = Vec::new();
+                if !self.at(&TokenKind::RBrace) {
+                    loop {
+                        fields.push(self.expect_ident("expected field name in record pattern")?);
+                        if self.eat(&TokenKind::Comma).is_none() {
+                            break;
+                        }
+                    }
+                }
+                let end = self
+                    .expect(&TokenKind::RBrace, "expected `}` after record pattern")?
+                    .span;
+                Ok(Pattern::Record {
+                    fields,
+                    span: tok.span.join(end),
+                })
+            }
             TokenKind::Underscore => Ok(Pattern::Wildcard(tok.span)),
             _ => Err(ParseError {
                 span: tok.span,
@@ -576,7 +755,6 @@ impl Parser {
             TokenKind::Spawn => Some("spawn is not yet in the reduced surface"),
             TokenKind::Scope => Some("scope is not yet in the reduced surface"),
             TokenKind::LBracket => Some("lists are not yet in the reduced surface"),
-            TokenKind::Dot => Some("record literals are not yet in the reduced surface"),
             _ => None,
         };
         if let Some(message) = msg {

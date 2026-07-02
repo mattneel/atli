@@ -1,0 +1,6 @@
+// expect-check-error: heap-typed
+type Mailbox = { buf: Array, len: Nat }
+fn main() -> Nat = {
+  m = .{ buf = mkarray(1, 0), len = 1 }
+  get(m.buf, 0)
+}

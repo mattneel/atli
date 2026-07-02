@@ -8,7 +8,7 @@ use crate::core::{FixBinding, Handler, OpClause, RecursionTag, Term, Type};
 use crate::grade::{Label, Q};
 use crate::surface::ast::{
     BinaryOp, Boundedness, Decl, Expr, ExprKind, FnDecl, HandleClause, Pattern, PrefixOp, Program,
-    Span, TypeExpr,
+    Span, TypeDeclKind, TypeExpr,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,8 +75,31 @@ pub fn elaborate_program(program: &Program) -> Result<ElaboratedProgram, Elabora
 struct Elaborator<'a> {
     program: &'a Program,
     functions: BTreeMap<String, FunctionSig>,
+    aggregates: AggregateEnv,
     spans: SpanTable,
     prelude: BTreeSet<PreludeFn>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AggregateEnv {
+    records: BTreeMap<String, Vec<(String, TypeExpr)>>,
+    constructors: BTreeMap<String, ConstructorInfo>,
+    fields: BTreeMap<String, FieldInfo>,
+}
+
+#[derive(Debug, Clone)]
+struct ConstructorInfo {
+    type_name: String,
+    tag: u64,
+    payloads: Vec<TypeExpr>,
+    payload_count: usize,
+    slot_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct FieldInfo {
+    index: usize,
+    ty: TypeExpr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -87,8 +110,73 @@ enum PreludeFn {
     Mul,
 }
 
+impl AggregateEnv {
+    fn from_program(program: &Program) -> Result<Self, ElaborateError> {
+        let mut env = Self::default();
+        for decl in &program.decls {
+            let Decl::Type(decl) = decl else {
+                continue;
+            };
+            match &decl.kind {
+                TypeDeclKind::Record(fields) => {
+                    let mut out = Vec::new();
+                    for (idx, field) in fields.iter().enumerate() {
+                        out.push((field.name.node.clone(), field.ty.clone()));
+                        env.fields.insert(
+                            field.name.node.clone(),
+                            FieldInfo {
+                                index: idx,
+                                ty: field.ty.clone(),
+                            },
+                        );
+                    }
+                    env.records.insert(decl.name.node.clone(), out);
+                }
+                TypeDeclKind::Variant(ctors) => {
+                    let slot_count = 1 + ctors
+                        .iter()
+                        .map(|ctor| ctor.payloads.len())
+                        .max()
+                        .unwrap_or(0);
+                    for (tag, ctor) in ctors.iter().enumerate() {
+                        env.constructors.insert(
+                            ctor.name.node.clone(),
+                            ConstructorInfo {
+                                type_name: decl.name.node.clone(),
+                                tag: u64::try_from(tag).unwrap(),
+                                payloads: ctor.payloads.clone(),
+                                payload_count: ctor.payloads.len(),
+                                slot_count,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        Ok(env)
+    }
+
+    fn record_for_fields(
+        &self,
+        fields: &[(crate::surface::ast::Spanned<String>, Expr)],
+    ) -> Option<String> {
+        let names = fields
+            .iter()
+            .map(|(name, _)| name.node.as_str())
+            .collect::<BTreeSet<_>>();
+        self.records.iter().find_map(|(record, declared)| {
+            let declared_names = declared
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<BTreeSet<_>>();
+            (declared_names == names).then(|| record.clone())
+        })
+    }
+}
+
 impl<'a> Elaborator<'a> {
     fn new(program: &'a Program) -> Result<Self, ElaborateError> {
+        let aggregates = AggregateEnv::from_program(program)?;
         let mut functions = BTreeMap::new();
         for decl in &program.decls {
             match decl {
@@ -101,6 +189,7 @@ impl<'a> Elaborator<'a> {
                     let _ret = lower_type(&func.ret)?;
                     functions.insert(func.name.node.clone(), FunctionSig { params });
                 }
+                Decl::Type(_) => {}
                 Decl::Effect(effect) => {
                     // Multi-label reduced effects (`docs/syntax.md §6`, `calculus.md §2.2`):
                     // each declared effect contributes one `Nat -> Nat` operation named `op`.
@@ -124,6 +213,7 @@ impl<'a> Elaborator<'a> {
         Ok(Self {
             program,
             functions,
+            aggregates,
             spans: SpanTable::default(),
             prelude: BTreeSet::new(),
         })
@@ -226,10 +316,12 @@ impl<'a> Elaborator<'a> {
             })?;
         let recursive = expr_mentions(&func.body, &func.name.node);
         if recursive {
-            if sig.params.len() != 1 || sig.params[0].1 != Type::Nat {
+            if sig.params.len() != 1 || !matches!(sig.params[0].1, Type::Nat | Type::Array) {
                 return Err(ElaborateError {
                     span: func.name.span,
-                    message: "recursive reduced-core functions must be unary `Nat -> ...`".into(),
+                    message:
+                        "recursive reduced-core functions must be unary `Nat`/aggregate -> ..."
+                            .into(),
                 });
             }
             let tag = self.recursion_tag(&func.boundedness, &sig.params[0].0)?;
@@ -241,7 +333,7 @@ impl<'a> Elaborator<'a> {
                 Term::Fix {
                     func: func.name.node.clone(),
                     param: sig.params[0].0.clone(),
-                    param_ty: Type::Nat,
+                    param_ty: sig.params[0].1.clone(),
                     body: Box::new(body),
                     tag,
                 },
@@ -286,10 +378,10 @@ impl<'a> Elaborator<'a> {
                     span: func.name.span,
                     message: "internal missing function signature".into(),
                 })?;
-            if sig.params.len() != 1 || sig.params[0].1 != Type::Nat {
+            if sig.params.len() != 1 || !matches!(sig.params[0].1, Type::Nat | Type::Array) {
                 return Err(ElaborateError {
                     span: func.name.span,
-                    message: "recursive binding groups must contain unary `Nat -> ...` members"
+                    message: "recursive binding groups must contain unary `Nat`/aggregate members"
                         .into(),
                 });
             }
@@ -300,7 +392,7 @@ impl<'a> Elaborator<'a> {
             recs.push(FixBinding {
                 func: func.name.node.clone(),
                 param: sig.params[0].0.clone(),
-                param_ty: Type::Nat,
+                param_ty: sig.params[0].1.clone(),
                 body: Box::new(body),
                 tag,
             });
@@ -352,6 +444,16 @@ impl<'a> Elaborator<'a> {
             ExprKind::Unit => Term::Unit,
             ExprKind::Nat(value) => Term::nat(*value),
             ExprKind::Var(name) => {
+                if let Some(ctor) = self.aggregates.constructors.get(name).cloned() {
+                    if ctor.payload_count == 0 {
+                        let aggregate = self.aggregate_array(
+                            ctor.slot_count,
+                            vec![Term::nat(ctor.tag)],
+                            expr.span,
+                        );
+                        return Ok(self.record(aggregate, expr.span));
+                    }
+                }
                 if name != "_" && !env.vars.contains(name) && !self.functions.contains_key(name) {
                     return Err(ElaborateError {
                         span: expr.span,
@@ -423,6 +525,15 @@ impl<'a> Elaborator<'a> {
             }
             ExprKind::CaseNat { scrutinee, arms } => self.case(scrutinee, arms, env, expr.span)?,
             ExprKind::Handle { body, clauses } => self.handle(body, clauses, env, expr.span)?,
+            ExprKind::RecordLit(fields) => self.record_literal(fields, env, expr.span)?,
+            ExprKind::RecordUpdate {
+                record,
+                field,
+                value,
+            } => self.record_update(record, field.node.as_str(), value, env)?,
+            ExprKind::Field { record, field } => {
+                self.record_field(record, field.node.as_str(), env)?
+            }
         };
         Ok(self.record(term, expr.span))
     }
@@ -497,6 +608,26 @@ impl<'a> Elaborator<'a> {
                 }
                 _ => {}
             }
+            if let Some(ctor) = self.aggregates.constructors.get(name).cloned() {
+                if args.len() != ctor.payload_count {
+                    return Err(ElaborateError {
+                        span,
+                        message: format!(
+                            "constructor `{name}` expects {} payloads",
+                            ctor.payload_count
+                        ),
+                    });
+                }
+                let values = args
+                    .iter()
+                    .map(|arg| self.expr(arg, env))
+                    .collect::<Result<Vec<_>, _>>()?;
+                return Ok(self.aggregate_array(
+                    ctor.slot_count,
+                    std::iter::once(Term::nat(ctor.tag)).chain(values).collect(),
+                    span,
+                ));
+            }
         }
         let mut out = self.expr(callee, env)?;
         for arg in args {
@@ -513,6 +644,17 @@ impl<'a> Elaborator<'a> {
         env: &Env,
         span: Span,
     ) -> Result<Term, ElaborateError> {
+        if arms.iter().any(|arm| {
+            matches!(
+                arm.pattern,
+                Pattern::Constructor { .. } | Pattern::Record { .. } | Pattern::Wildcard(_)
+            )
+        }) && !arms
+            .iter()
+            .any(|arm| matches!(arm.pattern, Pattern::Zero(_)))
+        {
+            return self.case_aggregate(scrutinee, arms, env, span);
+        }
         if arms.len() != 2 {
             return Err(ElaborateError {
                 span,
@@ -546,6 +688,161 @@ impl<'a> Elaborator<'a> {
             succ_var,
             succ_body: Box::new(self.expr(succ_body, &succ_env)?),
         })
+    }
+
+    fn case_aggregate(
+        &mut self,
+        scrutinee: &Expr,
+        arms: &[crate::surface::ast::CaseArm],
+        env: &Env,
+        span: Span,
+    ) -> Result<Term, ElaborateError> {
+        let tmp = format!("__atli_case_{}", span.start);
+        let scrut = self.expr(scrutinee, env)?;
+        let body = if let Some(record_arm) = arms
+            .iter()
+            .find(|arm| matches!(arm.pattern, Pattern::Record { .. }))
+        {
+            let Pattern::Record { fields, .. } = &record_arm.pattern else {
+                unreachable!()
+            };
+            let mut local = env.clone();
+            for field in fields {
+                local.vars.insert(field.node.clone());
+            }
+            let mut lowered = self.expr(&record_arm.body, &local)?;
+            for field in fields.iter().rev() {
+                let info = self
+                    .aggregates
+                    .fields
+                    .get(&field.node)
+                    .ok_or_else(|| ElaborateError {
+                        span: field.span,
+                        message: format!("unknown record field `{}`", field.node),
+                    })?
+                    .clone();
+                lowered = Term::Let {
+                    var: field.node.clone(),
+                    expr: Box::new(Term::ArrayGet(
+                        Box::new(Term::var(&tmp)),
+                        Box::new(Term::nat(u64::try_from(info.index).unwrap())),
+                    )),
+                    body: Box::new(lowered),
+                };
+            }
+            lowered
+        } else {
+            self.variant_case_body(&tmp, arms, env, span)?
+        };
+        Ok(Term::Let {
+            var: tmp,
+            expr: Box::new(scrut),
+            body: Box::new(body),
+        })
+    }
+
+    fn variant_case_body(
+        &mut self,
+        tmp: &str,
+        arms: &[crate::surface::ast::CaseArm],
+        env: &Env,
+        span: Span,
+    ) -> Result<Term, ElaborateError> {
+        let mut default = None;
+        let mut ctor_arms = Vec::new();
+        for arm in arms {
+            match &arm.pattern {
+                Pattern::Wildcard(_) => default = Some(&arm.body),
+                Pattern::Constructor { name, args, .. } => {
+                    ctor_arms.push((name.node.clone(), args.as_slice(), &arm.body, arm.span))
+                }
+                _ => {
+                    return Err(ElaborateError {
+                        span: arm.span,
+                        message:
+                            "aggregate case arms must be constructors, record patterns, or `_`"
+                                .into(),
+                    })
+                }
+            }
+        }
+        if default.is_none() {
+            let missing = self.missing_constructors(&ctor_arms);
+            if !missing.is_empty() {
+                return Err(ElaborateError {
+                    span,
+                    message: format!(
+                        "non-exhaustive case; missing constructors: {}",
+                        missing.join(", ")
+                    ),
+                });
+            }
+        }
+        let mut lowered_arms = Vec::new();
+        for (ctor_name, args, body, arm_span) in ctor_arms {
+            let ctor = self
+                .aggregates
+                .constructors
+                .get(&ctor_name)
+                .ok_or_else(|| ElaborateError {
+                    span: arm_span,
+                    message: format!("unknown constructor `{ctor_name}`"),
+                })?
+                .clone();
+            let mut local = env.clone();
+            for arg in args {
+                if let Pattern::Bind(name) = arg {
+                    local.vars.insert(name.node.clone());
+                }
+            }
+            let mut branch = self.expr(body, &local)?;
+            for (idx, arg) in args.iter().enumerate().rev() {
+                if let Pattern::Bind(name) = arg {
+                    branch = Term::Let {
+                        var: name.node.clone(),
+                        expr: Box::new(Term::ArrayGet(
+                            Box::new(Term::var(tmp)),
+                            Box::new(Term::nat(u64::try_from(idx + 1).unwrap())),
+                        )),
+                        body: Box::new(branch),
+                    };
+                }
+            }
+            lowered_arms.push((ctor.tag, branch));
+        }
+        let mut iter = lowered_arms.into_iter().rev();
+        let mut acc = if let Some(body) = default {
+            self.expr(body, env)?
+        } else if let Some((_, branch)) = iter.next() {
+            branch
+        } else {
+            Term::Unit
+        };
+        let tag = Term::ArrayGet(Box::new(Term::var(tmp)), Box::new(Term::nat(0)));
+        for (ctor_tag, branch) in iter {
+            acc = Self::tag_match_case(tag.clone(), ctor_tag, branch, acc);
+        }
+        Ok(acc)
+    }
+
+    fn tag_match_case(tag: Term, target: u64, yes: Term, no: Term) -> Term {
+        // Variant case elaboration (`docs/calculus.md §5`): tags are unary Nats in slot 0;
+        // equality to a constructor tag is encoded by repeated Nat elimination.
+        if target == 0 {
+            return Term::CaseNat {
+                scrutinee: Box::new(tag),
+                zero_body: Box::new(yes),
+                succ_var: "__tag_succ".into(),
+                succ_body: Box::new(no),
+            };
+        }
+        let pred = format!("__tag_pred_{target}");
+        Term::CaseNat {
+            scrutinee: Box::new(tag),
+            zero_body: Box::new(no.clone()),
+            succ_var: pred.clone(),
+            succ_body: Box::new(Self::tag_match_case(Term::var(pred), target - 1, yes, no)),
+        }
     }
 
     fn handle(
@@ -625,6 +922,121 @@ impl<'a> Elaborator<'a> {
                 clauses: core_clauses,
             },
         })
+    }
+
+    fn record_literal(
+        &mut self,
+        fields: &[(crate::surface::ast::Spanned<String>, Expr)],
+        env: &Env,
+        span: Span,
+    ) -> Result<Term, ElaborateError> {
+        let record = self
+            .aggregates
+            .record_for_fields(fields)
+            .ok_or_else(|| ElaborateError {
+                span,
+                message: "record literal fields do not match a declared record type".into(),
+            })?;
+        let declared = self
+            .aggregates
+            .records
+            .get(&record)
+            .expect("record exists")
+            .clone();
+        let mut values = Vec::new();
+        for (field, _) in &declared {
+            let expr = fields
+                .iter()
+                .find(|(name, _)| name.node == *field)
+                .ok_or_else(|| ElaborateError {
+                    span,
+                    message: format!("record literal missing field `{field}`"),
+                })?;
+            values.push(self.expr(&expr.1, env)?);
+        }
+        Ok(self.aggregate_array(values.len(), values, span))
+    }
+
+    fn record_field(
+        &mut self,
+        record: &Expr,
+        field: &str,
+        env: &Env,
+    ) -> Result<Term, ElaborateError> {
+        let info = self
+            .aggregates
+            .fields
+            .get(field)
+            .cloned()
+            .ok_or_else(|| ElaborateError {
+                span: record.span,
+                message: format!("unknown record field `{field}`"),
+            })?;
+        Ok(Term::ArrayGet(
+            Box::new(self.expr(record, env)?),
+            Box::new(Term::nat(u64::try_from(info.index).unwrap())),
+        ))
+    }
+
+    fn record_update(
+        &mut self,
+        record: &Expr,
+        field: &str,
+        value: &Expr,
+        env: &Env,
+    ) -> Result<Term, ElaborateError> {
+        let info = self
+            .aggregates
+            .fields
+            .get(field)
+            .cloned()
+            .ok_or_else(|| ElaborateError {
+                span: record.span,
+                message: format!("unknown record field `{field}`"),
+            })?;
+        Ok(Term::ArraySet(
+            Box::new(self.expr(record, env)?),
+            Box::new(Term::nat(u64::try_from(info.index).unwrap())),
+            Box::new(self.expr(value, env)?),
+        ))
+    }
+
+    fn aggregate_array(&mut self, slot_count: usize, values: Vec<Term>, span: Span) -> Term {
+        let mut out = Term::MkArray(
+            Box::new(Term::nat(u64::try_from(slot_count).unwrap())),
+            Box::new(Term::nat(0)),
+        );
+        for (idx, value) in values.into_iter().enumerate() {
+            out = self.record(
+                Term::Inplace(Box::new(Term::ArraySet(
+                    Box::new(out),
+                    Box::new(Term::nat(u64::try_from(idx).unwrap())),
+                    Box::new(value),
+                ))),
+                span,
+            );
+        }
+        out
+    }
+
+    fn missing_constructors(&self, present: &[(String, &[Pattern], &Expr, Span)]) -> Vec<String> {
+        let Some(first) = present.first() else {
+            return Vec::new();
+        };
+        let Some(info) = self.aggregates.constructors.get(&first.0) else {
+            return Vec::new();
+        };
+        let present_names = present
+            .iter()
+            .map(|(name, _, _, _)| name.as_str())
+            .collect::<BTreeSet<_>>();
+        self.aggregates
+            .constructors
+            .iter()
+            .filter(|(_, ctor)| ctor.type_name == info.type_name)
+            .filter(|(name, _)| !present_names.contains(name.as_str()))
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 
     fn record(&mut self, term: Term, span: Span) -> Term {
@@ -738,6 +1150,7 @@ fn lower_type(ty: &TypeExpr) -> Result<Type, ElaborateError> {
         TypeExpr::Unit(_) => Ok(Type::Unit),
         TypeExpr::Nat(_) => Ok(Type::Nat),
         TypeExpr::Array(_) => Ok(Type::Array),
+        TypeExpr::Named(_, _) => Ok(Type::Array),
         TypeExpr::Unique(inner, _) => lower_type(inner),
         TypeExpr::Arrow(arg, ret, _) => Ok(Type::Arrow(
             Box::new(lower_type(arg)?),
@@ -751,6 +1164,10 @@ fn pattern_binder(pattern: &Pattern, fallback: &str) -> Result<String, Elaborate
         Pattern::Bind(name) => Ok(name.node.clone()),
         Pattern::Wildcard(_) => Ok(fallback.into()),
         Pattern::Zero(span) => Err(ElaborateError {
+            span: *span,
+            message: "operation clause binders must be names or `_`".into(),
+        }),
+        Pattern::Constructor { span, .. } | Pattern::Record { span, .. } => Err(ElaborateError {
             span: *span,
             message: "operation clause binders must be names or `_`".into(),
         }),
@@ -818,6 +1235,11 @@ fn expr_mentions(expr: &Expr, name: &str) -> bool {
                 })
         }
         ExprKind::Prefix { expr, .. } => expr_mentions(expr, name),
+        ExprKind::RecordLit(fields) => fields.iter().any(|(_, expr)| expr_mentions(expr, name)),
+        ExprKind::RecordUpdate { record, value, .. } => {
+            expr_mentions(record, name) || expr_mentions(value, name)
+        }
+        ExprKind::Field { record, .. } => expr_mentions(record, name),
     }
 }
 
@@ -865,6 +1287,7 @@ impl UniqueEnv {
         expr: &Expr,
         what: &str,
         signatures: &BTreeMap<String, (Vec<bool>, bool)>,
+        aggregates: &AggregateEnv,
     ) -> Result<(), ElaborateError> {
         match &expr.kind {
             ExprKind::Var(name) if self.bindings.contains_key(name) => {
@@ -882,7 +1305,7 @@ impl UniqueEnv {
                 message: format!("{what} requires a unique value, but `freeze` returns shared"),
             }),
             _ => {
-                let unique = check_unique_expr(expr, self, signatures)?;
+                let unique = check_unique_expr(expr, self, signatures, aggregates)?;
                 if unique {
                     Ok(())
                 } else {
@@ -905,6 +1328,7 @@ impl UniqueEnv {
 }
 
 fn check_surface_uniqueness(program: &Program) -> Result<(), ElaborateError> {
+    let aggregates = AggregateEnv::from_program(program)?;
     let signatures = program
         .decls
         .iter()
@@ -919,7 +1343,7 @@ fn check_surface_uniqueness(program: &Program) -> Result<(), ElaborateError> {
                     type_is_unique(&func.ret),
                 ),
             )),
-            Decl::Effect(_) => None,
+            Decl::Effect(_) | Decl::Type(_) => None,
         })
         .collect::<BTreeMap<_, _>>();
     for decl in &program.decls {
@@ -932,7 +1356,7 @@ fn check_surface_uniqueness(program: &Program) -> Result<(), ElaborateError> {
                 env.bind_unique(&param.name.node);
             }
         }
-        check_unique_expr(&func.body, &mut env, &signatures)?;
+        check_unique_expr(&func.body, &mut env, &signatures, &aggregates)?;
     }
     Ok(())
 }
@@ -941,6 +1365,7 @@ fn check_unique_expr(
     expr: &Expr,
     env: &mut UniqueEnv,
     signatures: &BTreeMap<String, (Vec<bool>, bool)>,
+    aggregates: &AggregateEnv,
 ) -> Result<bool, ElaborateError> {
     match &expr.kind {
         ExprKind::Unit | ExprKind::Nat(_) => Ok(false),
@@ -949,27 +1374,27 @@ fn check_unique_expr(
             Ok(false)
         }
         ExprKind::Binary { lhs, rhs, .. } => {
-            check_unique_expr(lhs, env, signatures)?;
-            check_unique_expr(rhs, env, signatures)?;
+            check_unique_expr(lhs, env, signatures, aggregates)?;
+            check_unique_expr(rhs, env, signatures, aggregates)?;
             Ok(false)
         }
         ExprKind::Pipe { lhs, rhs } => {
             let desugared = desugar_pipe((**lhs).clone(), (**rhs).clone(), expr.span)?;
-            check_unique_expr(&desugared, env, signatures)
+            check_unique_expr(&desugared, env, signatures, aggregates)
         }
         ExprKind::QualifiedCall { args, .. } => {
             for arg in args {
-                check_unique_expr(arg, env, signatures)?;
+                check_unique_expr(arg, env, signatures, aggregates)?;
             }
             Ok(false)
         }
         ExprKind::Call { callee, args } => {
             if let ExprKind::Var(name) = &callee.kind {
-                return check_unique_call(name, args, expr.span, env, signatures);
+                return check_unique_call(name, args, expr.span, env, signatures, aggregates);
             }
-            check_unique_expr(callee, env, signatures)?;
+            check_unique_expr(callee, env, signatures, aggregates)?;
             for arg in args {
-                check_unique_expr(arg, env, signatures)?;
+                check_unique_expr(arg, env, signatures, aggregates)?;
             }
             Ok(false)
         }
@@ -977,69 +1402,132 @@ fn check_unique_expr(
             op: PrefixOp::Move,
             expr: inner,
         } => {
-            env.require_unique(inner, "move", signatures)?;
+            env.require_unique(inner, "move", signatures, aggregates)?;
             Ok(true)
         }
         ExprKind::Prefix {
             op: PrefixOp::Freeze,
             expr: inner,
         } => {
-            env.require_unique(inner, "freeze", signatures)?;
+            env.require_unique(inner, "freeze", signatures, aggregates)?;
             Ok(false)
         }
         ExprKind::Prefix {
             op: PrefixOp::Inplace,
             expr: inner,
         } => {
+            if let ExprKind::RecordUpdate { record, value, .. } = &inner.kind {
+                env.require_unique(record, "inplace record update", signatures, aggregates)?;
+                check_unique_expr(value, env, signatures, aggregates)?;
+                return Ok(true);
+            }
             let ExprKind::Call { callee, args } = &inner.kind else {
                 return Err(ElaborateError {
                     span: inner.span,
-                    message: "inplace operand must be `set(array, index, value)`".into(),
+                    message: "inplace operand must be `set(array, index, value)` or record update"
+                        .into(),
                 });
             };
             if !matches!(&callee.kind, ExprKind::Var(name) if name == "set") || args.len() != 3 {
                 return Err(ElaborateError {
                     span: inner.span,
-                    message: "inplace operand must be `set(array, index, value)`".into(),
+                    message: "inplace operand must be `set(array, index, value)` or record update"
+                        .into(),
                 });
             }
-            env.require_unique(&args[0], "inplace", signatures)?;
-            check_unique_expr(&args[1], env, signatures)?;
-            check_unique_expr(&args[2], env, signatures)?;
+            env.require_unique(&args[0], "inplace", signatures, aggregates)?;
+            check_unique_expr(&args[1], env, signatures, aggregates)?;
+            check_unique_expr(&args[2], env, signatures, aggregates)?;
             Ok(true)
         }
         ExprKind::Block { bindings, result } => {
             for binding in bindings {
-                let unique = check_unique_expr(&binding.expr, env, signatures)?;
+                let unique = check_unique_expr(&binding.expr, env, signatures, aggregates)?;
                 if unique {
                     env.bind_unique(&binding.name.node);
                 }
             }
-            check_unique_expr(result, env, signatures)
+            check_unique_expr(result, env, signatures, aggregates)
         }
         ExprKind::CaseNat { scrutinee, arms } => {
-            check_unique_expr(scrutinee, env, signatures)?;
+            let unique_scrutinee =
+                matches!(&scrutinee.kind, ExprKind::Var(name) if env.bindings.contains_key(name));
+            check_unique_expr(scrutinee, env, signatures, aggregates)?;
             let mut branch_envs = Vec::new();
             let mut result_unique = false;
             for arm in arms {
                 let mut branch = env.clone();
-                result_unique |= check_unique_expr(&arm.body, &mut branch, signatures)?;
+                if unique_scrutinee {
+                    bind_unique_pattern_payloads(&arm.pattern, &mut branch, aggregates);
+                }
+                result_unique |= check_unique_expr(&arm.body, &mut branch, signatures, aggregates)?;
                 branch_envs.push(branch);
             }
-            if branch_envs.len() == 2 {
-                env.merge_branch_consumption(&branch_envs[0], &branch_envs[1]);
+            if branch_envs.len() == 1 {
+                *env = branch_envs[0].clone();
+            } else if branch_envs.len() >= 2 {
+                let first = branch_envs[0].clone();
+                for branch in &branch_envs[1..] {
+                    env.merge_branch_consumption(&first, branch);
+                }
             }
             Ok(result_unique)
         }
         ExprKind::Handle { body, clauses } => {
-            check_unique_expr(body, env, signatures)?;
+            check_unique_expr(body, env, signatures, aggregates)?;
             for clause in clauses {
                 match clause {
                     HandleClause::Return { body, .. } | HandleClause::Operation { body, .. } => {
-                        check_unique_expr(body, env, signatures)?;
+                        check_unique_expr(body, env, signatures, aggregates)?;
                     }
                 }
             }
+            Ok(false)
+        }
+        ExprKind::RecordLit(fields) => {
+            for (_, field) in fields {
+                check_unique_expr(field, env, signatures, aggregates)?;
+            }
+            Ok(true)
+        }
+        ExprKind::RecordUpdate { record, value, .. } => {
+            // Functional record update (`docs/calculus.md §5`) copies; using a unique record
+            // in this shared mode consumes it by the ordinary forgetting rule (§4.2).
+            check_unique_expr(record, env, signatures, aggregates)?;
+            check_unique_expr(value, env, signatures, aggregates)?;
+            Ok(true)
+        }
+        ExprKind::Field { record, field } => {
+            if let ExprKind::Var(name) = &record.kind {
+                if env.bindings.contains_key(name) {
+                    if env
+                        .bindings
+                        .get(name)
+                        .is_some_and(|binding| binding.consumed_at.is_some())
+                    {
+                        env.consume(name, record.span)?;
+                    }
+                    let info =
+                        aggregates
+                            .fields
+                            .get(&field.node)
+                            .ok_or_else(|| ElaborateError {
+                                span: field.span,
+                                message: format!("unknown record field `{}`", field.node),
+                            })?;
+                    if type_is_heap(&info.ty) {
+                        return Err(ElaborateError {
+                            span: field.span,
+                            message: format!(
+                                "field `{}` is heap-typed; freeze the record to share it, or destructure with case to take ownership",
+                                field.node
+                            ),
+                        });
+                    }
+                    return Ok(false);
+                }
+            }
+            check_unique_expr(record, env, signatures, aggregates)?;
             Ok(false)
         }
     }
@@ -1051,6 +1539,7 @@ fn check_unique_call(
     span: Span,
     env: &mut UniqueEnv,
     signatures: &BTreeMap<String, (Vec<bool>, bool)>,
+    aggregates: &AggregateEnv,
 ) -> Result<bool, ElaborateError> {
     match name {
         "mkarray" => {
@@ -1060,8 +1549,8 @@ fn check_unique_call(
                     message: "builtin `mkarray` called with wrong arity".into(),
                 });
             }
-            check_unique_expr(&args[0], env, signatures)?;
-            check_unique_expr(&args[1], env, signatures)?;
+            check_unique_expr(&args[0], env, signatures, aggregates)?;
+            check_unique_expr(&args[1], env, signatures, aggregates)?;
             Ok(true)
         }
         "get" | "len" => {
@@ -1072,9 +1561,9 @@ fn check_unique_call(
                     message: format!("builtin `{name}` called with wrong arity"),
                 });
             }
-            check_unique_expr(&args[0], env, signatures)?;
+            check_unique_expr(&args[0], env, signatures, aggregates)?;
             for arg in &args[1..] {
-                check_unique_expr(arg, env, signatures)?;
+                check_unique_expr(arg, env, signatures, aggregates)?;
             }
             Ok(false)
         }
@@ -1086,7 +1575,7 @@ fn check_unique_call(
                 });
             }
             for arg in args {
-                check_unique_expr(arg, env, signatures)?;
+                check_unique_expr(arg, env, signatures, aggregates)?;
             }
             Ok(true)
         }
@@ -1094,19 +1583,55 @@ fn check_unique_call(
             if let Some((unique_params, unique_ret)) = signatures.get(name) {
                 for (idx, arg) in args.iter().enumerate() {
                     if unique_params.get(idx).copied().unwrap_or(false) {
-                        env.require_unique(arg, "unique parameter", signatures)?;
+                        env.require_unique(arg, "unique parameter", signatures, aggregates)?;
                     } else {
-                        check_unique_expr(arg, env, signatures)?;
+                        check_unique_expr(arg, env, signatures, aggregates)?;
                     }
                 }
                 Ok(*unique_ret)
             } else {
                 for arg in args {
-                    check_unique_expr(arg, env, signatures)?;
+                    check_unique_expr(arg, env, signatures, aggregates)?;
                 }
                 Ok(false)
             }
         }
+    }
+}
+
+fn bind_unique_pattern_payloads(pattern: &Pattern, env: &mut UniqueEnv, aggregates: &AggregateEnv) {
+    match pattern {
+        Pattern::Record { fields, .. } => {
+            for field in fields {
+                if aggregates
+                    .fields
+                    .get(&field.node)
+                    .is_some_and(|info| type_is_heap(&info.ty))
+                {
+                    env.bind_unique(&field.node);
+                }
+            }
+        }
+        Pattern::Constructor { name, args, .. } => {
+            if let Some(ctor) = aggregates.constructors.get(&name.node) {
+                for (idx, arg) in args.iter().enumerate() {
+                    if ctor.payloads.get(idx).is_some_and(type_is_heap) {
+                        if let Pattern::Bind(bind) = arg {
+                            env.bind_unique(&bind.node);
+                        }
+                    }
+                }
+            }
+        }
+        Pattern::Zero(_) | Pattern::Bind(_) | Pattern::Wildcard(_) => {}
+    }
+}
+
+fn type_is_heap(ty: &TypeExpr) -> bool {
+    match ty {
+        TypeExpr::Array(_) | TypeExpr::Named(_, _) => true,
+        TypeExpr::Unique(inner, _) => type_is_heap(inner),
+        TypeExpr::Unit(_) | TypeExpr::Nat(_) | TypeExpr::Arrow(_, _, _) => false,
     }
 }
 

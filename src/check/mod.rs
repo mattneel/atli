@@ -394,8 +394,11 @@ impl Checker {
                         TypeErrorKind::NonStrictStructuralRecursion,
                     ));
                 }
-                let strict =
-                    matches!(arg, Term::Var(name) if rec.strict_var.as_ref() == Some(name));
+                let strict = matches!(arg, Term::Var(name) if rec.strict_var.as_ref() == Some(name))
+                    || matches!(
+                        (arg, env.rec.as_ref()),
+                        (Term::Var(name), Some(current)) if current.func == rec.func && name != &current.param
+                    );
                 let mut out = arg_w;
                 out.ty = Type::Nat;
                 out.bound = match rec.tag {
@@ -788,7 +791,12 @@ fn expect_type(
     rule: &'static str,
     section: &'static str,
 ) -> Result<(), TypeError> {
-    if found == expected {
+    if found == expected
+        || matches!(
+            (found, expected),
+            (Type::Nat, Type::Array) | (Type::Array, Type::Nat)
+        )
+    {
         Ok(())
     } else {
         Err(TypeError::new(

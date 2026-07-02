@@ -1,7 +1,8 @@
 //! Surface pretty-printer for the implemented Sprint 05 subset.
 
 use crate::surface::ast::{
-    BinaryOp, Boundedness, Decl, Expr, ExprKind, HandleClause, Pattern, PrefixOp, Program, TypeExpr,
+    BinaryOp, Boundedness, Decl, Expr, ExprKind, HandleClause, Pattern, PrefixOp, Program,
+    TypeDeclKind, TypeExpr,
 };
 
 #[must_use]
@@ -20,6 +21,40 @@ fn pretty_decl(decl: &Decl) -> String {
             "effect {} {{ {}({}: {}) -> {} }}",
             effect.name.node, effect.op.node, effect.param.name.node, effect.param.ty, effect.ret
         ),
+        Decl::Type(decl) => match &decl.kind {
+            TypeDeclKind::Record(fields) => format!(
+                "type {} = {{ {} }}",
+                decl.name.node,
+                fields
+                    .iter()
+                    .map(|field| format!("{}: {}", field.name.node, field.ty))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            TypeDeclKind::Variant(ctors) => format!(
+                "type {} = {}",
+                decl.name.node,
+                ctors
+                    .iter()
+                    .map(|ctor| {
+                        if ctor.payloads.is_empty() {
+                            ctor.name.node.clone()
+                        } else {
+                            format!(
+                                "{}({})",
+                                ctor.name.node,
+                                ctor.payloads
+                                    .iter()
+                                    .map(ToString::to_string)
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            ),
+        },
         Decl::Fn(func) => {
             let public = if func.public { "pub " } else { "" };
             let params = func
@@ -96,6 +131,27 @@ fn pretty_expr(expr: &Expr) -> String {
                 .collect::<Vec<_>>()
                 .join("; ")
         ),
+        ExprKind::RecordLit(fields) => format!(
+            ".{{ {} }}",
+            fields
+                .iter()
+                .map(|(name, expr)| format!("{} = {}", name.node, pretty_expr(expr)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ExprKind::RecordUpdate {
+            record,
+            field,
+            value,
+        } => {
+            format!(
+                ".{{ {} | {} = {} }}",
+                pretty_expr(record),
+                field.node,
+                pretty_expr(value)
+            )
+        }
+        ExprKind::Field { record, field } => format!("{}.{}", pretty_expr(record), field.node),
         ExprKind::Prefix { op, expr } => {
             let op = match op {
                 PrefixOp::Move => "move",
@@ -141,6 +197,28 @@ fn pretty_pattern(pattern: &Pattern) -> String {
         Pattern::Zero(_) => "0".into(),
         Pattern::Bind(name) => name.node.clone(),
         Pattern::Wildcard(_) => "_".into(),
+        Pattern::Constructor { name, args, .. } => {
+            if args.is_empty() {
+                name.node.clone()
+            } else {
+                format!(
+                    "{}({})",
+                    name.node,
+                    args.iter()
+                        .map(pretty_pattern)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+        }
+        Pattern::Record { fields, .. } => format!(
+            ".{{ {} }}",
+            fields
+                .iter()
+                .map(|field| field.node.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 

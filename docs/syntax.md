@@ -1,32 +1,33 @@
 # Atli Syntax
 
-> **Status: implemented subset + open list (v0.2.0).** This document began as draft-0.
-> The v0.2.0 compiler implements the reduced surface listed below and keeps the rest in
+> **Status: implemented subset + open list (v0.3.0).** This document began as draft-0.
+> The v0.3.0 compiler implements the reduced surface listed below and keeps the rest in
 > the Open list. Normative elaboration details live in [`docs/elaboration.md`](elaboration.md);
 > the core semantics live in [`docs/calculus.md`](calculus.md).
 
-## Implemented in v0.2.0
+## Implemented in v0.3.0
 
 - `fn` / `pub fn` declarations, expression or block bodied.
 - Types: `Unit`, `Nat`, `Array`, unique marker `^T`, arrows, and effect rows `! {A, B}`.
 - Expressions: `()`, decimal naturals, variables, unary calls, curried multi-arg calls,
   blocks, `case n { 0 -> e0; p -> e1 }`, pipes, `+ - *` over `Nat` (`-` is monus),
-  array builtins `mkarray/get/set/len`, and prefix `move`/`inplace`/`freeze`.
+  array builtins `mkarray/get/set/len`, records, variants, field projection/update, constructor and record patterns, and prefix `move`/`inplace`/`freeze`.
 - Recursion: structural by default, `measure e` trusted by the reduced core, and `div`.
   Real Fibonacci uses `measure`; arithmetic calls like `m - 1` are not the peeled
   predecessor required by strict structural recursion.
 - Effects: multiple `effect L { op(x: Nat) -> Nat }` declarations, `L.op(e)`, and
   multi-label handlers with `k` or `_` continuation clauses.
 - Mutual top-level recursion: declaration SCCs elaborate to core `fix*` groups.
+- Aggregate declarations: nominal monomorphic records and variants, exhaustive constructor cases, record destructuring, functional update, and in-place record replacement.
 - Example-test directives in leading comments: `expect`, `expect-oracle`,
   `expect-compiled`, `expect-check-error`, and `env`.
 
 ## Still open
 
-Records, variants, full numeric tower, strings/chars/floats as runtime values, type
+Full numeric tower, strings/chars/floats as runtime values, type
 parameters, uniqueness polymorphism (`^u`), `scope`, `spawn`, modules/`use`, byte-accurate
 frame layout, real measure verification, and the full region grade remain future work.
-Unsupported v0.2.0 constructs diagnose as "not yet in the reduced surface".
+Unsupported v0.3.0 constructs diagnose as "not yet in the reduced surface".
 
 ---
 
@@ -176,7 +177,7 @@ px     = origin.x
 
 ```zig
 type Color     = Red | Green | Blue
-type Option[A] = None | Some(A)
+type Option[A] = None | Some(A)   // generics are future; monomorphic variants are implemented
 type Shape     = Circle(Nat) | Rect(Nat, Nat)
 ```
 
@@ -201,7 +202,7 @@ unique-out, shared-in ⇒ shared-out) without being written twice:
 ```
 
 Forgetting uniqueness (`^T` → `T`) happens by subsumption and **consumes** the unique
-binding in v0.2.0: after a shared use there is no remaining unique handle to mutate. Write
+binding in v0.3.0: after a shared use there is no remaining unique handle to mutate. Write
 `freeze e` when that shared handoff is intentional.
 
 ### Recursive types
@@ -282,7 +283,7 @@ case point {
 ```
 
 Patterns: literals, `_` wildcard, variable binding, constructors (`Some(x)`), lists
-(`[]`, `[h | t]`, `[a, b | rest]`), tuples (`(a, b)`), records (`.{ x = p }`, `.{ x }`),
+(`[]`, `[h | t]`, `[a, b | rest]`), tuples (`(a, b)`),
 and `pattern if guard`.
 
 ### Lists and tuples
@@ -524,7 +525,7 @@ record_lit  ::= '.{' (NAME '=' expr)* '}'
 - `=` immutable bindings, no `let`; blocks are expressions.
 - Effect rows `{…}` / variable / `{… | e}`; boundedness `measure`/`div`; slot order.
 - `^` / `^u` for uniqueness; `inplace` / `move` / `freeze`.
-- `.{ … }` record literals (disambiguates from blocks).
+- `.{ … }` record literals and `.{ r | field = e }` update forms (disambiguate from blocks).
 
 **Open**
 - **Effect-operation namespace: open vs closed rows.** Must every effect be declared with
@@ -539,6 +540,6 @@ record_lit  ::= '.{' (NAME '=' expr)* '}'
 - **Module system** in full (§10).
 - **Surface `Int` semantics.** Sprint 06 gives `Nat` subtraction monus semantics; signed
   `Int` arithmetic remains future work.
-- **`freeze` syntax after v0.2.0.** `freeze` is implemented as explicit-intent sugar for
+- **`freeze` syntax after v0.3.0.** `freeze` is implemented as explicit-intent sugar for
   consuming subsumption; whether style guidance eventually prefers silent subsumption is
   a documentation question, not a semantic gap.

@@ -266,6 +266,26 @@ fn codegen_emit_goldens_pin_certified_arena_literals() {
             "examples/copy_functional.atli",
             "tests/goldens/codegen/copy_functional.mlir",
         ),
+        (
+            "examples/shape_area.atli",
+            "tests/goldens/codegen/shape_area.mlir",
+        ),
+        (
+            "examples/natlist.atli",
+            "tests/goldens/codegen/natlist.mlir",
+        ),
+        (
+            "examples/mailbox.atli",
+            "tests/goldens/codegen/mailbox.mlir",
+        ),
+        (
+            "examples/record_update_inplace.atli",
+            "tests/goldens/codegen/record_update_inplace.mlir",
+        ),
+        (
+            "examples/record_update_functional.atli",
+            "tests/goldens/codegen/record_update_functional.mlir",
+        ),
     ] {
         let (code, stdout, stderr) = run_cli(&["emit", path]);
         assert_eq!(code, 0, "{stderr}");

@@ -22,11 +22,79 @@ use crate::elaborate::ElaboratedProgram;
 use crate::grade::Bound;
 use crate::surface::ast::{
     BinaryOp, Binding, Boundedness, Decl, Expr, ExprKind, FnDecl, HandleClause, Pattern, Program,
-    TypeExpr,
+    TypeDeclKind, TypeExpr,
 };
 
 const BUILD_DIR: &str = "target/atli";
 const GROWABLE_INITIAL_SLOTS: u32 = 64;
+
+#[derive(Debug, Clone, Default)]
+struct CodegenAggregates {
+    records: BTreeMap<String, Vec<String>>,
+    constructors: BTreeMap<String, CodegenConstructor>,
+    fields: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone)]
+struct CodegenConstructor {
+    tag: u64,
+    payload_count: usize,
+    slot_count: usize,
+}
+
+impl CodegenAggregates {
+    fn from_program(program: &Program) -> Self {
+        let mut out = Self::default();
+        for decl in &program.decls {
+            let Decl::Type(ty) = decl else {
+                continue;
+            };
+            match &ty.kind {
+                TypeDeclKind::Record(fields) => {
+                    let names = fields
+                        .iter()
+                        .map(|f| f.name.node.clone())
+                        .collect::<Vec<_>>();
+                    for (idx, name) in names.iter().enumerate() {
+                        out.fields.insert(name.clone(), idx);
+                    }
+                    out.records.insert(ty.name.node.clone(), names);
+                }
+                TypeDeclKind::Variant(ctors) => {
+                    let slot_count = 1 + ctors.iter().map(|c| c.payloads.len()).max().unwrap_or(0);
+                    for (tag, ctor) in ctors.iter().enumerate() {
+                        out.constructors.insert(
+                            ctor.name.node.clone(),
+                            CodegenConstructor {
+                                tag: u64::try_from(tag).unwrap(),
+                                payload_count: ctor.payloads.len(),
+                                slot_count,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn record_for_fields(
+        &self,
+        fields: &[(crate::surface::ast::Spanned<String>, Expr)],
+    ) -> Option<&Vec<String>> {
+        let names = fields
+            .iter()
+            .map(|(n, _)| n.node.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        self.records.values().find(|declared| {
+            declared
+                .iter()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>()
+                == names
+        })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodegenError {
@@ -380,6 +448,7 @@ struct MlirModule<'a> {
     arena_slots: u32,
     growable: bool,
     functions: BTreeMap<String, usize>,
+    aggregates: CodegenAggregates,
     force_dynamic_dispatch: bool,
 }
 
@@ -390,14 +459,16 @@ impl<'a> MlirModule<'a> {
             .iter()
             .filter_map(|decl| match decl {
                 Decl::Fn(func) => Some((func.name.node.clone(), func.params.len())),
-                Decl::Effect(_) => None,
+                Decl::Effect(_) | Decl::Type(_) => None,
             })
             .collect();
+        let aggregates = CodegenAggregates::from_program(program);
         Self {
             program,
             arena_slots,
             growable,
             functions,
+            aggregates,
             force_dynamic_dispatch: std::env::var("ATLI_FORCE_DYNAMIC_DISPATCH").ok().as_deref()
                 == Some("1"),
         }
@@ -440,7 +511,7 @@ impl<'a> MlirModule<'a> {
         for decl in &self.program.decls {
             match decl {
                 Decl::Fn(func) => out.push_str(&self.emit_function(func)?),
-                Decl::Effect(_) => {}
+                Decl::Effect(_) | Decl::Type(_) => {}
             }
         }
         out.push_str("  func.func @atli_program_main() -> i64 {\n");
@@ -495,7 +566,11 @@ impl<'a> MlirModule<'a> {
 
     fn emit_function(&self, func: &FnDecl) -> Result<String, CodegenError> {
         assert_word_type(&func.ret)?;
-        let mut builder = Builder::new(&self.functions, self.force_dynamic_dispatch);
+        let mut builder = Builder::new(
+            &self.functions,
+            &self.aggregates,
+            self.force_dynamic_dispatch,
+        );
         let mut params = Vec::new();
         let mut env = BTreeMap::new();
         for param in &func.params {
@@ -531,19 +606,31 @@ struct Value {
     name: String,
 }
 
+enum VariantFallback<'a> {
+    Expr(&'a Expr, BTreeMap<String, String>),
+    Arm(&'a [Pattern], &'a Expr),
+    Zero,
+}
+
 struct Builder<'a> {
     out: String,
     next: usize,
     functions: &'a BTreeMap<String, usize>,
+    aggregates: &'a CodegenAggregates,
     force_dynamic_dispatch: bool,
 }
 
 impl<'a> Builder<'a> {
-    fn new(functions: &'a BTreeMap<String, usize>, force_dynamic_dispatch: bool) -> Self {
+    fn new(
+        functions: &'a BTreeMap<String, usize>,
+        aggregates: &'a CodegenAggregates,
+        force_dynamic_dispatch: bool,
+    ) -> Self {
         Self {
             out: String::new(),
             next: 0,
             functions,
+            aggregates,
             force_dynamic_dispatch,
         }
     }
@@ -556,15 +643,25 @@ impl<'a> Builder<'a> {
     ) -> Result<Value, CodegenError> {
         match &expr.kind {
             ExprKind::Nat(value) => Ok(self.constant(*value, indent)),
-            ExprKind::Var(name) => env
-                .get(name)
-                .map(|name| Value { name: name.clone() })
-                .or_else(|| {
-                    self.functions.contains_key(name).then(|| Value {
+            ExprKind::Var(name) => {
+                if let Some(value) = env.get(name) {
+                    return Ok(Value {
+                        name: value.clone(),
+                    });
+                }
+                if let Some(ctor) = self.aggregates.constructors.get(name) {
+                    if ctor.payload_count == 0 {
+                        let tag = self.constant(ctor.tag, indent);
+                        return self.aggregate_array(ctor.slot_count, vec![tag], indent);
+                    }
+                }
+                self.functions
+                    .contains_key(name)
+                    .then(|| Value {
                         name: mlir_func_name(name),
                     })
-                })
-                .ok_or_else(|| CodegenError::new(format!("cannot lower variable `{name}`"))),
+                    .ok_or_else(|| CodegenError::new(format!("cannot lower variable `{name}`")))
+            }
             ExprKind::Binary { op, lhs, rhs } => {
                 let lhs = self.expr(lhs, env, indent)?;
                 let rhs = self.expr(rhs, env, indent)?;
@@ -586,6 +683,15 @@ impl<'a> Builder<'a> {
             }
             ExprKind::CaseNat { scrutinee, arms } => self.case_nat(scrutinee, arms, env, indent),
             ExprKind::Handle { body, clauses } => self.handle(body, clauses, env, indent),
+            ExprKind::RecordLit(fields) => self.record_literal(fields, env, indent),
+            ExprKind::RecordUpdate {
+                record,
+                field,
+                value,
+            } => self.record_update(record, field.node.as_str(), value, false, env, indent),
+            ExprKind::Field { record, field } => {
+                self.record_field(record, field.node.as_str(), env, indent)
+            }
             ExprKind::Unit => Err(CodegenError::new(
                 "tier-1 native lowering currently supports Nat results only",
             )),
@@ -1005,6 +1111,20 @@ impl<'a> Builder<'a> {
                 "tier-1 native lowering supports direct function calls only",
             ));
         };
+        if let Some(ctor) = self.aggregates.constructors.get(name) {
+            if args.len() != ctor.payload_count {
+                return Err(CodegenError::new(format!(
+                    "constructor `{name}` expects {} payloads",
+                    ctor.payload_count
+                )));
+            }
+            let mut values = Vec::with_capacity(ctor.payload_count + 1);
+            values.push(self.constant(ctor.tag, indent));
+            for arg in args {
+                values.push(self.expr(arg, env, indent)?);
+            }
+            return self.aggregate_array(ctor.slot_count, values, indent);
+        }
         match name.as_str() {
             "mkarray" => return self.array_call("atli_array_new", args, 2, env, indent),
             "get" => return self.array_call("atli_array_get", args, 2, env, indent),
@@ -1056,15 +1176,30 @@ impl<'a> Builder<'a> {
                 self.expr(expr, env, indent)
             }
             crate::surface::ast::PrefixOp::Inplace => {
+                if let ExprKind::RecordUpdate {
+                    record,
+                    field,
+                    value,
+                } = &expr.kind
+                {
+                    return self.record_update(
+                        record,
+                        field.node.as_str(),
+                        value,
+                        true,
+                        env,
+                        indent,
+                    );
+                }
                 let ExprKind::Call { callee, args } = &expr.kind else {
                     return Err(CodegenError::new(
-                        "inplace operand must be `set(array, index, value)`",
+                        "inplace operand must be `set(array, index, value)` or record update",
                     ));
                 };
                 if !matches!(&callee.kind, ExprKind::Var(name) if name == "set") || args.len() != 3
                 {
                     return Err(CodegenError::new(
-                        "inplace operand must be `set(array, index, value)`",
+                        "inplace operand must be `set(array, index, value)` or record update",
                     ));
                 }
                 let values = args
@@ -1122,6 +1257,284 @@ impl<'a> Builder<'a> {
         Ok(Value { name: result })
     }
 
+    fn record_literal(
+        &mut self,
+        fields: &[(crate::surface::ast::Spanned<String>, Expr)],
+        env: &BTreeMap<String, String>,
+        indent: usize,
+    ) -> Result<Value, CodegenError> {
+        let declared = self
+            .aggregates
+            .record_for_fields(fields)
+            .ok_or_else(|| CodegenError::new("record literal does not match a declared record"))?
+            .clone();
+        let mut ordered = Vec::with_capacity(declared.len());
+        for name in &declared {
+            let (_, expr) = fields
+                .iter()
+                .find(|(field, _)| field.node == *name)
+                .ok_or_else(|| {
+                    CodegenError::new(format!("record literal missing field `{name}`"))
+                })?;
+            ordered.push(self.expr(expr, env, indent)?);
+        }
+        self.aggregate_array(declared.len(), ordered, indent)
+    }
+
+    fn aggregate_array(
+        &mut self,
+        slots: usize,
+        values: Vec<Value>,
+        indent: usize,
+    ) -> Result<Value, CodegenError> {
+        let len = self.constant(u64::try_from(slots).unwrap(), indent);
+        let zero = self.constant(0, indent);
+        let result = self.fresh("aggregate");
+        self.line(
+            indent,
+            &format!(
+                "{result} = func.call @atli_array_new({}, {}) : (i64, i64) -> i64",
+                len.name, zero.name
+            ),
+        );
+        for (idx, value) in values.into_iter().enumerate() {
+            let index = self.constant(u64::try_from(idx).unwrap(), indent);
+            let tmp = self.fresh("aggregate_store");
+            self.line(indent, "// aggregate construction, calculus.md §9.2: one data allocation, field stores in place");
+            self.line(
+                indent,
+                &format!(
+                    "{tmp} = func.call @atli_array_inplace_set({result}, {}, {}) : (i64, i64, i64) -> i64",
+                    index.name, value.name
+                ),
+            );
+        }
+        Ok(Value { name: result })
+    }
+
+    fn record_field(
+        &mut self,
+        record: &Expr,
+        field: &str,
+        env: &BTreeMap<String, String>,
+        indent: usize,
+    ) -> Result<Value, CodegenError> {
+        let idx = *self
+            .aggregates
+            .fields
+            .get(field)
+            .ok_or_else(|| CodegenError::new(format!("unknown record field `{field}`")))?;
+        let rec = self.expr(record, env, indent)?;
+        let idx = self.constant(u64::try_from(idx).unwrap(), indent);
+        let result = self.fresh("field");
+        self.line(
+            indent,
+            &format!(
+                "{result} = func.call @atli_array_get({}, {}) : (i64, i64) -> i64",
+                rec.name, idx.name
+            ),
+        );
+        Ok(Value { name: result })
+    }
+
+    fn record_update(
+        &mut self,
+        record: &Expr,
+        field: &str,
+        value: &Expr,
+        inplace: bool,
+        env: &BTreeMap<String, String>,
+        indent: usize,
+    ) -> Result<Value, CodegenError> {
+        let idx = *self
+            .aggregates
+            .fields
+            .get(field)
+            .ok_or_else(|| CodegenError::new(format!("unknown record field `{field}`")))?;
+        let rec = self.expr(record, env, indent)?;
+        let idx = self.constant(u64::try_from(idx).unwrap(), indent);
+        let val = self.expr(value, env, indent)?;
+        let result = self.fresh(if inplace {
+            "inplace_record"
+        } else {
+            "record_update"
+        });
+        if inplace {
+            self.line(
+                indent,
+                "// inplace record update, calculus.md §9.2: q=1 licenses single store, no allocation",
+            );
+            self.line(
+                indent,
+                &format!(
+                    "{result} = func.call @atli_array_inplace_set({}, {}, {}) : (i64, i64, i64) -> i64",
+                    rec.name, idx.name, val.name
+                ),
+            );
+        } else {
+            self.line(
+                indent,
+                "// functional record update, calculus.md §5/§9.2: shallow copy allocation",
+            );
+            self.line(
+                indent,
+                &format!(
+                    "{result} = func.call @atli_array_copy_set({}, {}, {}) : (i64, i64, i64) -> i64",
+                    rec.name, idx.name, val.name
+                ),
+            );
+        }
+        Ok(Value { name: result })
+    }
+
+    fn case_aggregate(
+        &mut self,
+        scrutinee: &Expr,
+        arms: &[crate::surface::ast::CaseArm],
+        env: &BTreeMap<String, String>,
+        indent: usize,
+    ) -> Result<Value, CodegenError> {
+        let scrut = self.expr(scrutinee, env, indent)?;
+        if let Some(record_arm) = arms
+            .iter()
+            .find(|arm| matches!(arm.pattern, Pattern::Record { .. }))
+        {
+            let Pattern::Record { fields, .. } = &record_arm.pattern else {
+                unreachable!()
+            };
+            let mut local = env.clone();
+            for field in fields {
+                let idx = *self.aggregates.fields.get(&field.node).ok_or_else(|| {
+                    CodegenError::new(format!("unknown record field `{}`", field.node))
+                })?;
+                let idx_v = self.constant(u64::try_from(idx).unwrap(), indent);
+                let out = self.fresh("destructure");
+                self.line(
+                    indent,
+                    &format!(
+                        "{out} = func.call @atli_array_get({}, {}) : (i64, i64) -> i64",
+                        scrut.name, idx_v.name
+                    ),
+                );
+                local.insert(field.node.clone(), out);
+            }
+            return self.expr(&record_arm.body, &local, indent);
+        }
+        let tag_idx = self.constant(0, indent);
+        let tag = self.fresh("tag");
+        self.line(
+            indent,
+            &format!(
+                "{tag} = func.call @atli_array_get({}, {}) : (i64, i64) -> i64",
+                scrut.name, tag_idx.name
+            ),
+        );
+        let mut ctor_arms = Vec::new();
+        let mut default = None;
+        for arm in arms {
+            match &arm.pattern {
+                Pattern::Wildcard(_) => default = Some(&arm.body),
+                Pattern::Constructor { name, args, .. } => {
+                    let ctor = self
+                        .aggregates
+                        .constructors
+                        .get(&name.node)
+                        .ok_or_else(|| {
+                            CodegenError::new(format!("unknown constructor `{}`", name.node))
+                        })?
+                        .clone();
+                    ctor_arms.push((ctor.tag, args.as_slice(), &arm.body));
+                }
+                _ => {
+                    return Err(CodegenError::new(
+                        "aggregate case arms must be constructors, record patterns, or `_`",
+                    ))
+                }
+            }
+        }
+        let mut iter = ctor_arms.into_iter().rev();
+        let fallback = if let Some(body) = default {
+            VariantFallback::Expr(body, env.clone())
+        } else if let Some((_, args, body)) = iter.next() {
+            VariantFallback::Arm(args, body)
+        } else {
+            VariantFallback::Zero
+        };
+        let arms = iter.collect::<Vec<_>>();
+        self.tag_case_chain(tag, scrut.name, arms, fallback, env, indent)
+    }
+
+    fn tag_case_chain(
+        &mut self,
+        tag: String,
+        scrut: String,
+        mut arms: Vec<(u64, &[Pattern], &Expr)>,
+        fallback: VariantFallback<'_>,
+        env: &BTreeMap<String, String>,
+        indent: usize,
+    ) -> Result<Value, CodegenError> {
+        let Some((ctor_tag, args, body)) = arms.pop() else {
+            return self.emit_variant_fallback(scrut, fallback, env, indent);
+        };
+        let tag_const = self.constant(ctor_tag, indent);
+        let cond = self.fresh("is_tag");
+        self.line(
+            indent,
+            &format!("{cond} = arith.cmpi eq, {tag}, {} : i64", tag_const.name),
+        );
+        let out = self.fresh("variant_case");
+        self.line(indent, &format!("{out} = scf.if {cond} -> (i64) {{"));
+        let yes = self.emit_variant_arm(&scrut, args, body, env, indent + 2)?;
+        self.line(indent + 2, &format!("scf.yield {} : i64", yes.name));
+        self.line(indent, "} else {");
+        let no = self.tag_case_chain(tag, scrut, arms, fallback, env, indent + 2)?;
+        self.line(indent + 2, &format!("scf.yield {} : i64", no.name));
+        self.line(indent, "}");
+        Ok(Value { name: out })
+    }
+
+    fn emit_variant_fallback(
+        &mut self,
+        scrut: String,
+        fallback: VariantFallback<'_>,
+        env: &BTreeMap<String, String>,
+        indent: usize,
+    ) -> Result<Value, CodegenError> {
+        match fallback {
+            VariantFallback::Expr(body, local) => self.expr(body, &local, indent),
+            VariantFallback::Arm(args, body) => {
+                self.emit_variant_arm(&scrut, args, body, env, indent)
+            }
+            VariantFallback::Zero => Ok(self.constant(0, indent)),
+        }
+    }
+
+    fn emit_variant_arm(
+        &mut self,
+        scrut: &str,
+        args: &[Pattern],
+        body: &Expr,
+        env: &BTreeMap<String, String>,
+        indent: usize,
+    ) -> Result<Value, CodegenError> {
+        let mut local = env.clone();
+        for (idx, arg) in args.iter().enumerate() {
+            if let Pattern::Bind(bind) = arg {
+                let slot = self.constant(u64::try_from(idx + 1).unwrap(), indent);
+                let out = self.fresh("payload");
+                self.line(
+                    indent,
+                    &format!(
+                        "{out} = func.call @atli_array_get({scrut}, {}) : (i64, i64) -> i64",
+                        slot.name
+                    ),
+                );
+                local.insert(bind.node.clone(), out);
+            }
+        }
+        self.expr(body, &local, indent)
+    }
+
     fn case_nat(
         &mut self,
         scrutinee: &Expr,
@@ -1129,6 +1542,17 @@ impl<'a> Builder<'a> {
         env: &BTreeMap<String, String>,
         indent: usize,
     ) -> Result<Value, CodegenError> {
+        if arms.iter().any(|arm| {
+            matches!(
+                arm.pattern,
+                Pattern::Constructor { .. } | Pattern::Record { .. } | Pattern::Wildcard(_)
+            )
+        }) && !arms
+            .iter()
+            .any(|arm| matches!(arm.pattern, Pattern::Zero(_)))
+        {
+            return self.case_aggregate(scrutinee, arms, env, indent);
+        }
         if arms.len() != 2 {
             return Err(CodegenError::new(
                 "tier-1 Nat case expects exactly two arms",
@@ -1352,6 +1776,14 @@ fn expr_mentions_outer_only_effect(
                 || expr_mentions_outer_only_effect(rhs, outer, inner)
         }
         ExprKind::Prefix { expr, .. } => expr_mentions_outer_only_effect(expr, outer, inner),
+        ExprKind::RecordLit(fields) => fields
+            .iter()
+            .any(|(_, expr)| expr_mentions_outer_only_effect(expr, outer, inner)),
+        ExprKind::RecordUpdate { record, value, .. } => {
+            expr_mentions_outer_only_effect(record, outer, inner)
+                || expr_mentions_outer_only_effect(value, outer, inner)
+        }
+        ExprKind::Field { record, .. } => expr_mentions_outer_only_effect(record, outer, inner),
         ExprKind::Handle { body, clauses } => {
             let Ok(nested) = HandlerCtx::new(clauses) else {
                 return false;
@@ -1365,7 +1797,10 @@ fn expr_mentions_outer_only_effect(
 fn pattern_name(pattern: &Pattern) -> Option<&str> {
     match pattern {
         Pattern::Bind(name) => Some(name.node.as_str()),
-        Pattern::Wildcard(_) | Pattern::Zero(_) => None,
+        Pattern::Wildcard(_)
+        | Pattern::Zero(_)
+        | Pattern::Constructor { .. }
+        | Pattern::Record { .. } => None,
     }
 }
 
@@ -1406,7 +1841,7 @@ fn pipe_to_call(lhs: Expr, rhs: Expr) -> Result<Expr, CodegenError> {
 fn assert_word_type(ty: &TypeExpr) -> Result<(), CodegenError> {
     if matches!(
         ty,
-        TypeExpr::Nat(_) | TypeExpr::Array(_) | TypeExpr::Unique(_, _)
+        TypeExpr::Nat(_) | TypeExpr::Array(_) | TypeExpr::Named(_, _) | TypeExpr::Unique(_, _)
     ) {
         Ok(())
     } else {
@@ -1427,6 +1862,11 @@ fn expr_mentions_fn(expr: &Expr, name: &str) -> bool {
             expr_mentions_fn(lhs, name) || expr_mentions_fn(rhs, name)
         }
         ExprKind::Prefix { expr, .. } => expr_mentions_fn(expr, name),
+        ExprKind::RecordLit(fields) => fields.iter().any(|(_, expr)| expr_mentions_fn(expr, name)),
+        ExprKind::RecordUpdate { record, value, .. } => {
+            expr_mentions_fn(record, name) || expr_mentions_fn(value, name)
+        }
+        ExprKind::Field { record, .. } => expr_mentions_fn(record, name),
         ExprKind::Block { bindings, result } => {
             bindings.iter().any(|b| expr_mentions_fn(&b.expr, name))
                 || expr_mentions_fn(result, name)

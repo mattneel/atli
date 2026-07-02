@@ -1,0 +1,4 @@
+// expect-check-error: missing constructors
+type Shape = Circle(Nat) | Rect(Nat, Nat)
+fn area(s: Shape) -> Nat = case s { Circle(r) -> r }
+fn main() -> Nat = area(Rect(3, 4))

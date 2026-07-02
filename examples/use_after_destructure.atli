@@ -1,0 +1,7 @@
+// expect-check-error: consumed here
+type Mailbox = { buf: Array, len: Nat }
+fn main() -> Nat = {
+  m = .{ buf = mkarray(1, 0), len = 1 }
+  x = case m { .{ buf, len } -> len }
+  x + m.len
+}

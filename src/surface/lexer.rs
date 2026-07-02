@@ -42,6 +42,7 @@ pub enum TokenKind {
     Underscore,
     Arrow,
     PipeGt,
+    Pipe,
     Semi,
     Plus,
     Minus,
@@ -146,6 +147,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
                 });
                 idx += 2;
             }
+            '|' => push_one(&mut out, TokenKind::Pipe, idx, &mut idx),
             '-' => push_one(&mut out, TokenKind::Minus, idx, &mut idx),
             '/' | '%' | '<' | '>' | '"' | '\'' => {
                 return Err(LexError {

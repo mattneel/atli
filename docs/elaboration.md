@@ -125,3 +125,28 @@ The current surface has no local lambda syntax, so the tier-1 capture ban for un
 bindings is enforced at the core/rule level and documented as a future diagnostic expansion
 when local closures land. Top-level unique parameters are not captures; they are ordinary
 arguments and may be threaded through `^` parameters.
+
+## Records and variants (Sprint 12)
+
+Nominal monomorphic `type` declarations elaborate to word-sized aggregate handles in the
+existing core data region (`docs/calculus.md §3/§9.2`). Records are represented as data-region
+arrays of field slots in declaration order. Variants are represented as arrays whose slot 0 is
+the constructor tag and whose remaining slots hold the payloads; every constructor in a variant
+uses the same slot count (`1 + max payload arity`). This is an implementation encoding of the
+Sprint 12 aggregate rules, not new source semantics.
+
+- `.{ x = e, y = f }` allocates a record and writes fields in declaration order.
+- `r.x` elaborates to a field-slot read. Reading a heap-typed field from a unique record is
+  rejected by the surface uniqueness pass; destructure with `case` to take ownership.
+- `.{ r | x = e }` is functional shallow-copy update. `inplace .{ r | x = e }` is the
+  licensed destructive update form and lowers to one store after consuming `r`.
+- `Ctor(a, b)` and nullary `Ctor` allocate variant values with a tag and payload slots.
+- `case v { Ctor(x, rest) -> e; _ -> d }` becomes tag dispatch. Pattern-bound heap payloads
+  from a unique scrutinee are bound uniquely; Nat/Unit payloads are unrestricted copies.
+- Record patterns `case r { .{ buf, len } -> e }` consume a unique record and bind heap
+  fields uniquely, which is the destructure-consume rule from `docs/calculus.md §4.5.2`.
+
+Structural recursion over declared recursive variants is accepted by the source discipline when
+the recursive argument is a constructor-pattern payload bound from the current parameter. The
+current core encoding reuses array handles, so the checker recognizes the pattern-bound payload
+as the strict descent witness while preserving the existing β/frame solver.

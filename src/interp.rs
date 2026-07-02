@@ -321,12 +321,6 @@ impl Machine {
                 Term::MkArray(Box::new(len), Box::new(fill)),
             );
         };
-        let Some(fill) = nat_to_u64(&fill) else {
-            return StepResult::Stuck(
-                Outcome::InternalMalformed,
-                Term::MkArray(Box::new(u64_to_nat(len)), Box::new(fill)),
-            );
-        };
         self.data_allocs += 1;
         StepResult::Stepped {
             term: Term::Array(vec![
@@ -361,7 +355,7 @@ impl Machine {
             );
         };
         StepResult::Stepped {
-            term: u64_to_nat(*value),
+            term: value.clone(),
             rule: Rule::ArrayGet,
         }
     }
@@ -382,9 +376,7 @@ impl Machine {
                 Term::ArraySet(Box::new(array), Box::new(index), Box::new(term))
             });
         }
-        let (Term::Array(values), Some(index), Some(value)) =
-            (&array, nat_to_u64(&index), nat_to_u64(&value))
-        else {
+        let (Term::Array(values), Some(index)) = (&array, nat_to_u64(&index)) else {
             return StepResult::Stuck(
                 Outcome::InternalMalformed,
                 Term::ArraySet(Box::new(array), Box::new(index), Box::new(value)),
@@ -397,7 +389,7 @@ impl Machine {
                 Term::ArraySet(
                     Box::new(array),
                     Box::new(u64_to_nat(index)),
-                    Box::new(u64_to_nat(value)),
+                    Box::new(value),
                 ),
             );
         }

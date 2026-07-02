@@ -1,0 +1,4 @@
+// expect: 6
+type NatList = Nil | Cons(Nat, NatList)
+fn sum(xs: NatList) -> Nat = case xs { Nil -> 0; Cons(x, rest) -> x + sum(rest) }
+fn main() -> Nat = sum(Cons(1, Cons(2, Cons(3, Nil))))

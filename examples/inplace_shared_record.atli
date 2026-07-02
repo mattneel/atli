@@ -1,0 +1,7 @@
+// expect-check-error: requires unique
+type Box = { x: Nat, y: Nat }
+fn main() -> Nat = {
+  b = freeze .{ x = 1, y = 2 }
+  c = inplace .{ b | x = 7 }
+  c.x
+}

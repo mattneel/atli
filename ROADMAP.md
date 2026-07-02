@@ -12,3 +12,10 @@
 - **Real measure verification** — v0.2.0 still trusts `measure`; future work checks well-founded measures instead of trusting the annotation.
 - **De Bruijn proof representation decision** — named binders kept the bridge legible; deeper substitution proofs may force a de Bruijn refactor.
 - **Multi-target releases** — Linux x86_64 ships first; macOS, Windows, and WASM release artifacts follow the backend work.
+
+## After v0.3.0
+
+- `spawn` / `scope`: the `mailbox.atli` record-carrying-buffer shape is now expressible; next step is moving it across task boundaries.
+- Generics: required for `Option[A]`, `Map[K,V]`, and uniqueness polymorphism `^u`.
+- Path `inplace` / borrow splitting: allow safe mutation through aggregate paths (`r.buf`) without destructuring the whole aggregate.
+- Aggregate layout optimization: unbox small records/variants when it preserves the data-region and uniqueness contracts.

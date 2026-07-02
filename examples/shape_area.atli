@@ -1,0 +1,4 @@
+// expect: 12
+type Shape = Circle(Nat) | Rect(Nat, Nat)
+fn area(s: Shape) -> Nat = case s { Circle(r) -> 3 * r * r; Rect(w, h) -> w * h }
+fn main() -> Nat = area(Rect(3, 4))

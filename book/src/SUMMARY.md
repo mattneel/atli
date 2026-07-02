@@ -8,6 +8,7 @@
 - [Witnesses, β, and high-water](learning/witnesses.md)
 - [Mutual recursion and the CLI](learning/cli.md)
 - [Owning things: `^`, `inplace`, and your second type error](learning/uniqueness.md)
+- [Structured data: records, variants, and taking things apart](learning/structured-data.md)
 
 # The Reference
 - [Surface subset](reference/surface.md)

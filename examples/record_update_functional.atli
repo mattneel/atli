@@ -1,0 +1,8 @@
+// expect: 7
+type Box = { x: Nat, y: Nat }
+fn main() -> Nat = {
+  b = freeze .{ x = 1, y = 2 }
+  c = .{ b | x = 7 }
+  s = freeze c
+  s.x
+}

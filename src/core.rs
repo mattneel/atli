@@ -48,7 +48,7 @@ pub enum Term {
     Zero,
     Succ(Box<Term>),
     /// Runtime array value for `docs/calculus.md §3.2/§5` array reductions.
-    Array(Vec<u64>),
+    Array(Vec<Term>),
     MkArray(Box<Term>, Box<Term>),
     ArrayGet(Box<Term>, Box<Term>),
     ArraySet(Box<Term>, Box<Term>, Box<Term>),

@@ -45,6 +45,32 @@ pub struct Program {
 pub enum Decl {
     Fn(FnDecl),
     Effect(EffectDecl),
+    Type(TypeDecl),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeDecl {
+    pub name: Spanned<Name>,
+    pub kind: TypeDeclKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeDeclKind {
+    Record(Vec<FieldDecl>),
+    Variant(Vec<ConstructorDecl>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldDecl {
+    pub name: Spanned<Name>,
+    pub ty: TypeExpr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstructorDecl {
+    pub name: Spanned<Name>,
+    pub payloads: Vec<TypeExpr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +112,7 @@ pub enum TypeExpr {
     Unit(Span),
     Nat(Span),
     Array(Span),
+    Named(Name, Span),
     Unique(Box<TypeExpr>, Span),
     Arrow(Box<TypeExpr>, Box<TypeExpr>, Span),
 }
@@ -97,6 +124,7 @@ impl TypeExpr {
             Self::Unit(span)
             | Self::Nat(span)
             | Self::Array(span)
+            | Self::Named(_, span)
             | Self::Unique(_, span)
             | Self::Arrow(_, _, span) => *span,
         }
@@ -147,6 +175,16 @@ pub enum ExprKind {
         scrutinee: Box<Expr>,
         arms: Vec<CaseArm>,
     },
+    RecordLit(Vec<(Spanned<Name>, Expr)>),
+    RecordUpdate {
+        record: Box<Expr>,
+        field: Spanned<Name>,
+        value: Box<Expr>,
+    },
+    Field {
+        record: Box<Expr>,
+        field: Spanned<Name>,
+    },
     Handle {
         body: Box<Expr>,
         clauses: Vec<HandleClause>,
@@ -190,6 +228,15 @@ pub enum Pattern {
     Zero(Span),
     Bind(Spanned<Name>),
     Wildcard(Span),
+    Constructor {
+        name: Spanned<Name>,
+        args: Vec<Pattern>,
+        span: Span,
+    },
+    Record {
+        fields: Vec<Spanned<Name>>,
+        span: Span,
+    },
 }
 
 impl Pattern {
@@ -198,6 +245,7 @@ impl Pattern {
         match self {
             Self::Zero(span) | Self::Wildcard(span) => *span,
             Self::Bind(name) => name.span,
+            Self::Constructor { span, .. } | Self::Record { span, .. } => *span,
         }
     }
 }
@@ -225,6 +273,7 @@ impl fmt::Display for TypeExpr {
             Self::Unit(_) => f.write_str("Unit"),
             Self::Nat(_) => f.write_str("Nat"),
             Self::Array(_) => f.write_str("Array"),
+            Self::Named(name, _) => f.write_str(name),
             Self::Unique(inner, _) => write!(f, "^{inner}"),
             Self::Arrow(a, b, _) => write!(f, "{a} -> {b}"),
         }
