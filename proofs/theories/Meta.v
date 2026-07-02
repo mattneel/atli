@@ -64,3 +64,10 @@ Theorem solver_certificate_soundness : forall rho cert c,
   (forall c', satisfies rho c') ->
   satisfies (certified_value cert) c /\ bound_le (rho (target c)) (certified_value cert (target c)).
 Admitted.
+
+(* L9 status: Stated-Pending-Infrastructure, owner: future heap/graded-context sprint.
+   Sprint 11 extends the executable compiler with docs/calculus.md §4 data affinity and
+   §9.2 arrays, but this Rocq scaffold deliberately does not yet model heap arrays or
+   Q-graded data contexts. The intended theorem states that, under the affine discipline,
+   [inplace set] is observationally equivalent to functional [set]. It is not represented
+   as an [Admitted] theorem until those missing definitions exist. *)

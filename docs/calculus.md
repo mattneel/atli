@@ -140,7 +140,7 @@ mismatch is the technical heart of the principality obligation (§8.6).
 ### 3.1 Types
 
 ```
-value type      τ ::= Unit | Bool | Nat
+value type      τ ::= Unit | Bool | Nat | Array
                     | (T →[σ] T)               function; latent row σ fires on apply
                     | ⟨ ℓ:T, … ⟩               record
                     | [ ℓ:T | … ]              variant
@@ -164,6 +164,10 @@ e ::= x
     | zero | succ e                    unary naturals
     | case e { zero => e₀ ; succ x => e₁ }
                                        Nat eliminator; x is the predecessor subterm
+    | mkarray(e_len, e_fill)           Nat array, length e_len, filled with e_fill
+    | get(e_arr, e_idx)                read Nat from array
+    | set(e_arr, e_idx, e_val)         functional update: copy array, then write
+    | len(e_arr)                       array length as Nat
     | λ x:T. e                        abstraction
     | e₁ e₂                           application
     | let x = e₁ in e₂                sequencing (monadic bind)
@@ -174,7 +178,8 @@ e ::= x
     | handle e with H                 effect handler (deep)
     | resume k e                      invoke a captured continuation (consumes k)
     | move e                          transfer unique ownership (consumes e)
-    | inplace e                       destructive update (requires q=1)
+    | inplace e                       destructive update; operand is a set(...)
+    | freeze e                        explicit unique-to-shared coercion sugar
 
 H ::= { return x → e_ret ; (ℓᵢ pᵢ kᵢ → eᵢ)ᵢ∈I }
 ```
@@ -215,6 +220,28 @@ x :[1] T , 0·Γ  ⊢  x : T ! ø
 ──────────────────────────────  (Weaken-Uniq)     -- forget uniqueness
 Γ ⊢ e : (τ @ q') ! σ            where T = τ @ q
 ```
+
+Bare surface types elaborate to unrestricted grade `ω`. A `^T` binding elaborates to
+`T @ 1` and is **affine**: it may be used at most once, and zero uses are legal. A use of
+a `1`-graded binding is any of:
+
+- passing it to a `^`-typed parameter;
+- using it as the operand of `move`;
+- using it as the target array of `inplace set(...)`;
+- using it at shared type through `Weaken-Uniq` / subsumption.
+
+Forgetting uniqueness consumes the binding. This is load-bearing: if a unique handle
+survived a shared use, `f(a); inplace set(a, i, v)` could mutate under `f`'s live alias.
+To keep a shared value around, bind the forgotten result: `s = freeze a`; `s` has grade
+`ω` and can be used freely.
+
+Branches are alternatives, so consumption joins conservatively: if a `1`-graded binding
+is consumed in either arm of a `case`, it is spent after the whole `case`. Tier-1
+closures are also conservative: a `1`-graded binding may not be captured by `λ`, `fix`,
+or `fix*` bodies because those bodies can run zero or many times. The required
+diagnostic is: "unique binding `a` captured by function; pass it as a `^` parameter
+instead." Threading ownership through `^` parameters is the sound idiom; relaxing this
+for once-called closures is a future precision extension.
 
 ### 4.2 Naturals
 
@@ -275,12 +302,48 @@ caller's.
 Γ ⊢ e : (τ @ 1) ! σ                       Γ ⊢ e : (τ @ 1) ! σ
 ──────────────────────────  (Move)        ──────────────────────────  (Inplace)
 Γ ⊢ move e : (τ @ 1) ! σ                  Γ ⊢ inplace e : (τ @ 1) ! σ
+
+Γ ⊢ e : (τ @ 1) ! σ
+──────────────────────────  (Freeze)
+Γ ⊢ freeze e : (τ @ ω) ! σ
 ```
 
 Both *require* `q = 1` in the premise. `move` re-issues a unique reference to a fresh
 region (enabling zero-copy cross-task transfer, checked against `ρ`); `inplace`
 licenses destructive mutation in the backend (§9). Neither is well-typed on a `ω`
 (shared) value — that is a compile error naming the alias that forced sharing.
+`freeze` is explicit-intent surface sugar for the same unique-to-shared coercion as
+`Weaken-Uniq`; it consumes the unique binding and returns a shared value.
+
+### 4.5.1 Arrays
+
+`Array` is monomorphic over `Nat` in this tier. The array handle itself has a uniqueness
+grade; elements are unrestricted `Nat` values.
+
+```
+Γ₁ ⊢ n : Nat @ q₁ ! σ₁       Γ₂ ⊢ v : Nat @ q₂ ! σ₂
+────────────────────────────────────────────────────  (MkArray)
+Γ₁ + Γ₂ ⊢ mkarray(n, v) : Array @ 1 ! σ₁ ▷ σ₂
+
+Γ₁ ⊢ a : Array @ q ! σ₁      Γ₂ ⊢ i : Nat @ qᵢ ! σ₂
+────────────────────────────────────────────────────  (Array-Get)
+Γ₁ + Γ₂ ⊢ get(a, i) : Nat @ ω ! σ₁ ▷ σ₂
+
+Γ₁ ⊢ a : Array @ q ! σ₁      Γ₂ ⊢ i : Nat @ qᵢ ! σ₂      Γ₃ ⊢ v : Nat @ qᵥ ! σ₃
+───────────────────────────────────────────────────────────────────────────────  (Array-Set)
+Γ₁ + Γ₂ + Γ₃ ⊢ set(a, i, v) : Array @ 1 ! σ₁ ▷ σ₂ ▷ σ₃
+
+Γ ⊢ a : Array @ q ! σ
+────────────────────────────  (Array-Len)
+Γ ⊢ len(a) : Nat @ ω ! σ
+```
+
+`set` is functional: it allocates a fresh array, copies `a`, writes index `i`, and yields
+the fresh unique handle. `inplace set(a, i, v)` is the destructive specialization of
+`Array-Set`: it is well-typed only when the target `a` is consumed at grade `1`, and it
+yields the same unique handle after mutation. Out-of-bounds `get`/`set` is defined
+behavior: the oracle reaches a bounds-error outcome and compiled code traps with exit 88
+and message `ATLI BOUNDS`.
 
 ### 4.6 Effects
 
@@ -419,6 +482,9 @@ context is handled explicitly by the two handler rules.
 ```
 E ::= [·] | succ E | case E { zero => e₀ ; succ x => e₁ }
     | E e | v E | let x = E in e | perform ℓ E | E.ℓ | resume E e | resume v E
+    | mkarray(E, e) | mkarray(v, E) | get(E, e) | get(v, E)
+    | set(E, e, e) | set(v, E, e) | set(v, v, E) | len(E)
+    | move E | inplace E | freeze E
 ```
 
 Core reductions:
@@ -432,7 +498,24 @@ case (succ v) { zero => e₀ ; succ x => e₁ }
                                   →   e₁[x := v]                          (case-succ)
 fix f. λx. e                   →   λx. e[f := fix f. λx. e]               (unfold)
 ⟨…, ℓ = v, …⟩.ℓ                →   v                                     (proj)
+mkarray(n, v)                  →   A                                    (array-new)
+     where n is a Nat value and A is a fresh length-n heap array filled with v.
+get(A, i)                      →   A[i]                                  (array-get)
+set(A, i, v)                   →   A'                                   (array-set)
+     where A' is a fresh copy of A with A'[i] = v.
+inplace set(A, i, v)           →   A                                    (array-inplace)
+     mutating A[i] := v in place.
+len(A)                         →   |A|                                  (array-len)
+move v                         →   v                                    (move)
+freeze v                       →   v                                    (freeze)
 ```
+
+Out-of-bounds `array-get`, `array-set`, and `array-inplace` step to a distinguished
+bounds-error outcome. The oracle may implement `array-inplace` by the same always-copy
+semantics as `array-set`; the observable contract is that, under §4's affine discipline,
+`inplace set(A, i, v)` and `set(A, i, v)` are observationally equivalent because the
+mutated array has no other live reference. Native code is allowed to cash the `q = 1`
+license by mutating in place; the reference interpreter remains the always-copy oracle.
 
 Handler reductions (deep):
 
@@ -666,6 +749,24 @@ this slot metric: every realized frame-slot prefix of a reduction from a term ty
 finite `β` is at most `β`. A byte-level theorem is a future refinement over the same
 slot model.
 
+### 9.2 Tier-1 data region
+
+Arrays allocate in a data region separate from the certified `β` arena. The `β` grade
+remains purely a control-frame slot bound: an array handle stored in a frame consumes one
+frame slot like any other machine-word value, but the array payload does **not** consume
+certified frame slots and does not affect the solver.
+
+Tier-1 array payloads are bump-allocated in a program-lifetime data region and freed
+wholesale at process exit. This is leak-free by program death; reference counting,
+Perceus-style reuse analysis, and early reclamation are future data-region refinements,
+not requirements for the `q = 1` soundness claim.
+
+Native execution reports `ATLI_DATA_ALLOCS=n`, counting array creations and functional
+copies. `mkarray` increments the count; functional `set` increments the count because it
+allocates a copy; `inplace set` emits no allocation at the update site and therefore does
+not increment the count. Out-of-bounds compiled `get`/`set`/`inplace set` traps with
+exit 88 and message `ATLI BOUNDS`, matching the oracle's bounds-error outcome.
+
 **No LLVM coroutines.** Atli owns the continuation split in its own mid-end (Zig's hard-
 won lesson: LLVM couples frame alloc/dealloc to execution, forcing heap-allocated self-
 destroying frames — fatal to arena placement, and its splitting pass is slow and buggy).
@@ -692,8 +793,15 @@ Mechanize in Rocq (Iris for the substructural/linearity reasoning). Prove soundn
   continuations for resuming clauses (`H-op-resume`), and the lemma that typed clauses
   satisfy `kᵢ ∈ FV(eᵢ) ⇔ eᵢ` directly resumes `kᵢ` exactly once.
 - Boundedness: `Bound = ℕ ∪ {ω}`, `⊕`/`⊔`, `Fix`/`fix*` with recursive `β` constraints.
-- Drop for now: records/variants, regions beyond a single arena, `move`/`inplace`
-  (add back as *known-sound extensions* once the core holds).
+- Drop for now: records/variants, regions beyond a single arena, arrays, `move`,
+  `inplace`, and `freeze`.
+
+Arrays and data-affinity are now part of the executable compiler but remain outside the
+Rocq scaffold. The proof ladder therefore adds L9 as
+`Stated-Pending-Infrastructure`: **uniqueness soundness**, the observational
+equivalence of `inplace set` and functional `set` under §4's affine discipline. Stating
+and proving L9 requires graded contexts and a heap in the step relation; it is not an
+`Admitted` theorem in the current scaffold and does not change `proofs/ADMITTED_COUNT`.
 
 Prove, in order of pain:
 1. **8.6 principality** for this core (the mixed order; the crux).
