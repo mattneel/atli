@@ -35,6 +35,10 @@ signature that exercises it. "A generic map" is not an acceptance artifact;
 `fn map[A, B](xs: List[A], f: A -> B) -> List[B]` is. Prose intent is promoted to
 numbered criteria, and capability criteria carry their own concrete program.
 
+Proof-ledger changes are explicit history: every `proofs/ADMITTED_COUNT` change, up or
+down, must occur in the same commit as a report ledger note naming each theorem that
+moved and the direction (`Admitted` stated, `Qed` discharged, or SPI reclassified).
+
 ## Differential and falsifier provenance
 
 Acceptance differentials and falsifiers must exercise the same production path they claim to validate. A backend falsifier must compile through the Atli emitter/MLIR/LLVM pipeline and link against the actual generated runtime shim, unless it is explicitly labeled as a non-acceptance sanity check. Hand-written C, summary IR, or bypassed shims cannot discharge criteria about native lowering. Reports must name the provenance of every falsifier.

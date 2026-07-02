@@ -808,13 +808,26 @@ ordering, not a convention. It is the codegen-side twin of the checker-side disc
 Stated as precise theorems. **[settled]** = follows standard technique once the rules
 are fixed; **[novel]** = Atli-specific, the real work.
 
-### 8.1 Progress — **[settled]**
-If `∅ ⊢ e : T ! σ` then `e` is a value or `e → e'`. (Note the `resume`-after-use stuck
-state is excluded by 8.3.)
+### 8.1 Progress (effectful) — **[settled]**
+If `∅ ⊢ e : T ! ε` then exactly one of:
+
+1. `e` is a value;
+2. `e → e'` for some `e'`;
+3. `e` is blocked on an unhandled operation predicted by its row: there exist
+   `ℓ ∈ ε`, a value `v`, and an evaluation context `E` handler-free for `ℓ`, with
+   `e = E[perform ℓ v]`.
+
+**Corollary (effect-closed progress).** If `∅ ⊢ e : T ! ∅` then `e` is a value or
+steps; the third disjunct is uninhabited at the empty row. Atli deliberately retains two
+detectable stuck faces, each theorem-governed: resume-after-use is unreachable for
+well-typed programs (§8.3), while unhandled-operation blocking is reachable only when
+predicted by the effect row. This is the runtime face of `StuckUnhandledOperation` and
+the theorem consumed by effect-closed `spawn` bodies.
 
 ### 8.2 Preservation — **[settled]**
-If `Γ ⊢ e : T ! σ` and `e → e'` then `Γ ⊢ e' : T ! σ'` with `σ' ⊑⁺ σ`. (Effects only
-shrink or hold; `β` only holds or is over-approximated; region narrows.)
+If `∅ ⊢ e : T ! ε, β` and `e → e'` then `∅ ⊢ e' : T ! ε', β'` with `ε' ⊆ ε` and
+`β' ⊑ β`. Effects only shrink or hold; `β` only holds or is over-approximated; region
+narrows.
 
 ### 8.3 Affine continuations / no-duplication — **[settled given QTT]**
 In a well-typed program no continuation `κ` is resumed more than once; equivalently, the
@@ -1016,7 +1029,10 @@ Prove, in order of pain:
    `k`), which Iris makes clean.
 3. **8.5 widening soundness** — with the `≥ true size` goal and the §7.3 phase gate as
    hypothesis.
-4. **8.1 / 8.2** progress & preservation — standard once the above hold.
+4. **8.1 / 8.2** progress & preservation — standard once the above hold. The latent row on
+   arrows from §3.1/§4.2/§4.3 is load-bearing and is retained in the mechanized reduced
+   core; finding nineteen showed that erasing it launders latent effects and `β` through
+   higher-order calls.
 
 In parallel, Layer‑1: build a **well-typed-term generator** from the rules above (writing
 the generator *is* the first executable spec — it forces the rules to be precise enough

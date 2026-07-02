@@ -33,6 +33,25 @@ semantics.
 
 ## Resolved gaps
 
+- RESOLVED(mechanized-arrow-latent-erasure): Finding nineteen corrected the Rocq typing
+  model back toward `docs/calculus.md §3.1/§4.2/§4.3`: arrows carry latent effect and
+  boundedness rows. The previous `TyArrow a b` erased the lambda/fix body row, allowing
+  `(λx. d) 0` to type at finite/pure judgment and step to a `Div` or effectful body.
+  `Syntax.v` now represents `TyArrow a ε β b`, `Ty_Lam` stores the body row in the arrow,
+  `Ty_App` charges the latent row, and fix rules form pure function values with latent
+  bodies.
+
+- RESOLVED(progress-open-effects): Finding eighteen corrected `docs/calculus.md §8.1`
+  from classic effect-closed progress to the effectful trichotomy. A closed term with a
+  nonempty row may be blocked on an unhandled operation, and the row must predict the
+  label. The effect-closed corollary recovers classic value-or-step progress for empty
+  rows, including spawned task bodies.
+
+- RESOLVED(preservation-statement-drift): Finding eighteen also aligned §8.2 and
+  `Meta.v`'s intended L4 with the ladder claim: preservation carries explicit effect-row
+  subsumption and boundedness over-approximation (`ε' ⊆ ε`, `β' ⊑ β`) rather than merely
+  preserving typability.
+
 - RESOLVED(generic-arrow-instantiation): Sprint 14 originally claimed higher-order
   generic calls but `list_map.atli` did not exercise the quoted capability. The surface
   unifier defaulted generic variables in arrow positions instead of recursing through
