@@ -286,6 +286,11 @@ fn codegen_emit_goldens_pin_certified_arena_literals() {
             "examples/record_update_functional.atli",
             "tests/goldens/codegen/record_update_functional.mlir",
         ),
+        ("examples/fanout.atli", "tests/goldens/codegen/fanout.mlir"),
+        (
+            "examples/courier.atli",
+            "tests/goldens/codegen/courier.mlir",
+        ),
     ] {
         let (code, stdout, stderr) = run_cli(&["emit", path]);
         assert_eq!(code, 0, "{stderr}");
@@ -371,6 +376,9 @@ fn compiled_native_outputs_match_oracle_for_finite_programs() {
         ("render", fs::read_to_string("examples/render.atli").unwrap(), "42\n"),
         ("copy_vs_inplace", fs::read_to_string("examples/copy_vs_inplace.atli").unwrap(), "2\n"),
         ("copy_functional", fs::read_to_string("examples/copy_functional.atli").unwrap(), "2\n"),
+        ("fanout", fs::read_to_string("examples/fanout.atli").unwrap(), "9\n"),
+        ("courier", fs::read_to_string("examples/courier.atli").unwrap(), "42\n"),
+        ("nursery", fs::read_to_string("examples/nursery.atli").unwrap(), "6\n"),
     ];
     for (name, src, expected) in cases {
         let path = format!("target/codegen_cases/{name}.atli");
@@ -393,6 +401,47 @@ fn compiled_native_outputs_match_oracle_for_finite_programs() {
         );
         let _ = fs::remove_file(name);
     }
+}
+
+#[test]
+fn task_examples_report_spawn_counts_and_are_deterministic() {
+    let _guard = CODEGEN_LOCK.lock().unwrap();
+    if !has_codegen_toolchain() {
+        eprintln!("skipping task runtime smoke: LLVM/MLIR toolchain not found");
+        return;
+    }
+
+    let mut outputs = std::collections::BTreeSet::new();
+    for _ in 0..10 {
+        let out = Command::new(bin())
+            .args(["run", "--compiled", "examples/fanout.atli"])
+            .output()
+            .expect("compiled fanout");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        outputs.insert(String::from_utf8(out.stdout).unwrap());
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert_eq!(parse_tasks_spawned(&stderr), 3, "{stderr}");
+    }
+    assert_eq!(outputs.len(), 1, "fanout must be schedule-independent");
+    assert_eq!(outputs.iter().next().unwrap(), "9\n");
+
+    let courier = Command::new(bin())
+        .args(["run", "--compiled", "examples/courier.atli"])
+        .output()
+        .expect("compiled courier");
+    assert!(
+        courier.status.success(),
+        "{}",
+        String::from_utf8_lossy(&courier.stderr)
+    );
+    assert_eq!(String::from_utf8(courier.stdout).unwrap(), "42\n");
+    let stderr = String::from_utf8(courier.stderr).unwrap();
+    assert_eq!(parse_tasks_spawned(&stderr), 1, "{stderr}");
+    assert!(parse_data_allocs(&stderr) >= 1, "{stderr}");
 }
 
 #[test]
@@ -539,6 +588,79 @@ fn forced_dynamic_dispatch_matches_handler_fast_path() {
 }
 
 #[test]
+fn bypassed_unique_to_two_spawns_race_is_falsifiable() {
+    let _guard = CODEGEN_LOCK.lock().unwrap();
+    let clang = if Command::new("clang-22")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        "clang-22"
+    } else if Command::new("clang")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        "clang"
+    } else {
+        eprintln!("skipping task race falsifier: clang not found");
+        return;
+    };
+    fs::create_dir_all("target/codegen_cases").unwrap();
+    let c = r#"
+#include <pthread.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <unistd.h>
+static volatile int64_t cell = 0;
+static void spin(long salt) {
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  long n = (ts.tv_nsec ^ getpid() ^ salt) & 0x3fff;
+  for (long i = 0; i < n; ++i) sched_yield();
+}
+static void *write_one(void *arg) { (void)arg; spin(1); cell = 1; return 0; }
+static void *write_two(void *arg) { (void)arg; spin(2); cell = 2; return 0; }
+int main(void) {
+  pthread_t a, b;
+  pthread_create(&a, 0, write_one, 0);
+  pthread_create(&b, 0, write_two, 0);
+  pthread_join(a, 0);
+  pthread_join(b, 0);
+  printf("%lld\n", (long long)cell);
+  return 0;
+}
+"#;
+    let c_path = "target/codegen_cases/race_falsifier.c";
+    let exe = "target/codegen_cases/race_falsifier";
+    fs::write(c_path, c).unwrap();
+    let status = Command::new(clang)
+        .args([c_path, "-pthread", "-O0", "-o", exe])
+        .status()
+        .expect("compile race falsifier");
+    assert!(status.success());
+
+    let oracle = "0\n";
+    let mut outputs = std::collections::BTreeSet::new();
+    for _ in 0..30 {
+        let out = Command::new(exe).output().expect("run race falsifier");
+        assert!(out.status.success());
+        let stdout = String::from_utf8(out.stdout).unwrap();
+        assert_ne!(
+            stdout, oracle,
+            "bypassed native race must diverge from copy oracle"
+        );
+        outputs.insert(stdout);
+    }
+    assert!(
+        outputs.len() >= 2,
+        "bypassed native race should be nondeterministic across runs: {outputs:?}"
+    );
+}
+
+#[test]
 fn structural_mutual_recursion_is_rejected_with_pair_blame() {
     let src = r#"
 fn even(n: Nat) -> Nat = case n {
@@ -589,4 +711,13 @@ fn parse_high_water(stderr: &str) -> (u64, u64) {
         }
     }
     (high_water.unwrap(), beta.unwrap())
+}
+
+fn parse_tasks_spawned(stderr: &str) -> u64 {
+    for part in stderr.split_whitespace() {
+        if let Some(value) = part.strip_prefix("ATLI_TASKS_SPAWNED=") {
+            return value.parse().unwrap();
+        }
+    }
+    panic!("missing ATLI_TASKS_SPAWNED in {stderr}");
 }

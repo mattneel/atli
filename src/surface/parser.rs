@@ -459,6 +459,50 @@ impl Parser {
                     tok.span.join(expr.span),
                 ))
             }
+            TokenKind::Await => {
+                let handle = self.call_expr()?;
+                Ok(Expr::new(
+                    ExprKind::Await {
+                        handle: Box::new(handle.clone()),
+                    },
+                    tok.span.join(handle.span),
+                ))
+            }
+            TokenKind::Spawn => {
+                let call = self.call_expr()?;
+                let ExprKind::Call { callee, args } = call.kind else {
+                    return Err(ParseError {
+                        span: call.span,
+                        message: "spawn expects a top-level function call, e.g. `spawn f(x)`"
+                            .into(),
+                    });
+                };
+                let ExprKind::Var(name) = callee.kind else {
+                    return Err(ParseError {
+                        span: callee.span,
+                        message: "spawn callee must be a top-level function name".into(),
+                    });
+                };
+                Ok(Expr::new(
+                    ExprKind::Spawn {
+                        callee: Spanned::new(name, callee.span),
+                        args,
+                    },
+                    tok.span.join(call.span),
+                ))
+            }
+            TokenKind::Scope => {
+                let lbrace = self
+                    .expect(&TokenKind::LBrace, "expected `{` after `scope`")?
+                    .span;
+                let body = self.block_after_lbrace(lbrace)?;
+                Ok(Expr::new(
+                    ExprKind::Scope {
+                        body: Box::new(body.clone()),
+                    },
+                    tok.span.join(body.span),
+                ))
+            }
             TokenKind::Number(value) => Ok(Expr::new(ExprKind::Nat(value), tok.span)),
             TokenKind::Ident(name) => Ok(Expr::new(ExprKind::Var(name), tok.span)),
             TokenKind::Underscore => Ok(Expr::new(ExprKind::Var("_".into()), tok.span)),
@@ -752,8 +796,6 @@ impl Parser {
     fn reject_unsupported_expr(&self) -> Result<(), ParseError> {
         let msg = match self.peek().kind {
             TokenKind::If => Some("if is not yet in the reduced surface; use `case` on Nat"),
-            TokenKind::Spawn => Some("spawn is not yet in the reduced surface"),
-            TokenKind::Scope => Some("scope is not yet in the reduced surface"),
             TokenKind::LBracket => Some("lists are not yet in the reduced surface"),
             _ => None,
         };

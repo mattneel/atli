@@ -25,6 +25,9 @@ pub enum Rule {
     Move,
     Freeze,
     Mark,
+    Scope,
+    Spawn,
+    Await,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +48,7 @@ pub struct EvalReport {
     pub trace: Vec<Rule>,
     pub max_frame: u32,
     pub data_allocs: u64,
+    pub tasks_spawned: u64,
 }
 
 impl EvalReport {
@@ -56,6 +60,7 @@ impl EvalReport {
             trace: self.trace.clone(),
             max_frame: self.max_frame,
             data_allocs: self.data_allocs,
+            tasks_spawned: self.tasks_spawned,
         }
     }
 }
@@ -105,6 +110,7 @@ pub struct Machine {
     continuations: BTreeMap<u64, Continuation>,
     max_frame: u32,
     data_allocs: u64,
+    tasks_spawned: u64,
 }
 
 impl Default for Machine {
@@ -121,6 +127,7 @@ impl Machine {
             continuations: BTreeMap::new(),
             max_frame: 0,
             data_allocs: 0,
+            tasks_spawned: 0,
         }
     }
 
@@ -140,6 +147,7 @@ impl Machine {
                     trace,
                     max_frame: self.max_frame,
                     data_allocs: self.data_allocs,
+                    tasks_spawned: self.tasks_spawned,
                 };
             }
             match self.step(current) {
@@ -154,6 +162,7 @@ impl Machine {
                         trace,
                         max_frame: self.max_frame,
                         data_allocs: self.data_allocs,
+                        tasks_spawned: self.tasks_spawned,
                     };
                 }
             }
@@ -168,6 +177,7 @@ impl Machine {
             trace,
             max_frame: self.max_frame,
             data_allocs: self.data_allocs,
+            tasks_spawned: self.tasks_spawned,
         }
     }
 
@@ -189,6 +199,9 @@ impl Machine {
                 term: *inner,
                 rule: Rule::Mark,
             },
+            Term::Scope(inner) => self.step_scope(*inner),
+            Term::Spawn(inner) => self.step_spawn(*inner),
+            Term::Await(inner) => self.step_await(*inner),
             Term::CaseNat {
                 scrutinee,
                 zero_body,
@@ -270,6 +283,44 @@ impl Machine {
             StepResult::Stuck(Outcome::InternalMalformed, Term::Succ(Box::new(inner)))
         } else {
             self.step_nested(inner, |term| Term::Succ(Box::new(term)))
+        }
+    }
+
+    fn step_scope(&mut self, inner: Term) -> StepResult {
+        // `scope { v } → v` after sequential-oracle children have completed (`calculus.md §5`).
+        if inner.is_value() {
+            StepResult::Stepped {
+                term: inner,
+                rule: Rule::Scope,
+            }
+        } else {
+            self.step_nested(inner, |term| Term::Scope(Box::new(term)))
+        }
+    }
+
+    fn step_spawn(&mut self, inner: Term) -> StepResult {
+        // Sequential oracle for `spawn` (`calculus.md §5`): run the child expression to a value
+        // immediately and store it in an opaque task handle.
+        if inner.is_value() {
+            StepResult::Stepped {
+                term: Term::TaskValue(Box::new(inner)),
+                rule: Rule::Spawn,
+            }
+        } else {
+            self.step_nested(inner, |term| Term::Spawn(Box::new(term)))
+        }
+    }
+
+    fn step_await(&mut self, inner: Term) -> StepResult {
+        if !inner.is_value() {
+            return self.step_nested(inner, |term| Term::Await(Box::new(term)));
+        }
+        match inner {
+            Term::TaskValue(value) => StepResult::Stepped {
+                term: *value,
+                rule: Rule::Await,
+            },
+            other => StepResult::Stuck(Outcome::InternalMalformed, Term::Await(Box::new(other))),
         }
     }
 
@@ -650,7 +701,11 @@ fn term_mentions_var(term: &Term, name: &str) -> bool {
         | Term::Move(inner)
         | Term::Inplace(inner)
         | Term::Freeze(inner)
-        | Term::Mark(_, inner) => term_mentions_var(inner, name),
+        | Term::Mark(_, inner)
+        | Term::Scope(inner)
+        | Term::Spawn(inner)
+        | Term::Await(inner)
+        | Term::TaskValue(inner) => term_mentions_var(inner, name),
         Term::MkArray(len, fill) | Term::ArrayGet(len, fill) => {
             term_mentions_var(len, name) || term_mentions_var(fill, name)
         }

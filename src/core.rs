@@ -15,6 +15,7 @@ pub enum Type {
     Unit,
     Nat,
     Array,
+    Task(Box<Type>),
     Arrow(Box<Type>, Box<Type>),
     Cont(Box<Type>, Box<Type>),
 }
@@ -25,6 +26,7 @@ impl fmt::Display for Type {
             Type::Unit => f.write_str("Unit"),
             Type::Nat => f.write_str("Nat"),
             Type::Array => f.write_str("Array"),
+            Type::Task(result) => write!(f, "Task[{result}]"),
             Type::Arrow(arg, ret) => write!(f, "({arg} -> {ret})"),
             Type::Cont(arg, ret) => write!(f, "Cont[{arg},{ret}]"),
         }
@@ -60,6 +62,10 @@ pub enum Term {
     /// marker preserves the aggregate origin so generator/checker coverage remains falsifiable
     /// instead of firing for plain array operations.
     Mark(CoverageTag, Box<Term>),
+    Scope(Box<Term>),
+    Spawn(Box<Term>),
+    Await(Box<Term>),
+    TaskValue(Box<Term>),
     CaseNat {
         scrutinee: Box<Term>,
         zero_body: Box<Term>,
@@ -171,6 +177,9 @@ pub enum CoverageTag {
     RecordFunctionalUpdate,
     RecordInplaceUpdate,
     ConstructorPatternDescent,
+    Scope,
+    Spawn,
+    Await,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,7 +256,12 @@ impl Term {
     #[must_use]
     pub fn is_value(&self) -> bool {
         match self {
-            Self::Unit | Self::Zero | Self::Lam { .. } | Self::Cont(_) | Self::Array(_) => true,
+            Self::Unit
+            | Self::Zero
+            | Self::Lam { .. }
+            | Self::Cont(_)
+            | Self::Array(_)
+            | Self::TaskValue(_) => true,
             Self::Succ(inner) | Self::Mark(_, inner) => inner.is_value(),
             Self::Var(_)
             | Self::MkArray(_, _)
@@ -262,6 +276,9 @@ impl Term {
             | Self::Let { .. }
             | Self::Fix { .. }
             | Self::FixGroup { .. }
+            | Self::Scope(_)
+            | Self::Spawn(_)
+            | Self::Await(_)
             | Self::Perform(_, _)
             | Self::Handle { .. }
             | Self::Resume { .. } => false,
@@ -294,6 +311,10 @@ impl Term {
             Self::Inplace(inner) => Self::Inplace(Box::new(inner.subst(name, replacement))),
             Self::Freeze(inner) => Self::Freeze(Box::new(inner.subst(name, replacement))),
             Self::Mark(tag, inner) => Self::Mark(*tag, Box::new(inner.subst(name, replacement))),
+            Self::Scope(inner) => Self::Scope(Box::new(inner.subst(name, replacement))),
+            Self::Spawn(inner) => Self::Spawn(Box::new(inner.subst(name, replacement))),
+            Self::Await(inner) => Self::Await(Box::new(inner.subst(name, replacement))),
+            Self::TaskValue(inner) => Self::TaskValue(Box::new(inner.subst(name, replacement))),
             Self::CaseNat {
                 scrutinee,
                 zero_body,
@@ -420,6 +441,10 @@ impl Term {
             Self::Inplace(inner) => Self::Inplace(Box::new(inner.normalize_cont_ids())),
             Self::Freeze(inner) => Self::Freeze(Box::new(inner.normalize_cont_ids())),
             Self::Mark(tag, inner) => Self::Mark(*tag, Box::new(inner.normalize_cont_ids())),
+            Self::Scope(inner) => Self::Scope(Box::new(inner.normalize_cont_ids())),
+            Self::Spawn(inner) => Self::Spawn(Box::new(inner.normalize_cont_ids())),
+            Self::Await(inner) => Self::Await(Box::new(inner.normalize_cont_ids())),
+            Self::TaskValue(inner) => Self::TaskValue(Box::new(inner.normalize_cont_ids())),
             Self::CaseNat {
                 scrutinee,
                 zero_body,
@@ -604,6 +629,10 @@ impl fmt::Display for Term {
             Term::Inplace(inner) => write!(f, "inplace {inner}"),
             Term::Freeze(inner) => write!(f, "freeze {inner}"),
             Term::Mark(tag, inner) => write!(f, "mark[{tag:?}]({inner})"),
+            Term::Scope(inner) => write!(f, "scope {{ {inner} }}"),
+            Term::Spawn(inner) => write!(f, "spawn {inner}"),
+            Term::Await(inner) => write!(f, "await {inner}"),
+            Term::TaskValue(inner) => write!(f, "task[{inner}]"),
             Term::CaseNat {
                 scrutinee,
                 zero_body,

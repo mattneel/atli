@@ -294,6 +294,49 @@ impl Checker {
                 out.coverage.insert(*tag);
                 Ok(out)
             }
+            Term::Scope(inner) => self.infer(inner, env),
+            Term::Spawn(inner) => {
+                let inner = self.infer(inner, env)?;
+                if !inner.effects.is_empty() {
+                    return Err(TypeError::new(
+                        "Spawn",
+                        "§4.5.3",
+                        term,
+                        format!(
+                            "spawned task must handle its own effects; row is {}",
+                            inner.effects
+                        ),
+                        TypeErrorKind::TypeMismatch {
+                            expected: Type::Unit,
+                            found: inner.ty,
+                        },
+                    ));
+                }
+                let mut out = inner;
+                out.ty = Type::Task(Box::new(out.ty));
+                Ok(out)
+            }
+            Term::Await(inner) => {
+                let mut out = self.infer(inner, env)?;
+                let Type::Task(result) = out.ty.clone() else {
+                    return Err(TypeError::new(
+                        "Await",
+                        "§4.5.3",
+                        term,
+                        format!("expected Task, found {}", out.ty),
+                        TypeErrorKind::TypeMismatch {
+                            expected: Type::Task(Box::new(Type::Nat)),
+                            found: out.ty,
+                        },
+                    ));
+                };
+                out.ty = *result;
+                Ok(out)
+            }
+            Term::TaskValue(inner) => {
+                let inner = self.infer(inner, env)?;
+                Ok(PartialWitness::pure(Type::Task(Box::new(inner.ty))))
+            }
             Term::Lam {
                 param,
                 param_ty,
@@ -827,7 +870,11 @@ fn free_var_count(term: &Term, name: &str) -> usize {
         | Term::Move(inner)
         | Term::Inplace(inner)
         | Term::Freeze(inner)
-        | Term::Mark(_, inner) => free_var_count(inner, name),
+        | Term::Mark(_, inner)
+        | Term::Scope(inner)
+        | Term::Spawn(inner)
+        | Term::Await(inner)
+        | Term::TaskValue(inner) => free_var_count(inner, name),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             free_var_count(lhs, name) + free_var_count(rhs, name)
         }
@@ -897,7 +944,11 @@ fn direct_resume_count(term: &Term, name: &str) -> usize {
         | Term::Move(inner)
         | Term::Inplace(inner)
         | Term::Freeze(inner)
-        | Term::Mark(_, inner) => direct_resume_count(inner, name),
+        | Term::Mark(_, inner)
+        | Term::Scope(inner)
+        | Term::Spawn(inner)
+        | Term::Await(inner)
+        | Term::TaskValue(inner) => direct_resume_count(inner, name),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             direct_resume_count(lhs, name) + direct_resume_count(rhs, name)
         }

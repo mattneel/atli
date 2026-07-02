@@ -9,6 +9,7 @@
 - [Mutual recursion and the CLI](learning/cli.md)
 - [Owning things: `^`, `inplace`, and your second type error](learning/uniqueness.md)
 - [Structured data: records, variants, and taking things apart](learning/structured-data.md)
+- [Tasks: the tree of arenas](learning/tasks.md)
 
 # The Reference
 - [Surface subset](reference/surface.md)

@@ -27,6 +27,7 @@ pub enum TokenKind {
     Freeze,
     Spawn,
     Scope,
+    Await,
     LParen,
     RParen,
     LBrace,
@@ -197,6 +198,7 @@ fn keyword_or_ident(text: &str) -> TokenKind {
         "freeze" => TokenKind::Freeze,
         "spawn" => TokenKind::Spawn,
         "scope" => TokenKind::Scope,
+        "await" => TokenKind::Await,
         _ => TokenKind::Ident(text.into()),
     }
 }

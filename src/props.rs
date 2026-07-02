@@ -176,6 +176,9 @@ mod tests {
             CoverageTag::RecordFunctionalUpdate,
             CoverageTag::RecordInplaceUpdate,
             CoverageTag::ConstructorPatternDescent,
+            CoverageTag::Scope,
+            CoverageTag::Spawn,
+            CoverageTag::Await,
         ] {
             assert!(
                 counts.get(tag) > 0,

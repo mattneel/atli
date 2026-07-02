@@ -512,6 +512,30 @@ impl<'a> Elaborator<'a> {
                 let desugared = desugar_pipe((**lhs).clone(), (**rhs).clone(), expr.span)?;
                 return self.expr(&desugared, env);
             }
+            ExprKind::Scope { body } => Term::Scope(Box::new(self.expr(body, env)?)),
+            ExprKind::Spawn { callee, args } => {
+                if !self.functions.contains_key(&callee.node) {
+                    return Err(ElaborateError {
+                        span: callee.span,
+                        message: format!(
+                            "spawn callee `{}` is not a declared top-level function",
+                            callee.node
+                        ),
+                    });
+                }
+                let call = Expr::new(
+                    ExprKind::Call {
+                        callee: Box::new(Expr::new(
+                            ExprKind::Var(callee.node.clone()),
+                            callee.span,
+                        )),
+                        args: args.clone(),
+                    },
+                    expr.span,
+                );
+                Term::Spawn(Box::new(self.expr(&call, env)?))
+            }
+            ExprKind::Await { handle } => Term::Await(Box::new(self.expr(handle, env)?)),
             ExprKind::Block { bindings, result } => {
                 let mut local = env.clone();
                 let mut lowered_bindings = Vec::new();
@@ -1175,6 +1199,7 @@ fn lower_type(ty: &TypeExpr) -> Result<Type, ElaborateError> {
         TypeExpr::Unit(_) => Ok(Type::Unit),
         TypeExpr::Nat(_) => Ok(Type::Nat),
         TypeExpr::Array(_) => Ok(Type::Array),
+        TypeExpr::Named(name, _) if name == "Task" => Ok(Type::Task(Box::new(Type::Nat))),
         TypeExpr::Named(_, _) => Ok(Type::Array),
         TypeExpr::Unique(inner, _) => lower_type(inner),
         TypeExpr::Arrow(arg, ret, _) => Ok(Type::Arrow(
@@ -1242,6 +1267,8 @@ fn expr_mentions(expr: &Expr, name: &str) -> bool {
         ExprKind::QualifiedCall { args, .. } => args.iter().any(|arg| expr_mentions(arg, name)),
         ExprKind::Binary { lhs, rhs, .. } => expr_mentions(lhs, name) || expr_mentions(rhs, name),
         ExprKind::Pipe { lhs, rhs } => expr_mentions(lhs, name) || expr_mentions(rhs, name),
+        ExprKind::Scope { body } | ExprKind::Await { handle: body } => expr_mentions(body, name),
+        ExprKind::Spawn { args, .. } => args.iter().any(|arg| expr_mentions(arg, name)),
         ExprKind::Block { bindings, result } => {
             bindings
                 .iter()
@@ -1293,13 +1320,10 @@ impl UniqueEnv {
     fn consume(&mut self, name: &str, span: Span) -> Result<(), ElaborateError> {
         if let Some(binding) = self.bindings.get_mut(name) {
             debug_assert_eq!(binding.grade, Q::One);
-            if let Some(first) = binding.consumed_at {
+            if binding.consumed_at.is_some() {
                 return Err(ElaborateError {
                     span,
-                    message: format!(
-                        "cannot use `{name}`: consumed here -> bytes {}..{}; used again here -> bytes {}..{}",
-                        first.start, first.end, span.start, span.end
-                    ),
+                    message: format!("cannot use `{name}`: consumed here; used again here"),
                 });
             }
             binding.consumed_at = Some(span);
@@ -1330,7 +1354,8 @@ impl UniqueEnv {
                 message: format!("{what} requires a unique value, but `freeze` returns shared"),
             }),
             _ => {
-                let unique = check_unique_expr(expr, self, signatures, aggregates)?;
+                let unique =
+                    check_unique_expr(expr, self, signatures, aggregates, &BTreeSet::new())?;
                 if unique {
                     Ok(())
                 } else {
@@ -1354,6 +1379,14 @@ impl UniqueEnv {
 
 fn check_surface_uniqueness(program: &Program) -> Result<(), ElaborateError> {
     let aggregates = AggregateEnv::from_program(program)?;
+    let effectful_functions = program
+        .decls
+        .iter()
+        .filter_map(|decl| match decl {
+            Decl::Fn(func) if func.effects.is_some() => Some(func.name.node.clone()),
+            Decl::Fn(_) | Decl::Effect(_) | Decl::Type(_) => None,
+        })
+        .collect::<BTreeSet<_>>();
     let signatures = program
         .decls
         .iter()
@@ -1381,7 +1414,13 @@ fn check_surface_uniqueness(program: &Program) -> Result<(), ElaborateError> {
                 env.bind_unique(&param.name.node);
             }
         }
-        check_unique_expr(&func.body, &mut env, &signatures, &aggregates)?;
+        check_unique_expr(
+            &func.body,
+            &mut env,
+            &signatures,
+            &aggregates,
+            &effectful_functions,
+        )?;
     }
     Ok(())
 }
@@ -1391,6 +1430,7 @@ fn check_unique_expr(
     env: &mut UniqueEnv,
     signatures: &BTreeMap<String, (Vec<bool>, bool)>,
     aggregates: &AggregateEnv,
+    effectful_functions: &BTreeSet<String>,
 ) -> Result<bool, ElaborateError> {
     match &expr.kind {
         ExprKind::Unit | ExprKind::Nat(_) => Ok(false),
@@ -1399,27 +1439,75 @@ fn check_unique_expr(
             Ok(false)
         }
         ExprKind::Binary { lhs, rhs, .. } => {
-            check_unique_expr(lhs, env, signatures, aggregates)?;
-            check_unique_expr(rhs, env, signatures, aggregates)?;
+            check_unique_expr(lhs, env, signatures, aggregates, effectful_functions)?;
+            check_unique_expr(rhs, env, signatures, aggregates, effectful_functions)?;
             Ok(false)
         }
         ExprKind::Pipe { lhs, rhs } => {
             let desugared = desugar_pipe((**lhs).clone(), (**rhs).clone(), expr.span)?;
-            check_unique_expr(&desugared, env, signatures, aggregates)
+            check_unique_expr(&desugared, env, signatures, aggregates, effectful_functions)
+        }
+        ExprKind::Scope { body } => {
+            if scope_returns_task_handle(body) {
+                return Err(ElaborateError {
+                    span: expr.span,
+                    message: "task handle may not escape scope".into(),
+                });
+            }
+            check_unique_expr(body, env, signatures, aggregates, effectful_functions)
+        }
+        ExprKind::Spawn { callee, args } => {
+            if effectful_functions.contains(&callee.node) {
+                return Err(ElaborateError {
+                    span: callee.span,
+                    message: format!(
+                        "spawned task must handle its own effects; `{}` has a non-empty row",
+                        callee.node
+                    ),
+                });
+            }
+            if let Some((params, _)) = signatures.get(&callee.node) {
+                for (arg, needs_unique) in args.iter().zip(params) {
+                    if *needs_unique {
+                        env.require_unique(arg, "spawn argument", signatures, aggregates)?;
+                    } else {
+                        check_unique_expr(arg, env, signatures, aggregates, effectful_functions)?;
+                    }
+                }
+                for arg in args.iter().skip(params.len()) {
+                    check_unique_expr(arg, env, signatures, aggregates, effectful_functions)?;
+                }
+            } else {
+                for arg in args {
+                    check_unique_expr(arg, env, signatures, aggregates, effectful_functions)?;
+                }
+            }
+            Ok(true)
+        }
+        ExprKind::Await { handle } => {
+            check_unique_expr(handle, env, signatures, aggregates, effectful_functions)
         }
         ExprKind::QualifiedCall { args, .. } => {
             for arg in args {
-                check_unique_expr(arg, env, signatures, aggregates)?;
+                check_unique_expr(arg, env, signatures, aggregates, effectful_functions)?;
             }
             Ok(false)
         }
         ExprKind::Call { callee, args } => {
             if let ExprKind::Var(name) = &callee.kind {
-                return check_unique_call(name, args, expr.span, env, signatures, aggregates);
+                return check_unique_call(
+                    name,
+                    args,
+                    expr.span,
+                    env,
+                    signatures,
+                    aggregates,
+                    effectful_functions,
+                );
             }
-            check_unique_expr(callee, env, signatures, aggregates)?;
+            check_unique_expr(callee, env, signatures, aggregates, effectful_functions)?;
             for arg in args {
-                check_unique_expr(arg, env, signatures, aggregates)?;
+                check_unique_expr(arg, env, signatures, aggregates, effectful_functions)?;
             }
             Ok(false)
         }
@@ -1443,7 +1531,7 @@ fn check_unique_expr(
         } => {
             if let ExprKind::RecordUpdate { record, value, .. } = &inner.kind {
                 env.require_unique(record, "inplace record update", signatures, aggregates)?;
-                check_unique_expr(value, env, signatures, aggregates)?;
+                check_unique_expr(value, env, signatures, aggregates, effectful_functions)?;
                 return Ok(true);
             }
             let ExprKind::Call { callee, args } = &inner.kind else {
@@ -1461,23 +1549,29 @@ fn check_unique_expr(
                 });
             }
             env.require_unique(&args[0], "inplace", signatures, aggregates)?;
-            check_unique_expr(&args[1], env, signatures, aggregates)?;
-            check_unique_expr(&args[2], env, signatures, aggregates)?;
+            check_unique_expr(&args[1], env, signatures, aggregates, effectful_functions)?;
+            check_unique_expr(&args[2], env, signatures, aggregates, effectful_functions)?;
             Ok(true)
         }
         ExprKind::Block { bindings, result } => {
             for binding in bindings {
-                let unique = check_unique_expr(&binding.expr, env, signatures, aggregates)?;
+                let unique = check_unique_expr(
+                    &binding.expr,
+                    env,
+                    signatures,
+                    aggregates,
+                    effectful_functions,
+                )?;
                 if unique {
                     env.bind_unique(&binding.name.node);
                 }
             }
-            check_unique_expr(result, env, signatures, aggregates)
+            check_unique_expr(result, env, signatures, aggregates, effectful_functions)
         }
         ExprKind::CaseNat { scrutinee, arms } => {
             let unique_scrutinee =
                 matches!(&scrutinee.kind, ExprKind::Var(name) if env.bindings.contains_key(name));
-            check_unique_expr(scrutinee, env, signatures, aggregates)?;
+            check_unique_expr(scrutinee, env, signatures, aggregates, effectful_functions)?;
             let mut branch_envs = Vec::new();
             let mut result_unique = false;
             for arm in arms {
@@ -1485,7 +1579,13 @@ fn check_unique_expr(
                 if unique_scrutinee {
                     bind_unique_pattern_payloads(&arm.pattern, &mut branch, aggregates);
                 }
-                result_unique |= check_unique_expr(&arm.body, &mut branch, signatures, aggregates)?;
+                result_unique |= check_unique_expr(
+                    &arm.body,
+                    &mut branch,
+                    signatures,
+                    aggregates,
+                    effectful_functions,
+                )?;
                 branch_envs.push(branch);
             }
             if branch_envs.len() == 1 {
@@ -1499,11 +1599,11 @@ fn check_unique_expr(
             Ok(result_unique)
         }
         ExprKind::Handle { body, clauses } => {
-            check_unique_expr(body, env, signatures, aggregates)?;
+            check_unique_expr(body, env, signatures, aggregates, effectful_functions)?;
             for clause in clauses {
                 match clause {
                     HandleClause::Return { body, .. } | HandleClause::Operation { body, .. } => {
-                        check_unique_expr(body, env, signatures, aggregates)?;
+                        check_unique_expr(body, env, signatures, aggregates, effectful_functions)?;
                     }
                 }
             }
@@ -1511,15 +1611,15 @@ fn check_unique_expr(
         }
         ExprKind::RecordLit(fields) => {
             for (_, field) in fields {
-                check_unique_expr(field, env, signatures, aggregates)?;
+                check_unique_expr(field, env, signatures, aggregates, effectful_functions)?;
             }
             Ok(true)
         }
         ExprKind::RecordUpdate { record, value, .. } => {
             // Functional record update (`docs/calculus.md §5`) copies; using a unique record
             // in this shared mode consumes it by the ordinary forgetting rule (§4.2).
-            check_unique_expr(record, env, signatures, aggregates)?;
-            check_unique_expr(value, env, signatures, aggregates)?;
+            check_unique_expr(record, env, signatures, aggregates, effectful_functions)?;
+            check_unique_expr(value, env, signatures, aggregates, effectful_functions)?;
             Ok(true)
         }
         ExprKind::Field { record, field } => {
@@ -1552,7 +1652,7 @@ fn check_unique_expr(
                     return Ok(false);
                 }
             }
-            check_unique_expr(record, env, signatures, aggregates)?;
+            check_unique_expr(record, env, signatures, aggregates, effectful_functions)?;
             Ok(false)
         }
     }
@@ -1565,6 +1665,7 @@ fn check_unique_call(
     env: &mut UniqueEnv,
     signatures: &BTreeMap<String, (Vec<bool>, bool)>,
     aggregates: &AggregateEnv,
+    effectful_functions: &BTreeSet<String>,
 ) -> Result<bool, ElaborateError> {
     match name {
         "mkarray" => {
@@ -1574,8 +1675,8 @@ fn check_unique_call(
                     message: "builtin `mkarray` called with wrong arity".into(),
                 });
             }
-            check_unique_expr(&args[0], env, signatures, aggregates)?;
-            check_unique_expr(&args[1], env, signatures, aggregates)?;
+            check_unique_expr(&args[0], env, signatures, aggregates, effectful_functions)?;
+            check_unique_expr(&args[1], env, signatures, aggregates, effectful_functions)?;
             Ok(true)
         }
         "get" | "len" => {
@@ -1586,9 +1687,9 @@ fn check_unique_call(
                     message: format!("builtin `{name}` called with wrong arity"),
                 });
             }
-            check_unique_expr(&args[0], env, signatures, aggregates)?;
+            check_unique_expr(&args[0], env, signatures, aggregates, effectful_functions)?;
             for arg in &args[1..] {
-                check_unique_expr(arg, env, signatures, aggregates)?;
+                check_unique_expr(arg, env, signatures, aggregates, effectful_functions)?;
             }
             Ok(false)
         }
@@ -1600,7 +1701,7 @@ fn check_unique_call(
                 });
             }
             for arg in args {
-                check_unique_expr(arg, env, signatures, aggregates)?;
+                check_unique_expr(arg, env, signatures, aggregates, effectful_functions)?;
             }
             Ok(true)
         }
@@ -1610,17 +1711,51 @@ fn check_unique_call(
                     if unique_params.get(idx).copied().unwrap_or(false) {
                         env.require_unique(arg, "unique parameter", signatures, aggregates)?;
                     } else {
-                        check_unique_expr(arg, env, signatures, aggregates)?;
+                        check_unique_expr(arg, env, signatures, aggregates, effectful_functions)?;
                     }
                 }
                 Ok(*unique_ret)
             } else {
                 for arg in args {
-                    check_unique_expr(arg, env, signatures, aggregates)?;
+                    check_unique_expr(arg, env, signatures, aggregates, effectful_functions)?;
                 }
                 Ok(false)
             }
         }
+    }
+}
+
+fn scope_returns_task_handle(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Spawn { .. } => true,
+        ExprKind::Block { bindings, result } => {
+            let mut task_bindings = BTreeSet::new();
+            for binding in bindings {
+                if scope_returns_task_handle(&binding.expr) {
+                    task_bindings.insert(binding.name.node.clone());
+                }
+            }
+            matches!(&result.kind, ExprKind::Var(name) if task_bindings.contains(name))
+                || scope_returns_task_handle(result)
+        }
+        ExprKind::Scope { body } => scope_returns_task_handle(body),
+        ExprKind::Prefix { expr, .. } => scope_returns_task_handle(expr),
+        ExprKind::Pipe { lhs, rhs } | ExprKind::Binary { lhs, rhs, .. } => {
+            scope_returns_task_handle(lhs) || scope_returns_task_handle(rhs)
+        }
+        ExprKind::Call { callee, args } => {
+            scope_returns_task_handle(callee) || args.iter().any(scope_returns_task_handle)
+        }
+        ExprKind::Await { .. }
+        | ExprKind::Unit
+        | ExprKind::Nat(_)
+        | ExprKind::Var(_)
+        | ExprKind::QualifiedCall { .. }
+        | ExprKind::CaseNat { .. }
+        | ExprKind::Handle { .. }
+        | ExprKind::RecordLit(_)
+        | ExprKind::RecordUpdate { .. }
+        | ExprKind::Field { .. } => false,
     }
 }
 

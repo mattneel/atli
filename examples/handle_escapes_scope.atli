@@ -1,0 +1,8 @@
+// expect-check-error: task handle may not escape scope
+fn work(n: Nat) -> Nat = n
+fn main() -> Nat = {
+  h = scope {
+    spawn work(1)
+  }
+  await h
+}

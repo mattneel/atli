@@ -108,3 +108,18 @@ that accident into an explicit informational tolerance job: CI runs `atli test e
 with LLVM 18 tools and `continue-on-error: true`. The tolerance job is evidence about the
 conservatism of the emitted `func`/`arith`/`scf`/`memref`/`cf` subset; it is not a release
 gate and does not weaken the LLVM 22 requirement.
+
+## Sprint 13 third amendment: task scope runtime
+
+Sprint 13 adds `scope`/`spawn`/`await` lowering for the v0.4.0 first-order fragment.
+The emitted MLIR keeps the same certified-arena entry point: every native module still receives
+arena size through `CertifiedArena`, and task creation emits a §9.3-cited `atli_task_spawned`
+call so the runtime reports `ATLI_TASKS_SPAWNED` beside high-water and data allocation counts.
+
+Tier-1 implementation note: each `spawn` crosses the runtime task hook, which starts and joins
+a minimal pthread while the current first-order MLIR path keeps the callee lowering direct and
+observable. The checker still enforces effect-closed spawned functions, affine handles, and
+move-only transfer at the spawn site; the test-only pthread race falsifier bypasses that
+discipline to show native nondeterminism and oracle divergence. Full split-function pthread
+execution/M:N scheduling remains ROADMAP work, along with cooperative cancellation and zero-copy
+heap result promotion.

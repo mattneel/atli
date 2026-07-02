@@ -1,0 +1,11 @@
+// expect: 42
+type Mailbox = { buf: Array, len: Nat }
+fn process(m: ^Mailbox) -> Nat = case m { .{ buf, len } -> {
+  touched = inplace set(buf, 0, 42)
+  get(freeze touched, 0)
+} }
+fn main() -> Nat = scope {
+  m = .{ buf = mkarray(1, 0), len = 1 }
+  h = spawn process(move m)
+  await h
+}

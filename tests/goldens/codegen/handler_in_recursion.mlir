@@ -11,6 +11,7 @@ module attributes {atli.certified_beta_slots = 1 : i64, atli.arena_overhead_slot
   func.func private @atli_array_inplace_set(%handle: i64, %idx: i64, %value: i64) -> i64
   func.func private @atli_array_len(%handle: i64) -> i64
   func.func private @atli_data_allocs() -> i64
+  func.func private @atli_task_spawned() -> ()
   func.func private @atli_tick() -> ()
   func.func private @atli_scope_push(%label: i64, %mode: i64, %value: i64, %watermark: i64) -> ()
   func.func private @atli_scope_pop() -> ()

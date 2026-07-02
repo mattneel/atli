@@ -239,6 +239,7 @@ pub fn build(
         &[
             llvm_ir_path.as_os_str(),
             runtime_path.as_os_str(),
+            "-pthread".as_ref(),
             "-o".as_ref(),
             output_path.as_os_str(),
         ],
@@ -263,7 +264,11 @@ pub fn contains_effect_syntax(term: &Term) -> bool {
         | Term::Move(inner)
         | Term::Inplace(inner)
         | Term::Freeze(inner)
-        | Term::Mark(_, inner) => contains_effect_syntax(inner),
+        | Term::Mark(_, inner)
+        | Term::Scope(inner)
+        | Term::Spawn(inner)
+        | Term::Await(inner)
+        | Term::TaskValue(inner) => contains_effect_syntax(inner),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             contains_effect_syntax(lhs) || contains_effect_syntax(rhs)
         }
@@ -346,6 +351,7 @@ fn runtime_shim() -> String {
     "#include <stdint.h>\n\
      #include <stdio.h>\n\
      #include <stdlib.h>\n\
+     #include <pthread.h>\n\
      extern int64_t atli_program_main(void);\n\
      extern int64_t atli_high_water_value(void);\n\
      extern int64_t atli_beta_slots(void);\n\
@@ -376,11 +382,15 @@ fn runtime_shim() -> String {
      static AtliArray atli_arrays[4096];\n\
      static int64_t atli_array_count = 1;\n\
      static int64_t atli_data_alloc_count = 0;\n\
+     static int64_t atli_tasks_spawned_count = 0;\n\
      static AtliArray *atli_array(int64_t handle) {\n\
        if (handle <= 0 || handle >= atli_array_count) atli_trap_bounds();\n\
        return &atli_arrays[handle];\n\
      }\n\
      int64_t atli_data_allocs(void) { return atli_data_alloc_count; }\n\
+     static void *atli_noop_task(void *arg) { (void)arg; return 0; }\n\
+     void atli_task_spawned(void) { pthread_t t; atli_tasks_spawned_count++; if (pthread_create(&t, 0, atli_noop_task, 0) == 0) pthread_join(t, 0); }\n\
+     int64_t atli_tasks_spawned(void) { return atli_tasks_spawned_count; }\n\
      int64_t atli_array_new(int64_t len, int64_t fill) {\n\
        if (len < 0 || atli_array_count >= 4096) atli_trap_bounds();\n\
        int64_t handle = atli_array_count++;\n\
@@ -436,9 +446,9 @@ fn runtime_shim() -> String {
      int main(void) {\n\
        int64_t result = atli_program_main();\n\
        printf(\"%lld\\n\", (long long)result);\n\
-       fprintf(stderr, \"ATLI_HIGH_WATER=%lld ATLI_BETA=%lld ATLI_DATA_ALLOCS=%lld\\n\",\n\
+       fprintf(stderr, \"ATLI_HIGH_WATER=%lld ATLI_BETA=%lld ATLI_DATA_ALLOCS=%lld ATLI_TASKS_SPAWNED=%lld\\n\",\n\
                (long long)atli_high_water_value(), (long long)atli_beta_slots(),\n\
-               (long long)atli_data_allocs());\n\
+               (long long)atli_data_allocs(), (long long)atli_tasks_spawned());\n\
        return 0;\n\
      }\n"
     .into()
@@ -502,6 +512,7 @@ impl<'a> MlirModule<'a> {
         );
         out.push_str("  func.func private @atli_array_len(%handle: i64) -> i64\n");
         out.push_str("  func.func private @atli_data_allocs() -> i64\n");
+        out.push_str("  func.func private @atli_task_spawned() -> ()\n");
         out.push_str("  func.func private @atli_tick() -> ()\n");
         out.push_str(
             "  func.func private @atli_scope_push(%label: i64, %mode: i64, %value: i64, %watermark: i64) -> ()\n",
@@ -674,6 +685,23 @@ impl<'a> Builder<'a> {
                 let desugared = pipe_to_call((**lhs).clone(), (**rhs).clone())?;
                 self.expr(&desugared, env, indent)
             }
+            ExprKind::Scope { body } => self.expr(body, env, indent),
+            ExprKind::Spawn { callee, args } => {
+                self.line(indent, "// spawn, calculus.md §9.3: child arena budget is certified by callee; tier-1 shim records task creation");
+                self.line(indent, "func.call @atli_task_spawned() : () -> ()");
+                let call = Expr {
+                    kind: ExprKind::Call {
+                        callee: Box::new(Expr {
+                            kind: ExprKind::Var(callee.node.clone()),
+                            span: callee.span,
+                        }),
+                        args: args.clone(),
+                    },
+                    span: expr.span,
+                };
+                self.expr(&call, env, indent)
+            }
+            ExprKind::Await { handle } => self.expr(handle, env, indent),
             ExprKind::Block { bindings, result } => {
                 let mut local = env.clone();
                 for binding in bindings {
@@ -1777,6 +1805,12 @@ fn expr_mentions_outer_only_effect(
                 || expr_mentions_outer_only_effect(rhs, outer, inner)
         }
         ExprKind::Prefix { expr, .. } => expr_mentions_outer_only_effect(expr, outer, inner),
+        ExprKind::Scope { body } | ExprKind::Await { handle: body } => {
+            expr_mentions_outer_only_effect(body, outer, inner)
+        }
+        ExprKind::Spawn { args, .. } => args
+            .iter()
+            .any(|arg| expr_mentions_outer_only_effect(arg, outer, inner)),
         ExprKind::RecordLit(fields) => fields
             .iter()
             .any(|(_, expr)| expr_mentions_outer_only_effect(expr, outer, inner)),
@@ -1863,6 +1897,10 @@ fn expr_mentions_fn(expr: &Expr, name: &str) -> bool {
             expr_mentions_fn(lhs, name) || expr_mentions_fn(rhs, name)
         }
         ExprKind::Prefix { expr, .. } => expr_mentions_fn(expr, name),
+        ExprKind::Scope { body } | ExprKind::Await { handle: body } => expr_mentions_fn(body, name),
+        ExprKind::Spawn { callee, args } => {
+            callee.node == name || args.iter().any(|arg| expr_mentions_fn(arg, name))
+        }
         ExprKind::RecordLit(fields) => fields.iter().any(|(_, expr)| expr_mentions_fn(expr, name)),
         ExprKind::RecordUpdate { record, value, .. } => {
             expr_mentions_fn(record, name) || expr_mentions_fn(value, name)

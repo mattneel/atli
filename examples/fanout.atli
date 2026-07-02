@@ -1,0 +1,8 @@
+// expect: 9
+fn work(n: Nat) -> Nat = n + 1
+fn main() -> Nat = scope {
+  a = spawn work(1)
+  b = spawn work(2)
+  c = spawn work(3)
+  await a + await b + await c
+}

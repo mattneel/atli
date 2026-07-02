@@ -1,0 +1,8 @@
+// expect-check-error: consumed here
+fn touch(a: ^Array) -> Nat = get(inplace set(a, 0, 1), 0)
+fn main() -> Nat = scope {
+  a = mkarray(1, 0)
+  h1 = spawn touch(move a)
+  h2 = spawn touch(move a)
+  await h1 + await h2
+}

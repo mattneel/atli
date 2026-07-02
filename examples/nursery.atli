@@ -1,0 +1,10 @@
+// expect: 6
+fn work(n: Nat) -> Nat = n + 1
+fn main() -> Nat = scope {
+  dropped = spawn work(99)
+  h = scope {
+    inner = spawn work(5)
+    await inner
+  }
+  h
+}

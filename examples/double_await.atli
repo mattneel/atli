@@ -1,0 +1,8 @@
+// expect-check-error: consumed here
+fn work(n: Nat) -> Nat = n
+fn main() -> Nat = scope {
+  h = spawn work(1)
+  a = await h
+  b = await h
+  a + b
+}

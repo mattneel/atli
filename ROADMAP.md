@@ -13,7 +13,7 @@
 - **De Bruijn proof representation decision** — named binders kept the bridge legible; deeper substitution proofs may force a de Bruijn refactor.
 - **Multi-target releases** — Linux x86_64 ships first; macOS, Windows, and WASM release artifacts follow the backend work.
 
-## After v0.3.0
+## After v0.4.0
 
 - Zero-copy task result transfer: v0.4.0 copies heap results at `await`; region promotion would remove that copy.
 - Cross-task effect handlers: spawned functions must handle their own effects today; inherited handlers across task stacks need new continuation semantics.

@@ -1,0 +1,7 @@
+// expect-check-error: spawned task must handle its own effects
+effect L { op(x: Nat) -> Nat }
+fn ask(n: Nat) -> Nat ! {L} = L.op(n)
+fn main() -> Nat = scope {
+  h = spawn ask(1)
+  await h
+}

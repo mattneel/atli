@@ -131,6 +131,13 @@ fn pretty_expr(expr: &Expr) -> String {
                 .collect::<Vec<_>>()
                 .join("; ")
         ),
+        ExprKind::Scope { body } => format!("scope {}", pretty_expr(body)),
+        ExprKind::Spawn { callee, args } => format!(
+            "spawn {}({})",
+            callee.node,
+            args.iter().map(pretty_expr).collect::<Vec<_>>().join(", ")
+        ),
+        ExprKind::Await { handle } => format!("await {}", pretty_expr(handle)),
         ExprKind::RecordLit(fields) => format!(
             ".{{ {} }}",
             fields

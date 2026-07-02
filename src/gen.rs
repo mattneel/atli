@@ -53,6 +53,24 @@ pub fn generated_from_input(input: GenInput) -> GeneratedTerm {
 #[must_use]
 pub fn generated_from_choices(choices: Vec<u8>) -> GeneratedTerm {
     match choices.first().copied() {
+        Some(246) => {
+            let mut builder =
+                Builder::new(ChoiceStream::new(choices.into_iter().skip(1).collect()));
+            return build(
+                "scope_spawn_await",
+                builder.gen_scope_spawn_await(),
+                ExpectedOutcome::Safe,
+            );
+        }
+        Some(247) => {
+            let mut builder =
+                Builder::new(ChoiceStream::new(choices.into_iter().skip(1).collect()));
+            return build(
+                "scope_spawn_dropped_handle",
+                builder.gen_scope_spawn_dropped_handle(),
+                ExpectedOutcome::Safe,
+            );
+        }
         Some(250) => {
             let mut builder =
                 Builder::new(ChoiceStream::new(choices.into_iter().skip(1).collect()));
@@ -110,7 +128,7 @@ pub fn generated_from_choices(choices: Vec<u8>) -> GeneratedTerm {
         _ => {}
     }
     let mut builder = Builder::new(ChoiceStream::new(choices));
-    let top_choice = builder.choices.next_mod(15);
+    let top_choice = builder.choices.next_mod(17);
     let mut expected = ExpectedOutcome::Safe;
     let (name, term) = match top_choice {
         0 => (
@@ -157,6 +175,11 @@ pub fn generated_from_choices(choices: Vec<u8>) -> GeneratedTerm {
             "fix_group_measure",
             builder.gen_fix_group(RecursionTag::Measure),
         ),
+        14 => ("scope_spawn_await", builder.gen_scope_spawn_await()),
+        15 => (
+            "scope_spawn_dropped_handle",
+            builder.gen_scope_spawn_dropped_handle(),
+        ),
         _ => {
             expected = ExpectedOutcome::UnhandledOperation;
             (
@@ -181,9 +204,11 @@ pub fn fixed_seed_inputs() -> Vec<GenInput> {
                 3 => Some(253),
                 4 => Some(254),
                 5 => Some(255),
+                6 => Some(246),
+                7 => Some(247),
                 _ => None,
             };
-            choices.push(forced.unwrap_or((case % 15) as u8));
+            choices.push(forced.unwrap_or((case % 17) as u8));
             for _ in 1..MAX_CHOICES {
                 state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
                 choices.push((state >> 32) as u8);
@@ -389,6 +414,11 @@ impl Builder {
             Type::Unit => self.gen_unit(env, depth),
             Type::Nat => self.gen_nat(env, depth),
             Type::Array => Term::MkArray(Box::new(Term::nat(0)), Box::new(Term::nat(0))),
+            Type::Task(result) => Term::TaskValue(Box::new(self.gen_term(
+                result,
+                env,
+                depth.saturating_sub(1),
+            ))),
             Type::Arrow(arg, ret) => {
                 let param = self.fresh_name("x");
                 Term::Lam {
@@ -544,6 +574,41 @@ impl Builder {
             6 => self.gen_fix_app(RecursionTag::Structural, depth),
             _ => self.gen_fix_app(RecursionTag::Measure, depth),
         }
+    }
+
+    fn gen_scope_spawn_await(&mut self) -> Term {
+        // Sequential oracle task forms (`docs/calculus.md §3/§5`): spawn evaluates a
+        // closed task, await consumes the handle, and scope owns the task group.
+        Term::Mark(
+            CoverageTag::Scope,
+            Box::new(Term::Scope(Box::new(Term::Let {
+                var: "h".into(),
+                expr: Box::new(Term::Mark(
+                    CoverageTag::Spawn,
+                    Box::new(Term::Spawn(Box::new(Term::nat(7)))),
+                )),
+                body: Box::new(Term::Mark(
+                    CoverageTag::Await,
+                    Box::new(Term::Await(Box::new(Term::var("h")))),
+                )),
+            }))),
+        )
+    }
+
+    fn gen_scope_spawn_dropped_handle(&mut self) -> Term {
+        // Un-awaited task handles are affine drops; the enclosing scope joins at exit
+        // (`docs/calculus.md §4.5.3/§5`).
+        Term::Mark(
+            CoverageTag::Scope,
+            Box::new(Term::Scope(Box::new(Term::Let {
+                var: "h".into(),
+                expr: Box::new(Term::Mark(
+                    CoverageTag::Spawn,
+                    Box::new(Term::Spawn(Box::new(Term::nat(3)))),
+                )),
+                body: Box::new(Term::zero()),
+            }))),
+        )
     }
 
     fn gen_array_inplace(&mut self) -> Term {
@@ -1248,6 +1313,33 @@ fn derive(term: &Term, env: &Env) -> Derived {
             out.coverage.insert(*tag);
             out
         }
+        Term::Scope(inner) => {
+            let mut out = derive(inner, env);
+            out.coverage.insert(CoverageTag::Scope);
+            out
+        }
+        Term::Spawn(inner) => {
+            let mut out = derive(inner, env);
+            debug_assert!(
+                out.effects.is_empty(),
+                "spawned generated term must be pure"
+            );
+            out.ty = Type::Task(Box::new(out.ty));
+            out.coverage.insert(CoverageTag::Spawn);
+            out
+        }
+        Term::Await(inner) => {
+            let mut out = derive(inner, env);
+            out.coverage.insert(CoverageTag::Await);
+            if let Type::Task(result) = out.ty.clone() {
+                out.ty = *result;
+            }
+            out
+        }
+        Term::TaskValue(inner) => {
+            let inner = derive(inner, env);
+            Derived::pure(Type::Task(Box::new(inner.ty)))
+        }
         Term::Var(name) => Derived::pure(env.lookup(name).unwrap_or(Type::Nat)),
         Term::Lam {
             param,
@@ -1600,7 +1692,11 @@ fn term_depth(term: &Term) -> usize {
         | Term::Move(inner)
         | Term::Inplace(inner)
         | Term::Freeze(inner)
-        | Term::Mark(_, inner) => 1 + term_depth(inner),
+        | Term::Mark(_, inner)
+        | Term::Scope(inner)
+        | Term::Spawn(inner)
+        | Term::Await(inner)
+        | Term::TaskValue(inner) => 1 + term_depth(inner),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             1 + term_depth(lhs).max(term_depth(rhs))
         }
@@ -1655,7 +1751,11 @@ fn scan_handlers(term: &Term, in_handler: bool, facts: &mut GenerationFacts) {
         | Term::Move(inner)
         | Term::Inplace(inner)
         | Term::Freeze(inner)
-        | Term::Mark(_, inner) => scan_handlers(inner, in_handler, facts),
+        | Term::Mark(_, inner)
+        | Term::Scope(inner)
+        | Term::Spawn(inner)
+        | Term::Await(inner)
+        | Term::TaskValue(inner) => scan_handlers(inner, in_handler, facts),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             scan_handlers(lhs, in_handler, facts);
             scan_handlers(rhs, in_handler, facts);
@@ -1782,7 +1882,11 @@ fn scan_rec_calls(term: &Term, stack: &mut Vec<RecScan>, facts: &mut GenerationF
         | Term::Move(inner)
         | Term::Inplace(inner)
         | Term::Freeze(inner)
-        | Term::Mark(_, inner) => scan_rec_calls(inner, stack, facts),
+        | Term::Mark(_, inner)
+        | Term::Scope(inner)
+        | Term::Spawn(inner)
+        | Term::Await(inner)
+        | Term::TaskValue(inner) => scan_rec_calls(inner, stack, facts),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             scan_rec_calls(lhs, stack, facts);
             scan_rec_calls(rhs, stack, facts);
@@ -1833,7 +1937,11 @@ fn term_obeys_continuation_usage_under(term: &Term) -> bool {
         | Term::Move(inner)
         | Term::Inplace(inner)
         | Term::Freeze(inner)
-        | Term::Mark(_, inner) => term_obeys_continuation_usage_under(inner),
+        | Term::Mark(_, inner)
+        | Term::Scope(inner)
+        | Term::Spawn(inner)
+        | Term::Await(inner)
+        | Term::TaskValue(inner) => term_obeys_continuation_usage_under(inner),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             term_obeys_continuation_usage_under(lhs) && term_obeys_continuation_usage_under(rhs)
         }
@@ -1886,7 +1994,11 @@ fn free_var_count(term: &Term, name: &str) -> usize {
         | Term::Move(inner)
         | Term::Inplace(inner)
         | Term::Freeze(inner)
-        | Term::Mark(_, inner) => free_var_count(inner, name),
+        | Term::Mark(_, inner)
+        | Term::Scope(inner)
+        | Term::Spawn(inner)
+        | Term::Await(inner)
+        | Term::TaskValue(inner) => free_var_count(inner, name),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             free_var_count(lhs, name) + free_var_count(rhs, name)
         }
@@ -1959,7 +2071,11 @@ fn direct_resume_count(term: &Term, name: &str) -> usize {
         | Term::Move(inner)
         | Term::Inplace(inner)
         | Term::Freeze(inner)
-        | Term::Mark(_, inner) => direct_resume_count(inner, name),
+        | Term::Mark(_, inner)
+        | Term::Scope(inner)
+        | Term::Spawn(inner)
+        | Term::Await(inner)
+        | Term::TaskValue(inner) => direct_resume_count(inner, name),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             direct_resume_count(lhs, name) + direct_resume_count(rhs, name)
         }
@@ -2028,7 +2144,11 @@ fn closed_under(term: &Term, scope: &mut Vec<String>) -> bool {
         | Term::Move(inner)
         | Term::Inplace(inner)
         | Term::Freeze(inner)
-        | Term::Mark(_, inner) => closed_under(inner, scope),
+        | Term::Mark(_, inner)
+        | Term::Scope(inner)
+        | Term::Spawn(inner)
+        | Term::Await(inner)
+        | Term::TaskValue(inner) => closed_under(inner, scope),
         Term::MkArray(lhs, rhs) | Term::ArrayGet(lhs, rhs) => {
             closed_under(lhs, scope) && closed_under(rhs, scope)
         }

@@ -1,0 +1,8 @@
+// expect-oracle: budget exhausted after 4096 steps (classified Div)
+// expect-compiled: ATLI_MAX_ITERS exhausted
+// env: ATLI_MAX_ITERS=5
+fn worker(n: Nat) -> Nat div = worker(n)
+fn main() -> Nat div = scope {
+  h = spawn worker(0)
+  await h
+}

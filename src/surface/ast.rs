@@ -189,6 +189,16 @@ pub enum ExprKind {
         body: Box<Expr>,
         clauses: Vec<HandleClause>,
     },
+    Scope {
+        body: Box<Expr>,
+    },
+    Spawn {
+        callee: Spanned<Name>,
+        args: Vec<Expr>,
+    },
+    Await {
+        handle: Box<Expr>,
+    },
     Prefix {
         op: PrefixOp,
         expr: Box<Expr>,

@@ -22,7 +22,7 @@ cargo run -- check examples/fib.atli
 
 cargo run -- run --compiled examples/fib.atli
 # 55
-# stderr: ATLI_HIGH_WATER=1 ATLI_BETA=2 ATLI_DATA_ALLOCS=0
+# stderr: ATLI_HIGH_WATER=1 ATLI_BETA=2 ATLI_DATA_ALLOCS=0 ATLI_TASKS_SPAWNED=0
 ```
 
 Run the full example differential:
@@ -31,13 +31,13 @@ Run the full example differential:
 cargo run -- test examples/
 ```
 
-## What v0.3.0 includes
+## What v0.4.0 includes
 
 - Surface parser, elaborator, diagnostics, and `atli` CLI.
-- Unary `Nat`, monomorphic `Array`, unique `^Array`, `move`/`inplace`/`freeze`, functions, `case`, arithmetic prelude, `measure`/`div`, multi-label effects, handlers, and mutual recursion (`fix*`).
+- Unary `Nat`, monomorphic `Array`, unique `^Array`, `move`/`inplace`/`freeze`, functions, `case`, arithmetic prelude, `measure`/`div`, multi-label effects, handlers, mutual recursion (`fix*`), structured data, and `scope`/`spawn`/`await`.
 - Reference interpreter and native MLIR→LLVM backend.
 - A graded checker with sealed solver certificates: public consumers can read β only after SCC fixpoint solving completes.
-- Runtime handler-scope stack, growable `div` path, overflow trap (86), one-shot debug trap (87), bounds trap (88), high-water reporting, and data allocation reporting.
+- Runtime handler-scope stack, growable `div` path, task spawn reporting, overflow trap (86), one-shot debug trap (87), bounds trap (88), high-water reporting, and data allocation reporting.
 - Rocq scaffold with the grade laws/substitution infrastructure/mention⇔resume lemma/step determinism work represented, and CI pinning the remaining admitted-count ledger.
 
 ## Grades as codegen licenses
@@ -50,10 +50,11 @@ cargo run -- test examples/
 | handler clause resumes `k` once | omit release used-flag checks | wedge rejection + debug trap |
 | multi-label effect rows | dispatch to innermost dynamic scope | forced-dynamic vs fast-path differential |
 | unique `^Array` | lower accepted `inplace set` to a store | oracle/native value equality; allocation counter drops |
+| affine task handles + move-only data | run spawned work with schedule-independent observables | fanout N=10 determinism smoke; race falsifier |
 
 ## The credibility feature
 
-Eleven findings were caught by the executable-spec loop: calculus gaps, handler accounting bugs, proof-ledger dishonesty, fake MLIR, missing `fix*`, and lexical handler dispatch. The history is documented in [the Book](book/src/theory/findings.md) and the sprint reports.
+Fifteen findings were caught by the executable-spec loop: calculus gaps, handler accounting bugs, proof-ledger dishonesty, fake MLIR, missing `fix*`, and lexical handler dispatch. The history is documented in [the Book](book/src/theory/findings.md) and the sprint reports.
 
 ## Documentation
 
