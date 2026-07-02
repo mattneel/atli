@@ -1116,14 +1116,15 @@ Theorem step_is_deterministic : forall t u v,
   step t u -> step t v -> u = v.
 Proof. apply step_deterministic. Qed.
 
-(** Sprint 16 B3: operation blocking, context-rich (docs/calculus.md §5/§8.1). *)
+(** Sprint 16 B3/B4: operation blocking and L3 progress assembly
+    (docs/calculus.md §5/§8.1). *)
 
 (* Mirrors capture's handler-free frame grammar: a blocked term is an unhandled
-   [perform L v] under evaluation-context frames with NO enclosing handler
+   [perform L v] under evaluation-context frames with no enclosing handler
    (one label: every handler intercepts, so THandle never appears on the spine).
-   Sprint 16 B3 replaces the Sprint 15 top-level-only predicate — finding
-   twenty-one's counterexample was exactly a blocked-under-a-let term the old
-   shape missed. *)
+   The B3 engine below is the context-rich blocked predicate consumed by the L3
+   §8.1 progress proof: typed closed stuck non-values are exactly this shape and
+   carry [EffL] in their row. *)
 Inductive blocked_ind : term -> Prop :=
 | Blocked_Here : forall v, is_value v = true -> blocked_ind (TPerform L v)
 | Blocked_PerformArg : forall e, blocked_ind e -> blocked_ind (TPerform L e)
@@ -1440,7 +1441,17 @@ Theorem progress : forall t ty eps beta,
   has_type [] t ty eps beta ->
   is_value t = true \/ (exists u, step t u) \/
   (exists l, eff_mem eps = true /\ blocked_on_operation l t).
-Admitted.
+Proof.
+  intros t ty eps beta Hty.
+  destruct (is_value t) eqn:Hvalue.
+  - left. reflexivity.
+  - destruct (stepf t) as [u|] eqn:Hstepf.
+    + right. left. exists u. apply StepByFunction. exact Hstepf.
+    + right. right.
+      destruct (typed_stuck_implies_blocked [] t ty eps beta Hty eq_refl Hvalue Hstepf)
+        as [Hblocked Hmem].
+      exists L. split; [exact Hmem|exact Hblocked].
+Qed.
 
 (** Effect-closed progress corollary, consumed by the Sprint 13 spawn rule: spawned task
     bodies require the empty row, so the unhandled-operation disjunct is uninhabited. *)
