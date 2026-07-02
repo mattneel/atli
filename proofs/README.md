@@ -24,6 +24,7 @@ without Iris; see `docs/decisions/0002-mechanization-toolchain.md`.
 | L8 | Solver/certificate soundness (§7.2/§7.3) | Admitted with sketch | Future solver-proof sprint |
 | L9 | Uniqueness soundness: `inplace set` and in-place record replacement observationally equal their functional-copy counterparts under affine data usage | Stated-Pending-Infrastructure | Future heap/graded-context sprint |
 | L10 | Schedule independence for well-typed task programs (§5/§9.3) | Stated-Pending-Infrastructure | Future concurrent-semantics sprint |
+| Coverage | Generics/`^u`, aggregates, tasks, and uniqueness are outside the current mechanized core | Stated-Pending-Infrastructure | Future polymorphic/heap/task Rocq sprint |
 | Aux | Step determinism | Qed | Sprint 04 |
 
 Current admitted theorem count: 3 (`progress`, `preservation`,

@@ -140,7 +140,7 @@ mismatch is the technical heart of the principality obligation (§8.6).
 ### 3.1 Types
 
 ```
-value type      τ ::= Unit | Bool | Nat | Array
+value type      τ ::= Unit | Bool | Nat | Array[T]
                     | (T →[σ] T)               function; latent row σ fires on apply
                     | ⟨ ℓ:T, … ⟩               record
                     | [ ℓ:T | … ]              variant
@@ -149,6 +149,7 @@ value type      τ ::= Unit | Bool | Nat | Array
                     | μα. τ  |  α              (structurally-bounded) recursive type
 
 graded type     T ::= τ @ q                    value type with uniqueness grade q ∈ Q
+poly type       ∀A⃗. T                    rank-1 declaration/function polymorphism
 
 computation     C ::= T ! σ                    produces T, runs with capability row σ
 ```
@@ -199,12 +200,26 @@ Handler `H` has one return clause and a finite clause set over handled labels
 use its own `kᵢ` does not allocate or carry the delimited frame.
 
 
-**Nominal aggregate declarations.** Records and variants are monomorphic declarations:
-`type Point = { x: Nat, y: Nat }` and `type Shape = Circle(Nat) | Rect(Nat, Nat)`.
-Fields and payloads may be `Nat`, `Unit`, `Array`, or declared aggregate types. Type
-parameters remain out of scope. Recursive declarations are allowed only through variants:
-`type NatList = Nil | Cons(Nat, NatList)` is valid, while a pure record cycle is rejected
-by the occurs-check because it has no base constructor.
+**Nominal aggregate declarations and type parameters.** Records and variants may be
+monomorphic or rank-1 parametric declarations: `type Point = { x: Nat, y: Nat }`,
+`type Option[A] = None | Some(A)`, `type List[A] = Nil | Cons(A, List[A])`, and
+`type Pair[A, B] = { fst: A, snd: B }`. Type parameters are declared in brackets and are
+in scope only in that declaration. Type application arity is checked (`Option[Nat, Nat]`
+is an error) and unbound type variables are errors. Recursive declarations are allowed
+only through variants: `type List[A] = Nil | Cons(A, List[A])` is valid, while a pure
+record cycle is rejected by the occurs-check because it has no base constructor.
+
+**Generic functions.** Functions may quantify type parameters in the same rank-1 style:
+`fn map[A, B](...)`. The body checks once, polymorphically, with no constraints, traits,
+or bounded polymorphism. Call sites instantiate parameters by unifying declared argument
+types with actual argument types; an instantiation failure blames the parameter, the
+conflicting types, and both argument sites. Generic higher-order functions in tier 1 take
+pure function arguments only: effect-row variables and open rows remain out of scope.
+
+**Generic arrays and tasks.** `Array[A]` generalizes the former Nat-only array; bare
+`Array` is a deprecated alias for `Array[Nat]`. `Task[T]` may be written in surface
+signatures, but task handles remain opaque, affine, scope-local values with the same
+structured-concurrency restrictions as before.
 
 **Tasks and scopes.** `scope { e }` owns a task group and a region. Every `spawn` inside
 attaches to the nearest enclosing scope, and scope exit joins all children before freeing
@@ -247,9 +262,11 @@ x :[1] T , 0·Γ  ⊢  x : T ! ø
 Γ ⊢ e : (τ @ q') ! σ            where T = τ @ q
 ```
 
-Bare surface types elaborate to unrestricted grade `ω`. A `^T` binding elaborates to
-`T @ 1` and is **affine**: it may be used at most once, and zero uses are legal. A use of
-a `1`-graded binding is any of:
+Bare surface types elaborate to unrestricted grade `ω`; this sprint keeps the
+implemented reading that bare means shared, rather than retroactively making every
+existing signature uniqueness-polymorphic. A `^T` binding elaborates to `T @ 1` and is
+**affine**: it may be used at most once, and zero uses are legal. A use of a `1`-graded
+binding is any of:
 
 - passing it to a `^`-typed parameter;
 - using it as the operand of `move`;
@@ -268,6 +285,28 @@ or `fix*` bodies because those bodies can run zero or many times. The required
 diagnostic is: "unique binding `a` captured by function; pass it as a `^` parameter
 instead." Threading ownership through `^` parameters is the sound idiom; relaxing this
 for once-called closures is a future precision extension.
+
+**Uniqueness-preservation variables (`^u`).** A signature position `^u A` implicitly
+binds the lowercase uniqueness variable `u` for that signature. At a call site, a unique
+argument instantiates `u := 1`; a shared argument instantiates `u := ω`; every result or
+argument position annotated with the same `^u` uses that instantiated grade. Thus
+`fn through[A](x: ^u A) -> ^u A = x` preserves whatever grade the caller supplied.
+
+The load-bearing rule: `^u` grants threading, never privileges. Because the body checks
+once and must be sound at both `u = 1` and `u = ω`, a `^u` value inside the body is
+affine and may flow to another `^u` position, be returned at `^u`, or be forgotten, but it
+may **not** be the target of `inplace` or the operand of `move`; those require a definite
+`1`. Otherwise the `u = ω` instantiation would mutate through aliases retained by the
+caller. The required diagnostic is: "`x` is `^u`: uniqueness-preserving parameters grant
+threading, not mutation; take `^A` if this function must mutate." The combinator-doubling
+problem solved by the original design's Reading B is handled explicitly by `^u`; revisiting
+bare-parameter polymorphism is a future compatibility decision, not a silent migration.
+
+Generic payload grading is conservative. Destructuring a unique aggregate whose payload
+has type parameter `A` binds the payload at grade `1` because `A` may instantiate to a
+heap type; if `A = Nat` this is stricter than necessary but sound. Copy-field peek on an
+`A`-typed field of a unique record is rejected with the same destructure-or-freeze
+suggestion used for heap fields. A heap-ness-aware refinement is future work.
 
 ### 4.2 Naturals
 
@@ -343,23 +382,23 @@ licenses destructive mutation in the backend (§9). Neither is well-typed on a `
 
 ### 4.5.1 Arrays
 
-`Array` is monomorphic over `Nat` in this tier. The array handle itself has a uniqueness
-grade; elements are unrestricted `Nat` values.
+`Array[A]` is parametric in its element type; bare `Array` is an alias for `Array[Nat]`. The array handle itself has a uniqueness
+grade; elements are stored in one uniform slot, and element values follow the ordinary grade rules.
 
 ```
-Γ₁ ⊢ n : Nat @ q₁ ! σ₁       Γ₂ ⊢ v : Nat @ q₂ ! σ₂
+Γ₁ ⊢ n : Nat @ q₁ ! σ₁       Γ₂ ⊢ v : A @ q₂ ! σ₂
 ────────────────────────────────────────────────────  (MkArray)
-Γ₁ + Γ₂ ⊢ mkarray(n, v) : Array @ 1 ! σ₁ ▷ σ₂
+Γ₁ + Γ₂ ⊢ mkarray(n, v) : Array[A] @ 1 ! σ₁ ▷ σ₂
 
-Γ₁ ⊢ a : Array @ q ! σ₁      Γ₂ ⊢ i : Nat @ qᵢ ! σ₂
+Γ₁ ⊢ a : Array[A] @ q ! σ₁      Γ₂ ⊢ i : Nat @ qᵢ ! σ₂
 ────────────────────────────────────────────────────  (Array-Get)
-Γ₁ + Γ₂ ⊢ get(a, i) : Nat @ ω ! σ₁ ▷ σ₂
+Γ₁ + Γ₂ ⊢ get(a, i) : A @ ω ! σ₁ ▷ σ₂
 
-Γ₁ ⊢ a : Array @ q ! σ₁      Γ₂ ⊢ i : Nat @ qᵢ ! σ₂      Γ₃ ⊢ v : Nat @ qᵥ ! σ₃
+Γ₁ ⊢ a : Array[A] @ q ! σ₁      Γ₂ ⊢ i : Nat @ qᵢ ! σ₂      Γ₃ ⊢ v : A @ qᵥ ! σ₃
 ───────────────────────────────────────────────────────────────────────────────  (Array-Set)
-Γ₁ + Γ₂ + Γ₃ ⊢ set(a, i, v) : Array @ 1 ! σ₁ ▷ σ₂ ▷ σ₃
+Γ₁ + Γ₂ + Γ₃ ⊢ set(a, i, v) : Array[A] @ 1 ! σ₁ ▷ σ₂ ▷ σ₃
 
-Γ ⊢ a : Array @ q ! σ
+Γ ⊢ a : Array[A] @ q ! σ
 ────────────────────────────  (Array-Len)
 Γ ⊢ len(a) : Nat @ ω ! σ
 ```
@@ -909,6 +948,24 @@ the ownership and outlives rules. Native execution reports `ATLI_TASKS_SPAWNED=n
 high-water reporting is the maximum across finite task arenas (debug builds may also report
 per-task highs).
 
+
+### 9.4 Generic erasure
+
+Tier-1 polymorphism is erased. Every runtime value is already one uniform `i64` slot: a
+Nat immediate, task handle, function placeholder, or data-region handle. A generic
+function therefore compiles once and operates on slots; the checker guarantees that every
+call site uses the erased slot consistently. There is no boxing and no dictionary passing
+in tier 1.
+
+Certified `β` is per function, not per instantiation. This is sound for the current slot
+frame metric because the counted captures and activations are structural and
+type-independent. The trigger that ends free erasure is the standing byte-accurate frame
+refinement: once frames count backend-specific byte layouts rather than uniform slots,
+`β` may become type-dependent and monomorphization becomes the implementation path.
+ROADMAP tracks this as a paired item: **byte-accurate frames ⇒ monomorphization**. Spawn
+of a generic callee uses the same per-function `CertifiedTaskBudget` path as monomorphic
+callees.
+
 **No LLVM coroutines.** Atli owns the continuation split in its own mid-end (Zig's hard-
 won lesson: LLVM couples frame alloc/dealloc to execution, forcing heap-allocated self-
 destroying frames — fatal to arena placement, and its splitting pass is slow and buggy).
@@ -938,7 +995,7 @@ Mechanize in Rocq (Iris for the substructural/linearity reasoning). Prove soundn
 - Drop for now in Rocq: records/variants, aggregate heap semantics, regions beyond a single
   arena, arrays, `move`, `inplace`, and `freeze`.
 
-Arrays, records, variants, data-affinity, and tasks are now part of the executable compiler
+Arrays, records, variants, data-affinity, tasks, and parametric polymorphism are now part of the executable compiler
 but remain outside the Rocq scaffold. The proof ladder therefore adds L9 as
 `Stated-Pending-Infrastructure`: **uniqueness soundness**, the observational
 equivalence of `inplace set` / in-place record replacement and their functional-copy counterparts under §4's affine discipline. Stating
@@ -948,7 +1005,10 @@ Sprint 13 adds L10 as `Stated-Pending-Infrastructure`: **schedule independence**
 claim that well-typed task programs have the same observables under every fair native
 interleaving and under the deterministic sequential oracle. Stating and proving L10
 requires a concurrent small-step relation over task pools plus the region tree; it is not
-an `Admitted` theorem and does not change `proofs/ADMITTED_COUNT`.
+an `Admitted` theorem and does not change `proofs/ADMITTED_COUNT`. Sprint 14 widens the
+coverage boundary again: generics and `^u` require polymorphic typing plus graded type
+variables before Rocq can state their preservation theorem; this is tracked as
+mechanized-core coverage, not as an admitted proof.
 
 Prove, in order of pain:
 1. **8.6 principality** for this core (the mixed order; the crux).
