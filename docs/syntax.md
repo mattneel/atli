@@ -1,11 +1,11 @@
 # Atli Syntax
 
-> **Status: implemented subset + open list (v0.3.0).** This document began as draft-0.
-> The v0.3.0 compiler implements the reduced surface listed below and keeps the rest in
+> **Status: implemented subset + open list (v0.4.0).** This document began as draft-0.
+> The v0.4.0 compiler implements the reduced surface listed below and keeps the rest in
 > the Open list. Normative elaboration details live in [`docs/elaboration.md`](elaboration.md);
 > the core semantics live in [`docs/calculus.md`](calculus.md).
 
-## Implemented in v0.3.0
+## Implemented in v0.4.0
 
 - `fn` / `pub fn` declarations, expression or block bodied.
 - Types: `Unit`, `Nat`, `Array`, unique marker `^T`, arrows, and effect rows `! {A, B}`.
@@ -19,15 +19,17 @@
   multi-label handlers with `k` or `_` continuation clauses.
 - Mutual top-level recursion: declaration SCCs elaborate to core `fix*` groups.
 - Aggregate declarations: nominal monomorphic records and variants, exhaustive constructor cases, record destructuring, functional update, and in-place record replacement.
+- Structured concurrency: `scope { ... }`, `spawn f(args)` for top-level functions, opaque
+  affine task handles, and `await h`.
 - Example-test directives in leading comments: `expect`, `expect-oracle`,
   `expect-compiled`, `expect-check-error`, and `env`.
 
 ## Still open
 
 Full numeric tower, strings/chars/floats as runtime values, type
-parameters, uniqueness polymorphism (`^u`), `scope`, `spawn`, modules/`use`, byte-accurate
+parameters, uniqueness polymorphism (`^u`), modules/`use`, byte-accurate
 frame layout, real measure verification, and the full region grade remain future work.
-Unsupported v0.3.0 constructs diagnose as "not yet in the reduced surface".
+Unsupported v0.4.0 constructs diagnose as "not yet in the reduced surface".
 
 ---
 
@@ -77,7 +79,7 @@ true  false
 
 ```
 pub fn effect handle case if else
-spawn scope move inplace freeze
+spawn scope await move inplace freeze
 measure div return type use and or not
 ```
 
@@ -429,25 +431,28 @@ Signature slot order, left to right: `-> RET ! EFFECTS BOUNDEDNESS =`.
 
 ## 9. Concurrency
 
-Concurrency is built on the effect system, surfaced through two forms. `spawn EXPR`
-starts a task; `scope { … }` bounds child task lifetimes — when the scope exits, its
-children are joined (or cancelled on failure) and the scope's arena frees as one
-operation. This is the surface of **spawn = arena = cancellation**: the task tree, the
-arena tree, and the cancellation tree are the same tree.
+Concurrency is surfaced through `scope`, `spawn`, and `await`. `scope { … }` bounds child
+task lifetimes: when the scope exits, its children are joined and the scope's region frees
+as one operation. `spawn f(args)` starts a task whose callee is a declared top-level `fn`;
+closures are not spawnable in v0.4.0. `await h` consumes an opaque affine task handle and
+returns the task result. This is the surface of **spawn = arena = cancellation**: the task
+tree, the arena tree, and the cancellation tree are the same tree.
 
 ```zig
-pub fn fetch_all(urls: List[Url]) -> List[Response] ! {Net} = scope {
-  handles = map(urls, fn(u) = spawn Net.get(u))   // children live in this scope's arena
-  map(handles, await)                              // join before the scope exits
+fn work(n: Nat) -> Nat = n + 1
+
+fn main() -> Nat = scope {
+  h = spawn work(4)
+  await h
 }
 ```
 
 Cross-task hand-off of a large buffer without copying uses `move` (§7): the sending task
 provably loses access, the receiver gains a unique reference, no copy, no shared refcount.
 
-> Provisional: the exact spelling of `spawn`/`scope`/`await`/`loop` and whether they are
-> keywords or library forms over an `Async` effect is not final. The *model* (structured,
-> arena-scoped, cancellation-nested) is.
+Task handles are local-only: they may not be stored in aggregates or arrays, returned, or
+passed to `spawn`. Spawned functions must be effect-closed; each task handles its own
+effects. A dropped handle is joined at scope exit and its result is discarded.
 
 ---
 
@@ -501,7 +506,7 @@ stmt        ::= NAME '=' expr
 expr        ::= literal | NAME | app | pipe | if_expr | case_expr
               | record_lit | list_lit | tuple_lit | handle_expr
               | 'move' expr | 'inplace' expr | 'freeze' expr | 'spawn' expr
-              | 'scope' block | block
+              | 'await' expr | 'scope' block | block
 app         ::= expr '(' args? ')'
 pipe        ::= expr '|>' expr
 if_expr     ::= 'if' expr block ('else' (if_expr | block))?
@@ -535,8 +540,6 @@ record_lit  ::= '.{' (NAME '=' expr)* '}'
   explicit region annotation (`in r`?). Unspecified.
 - **Uniqueness-variable binding.** Implicit per-signature (as above) is the working rule;
   whether some cases need explicit declaration is untested.
-- **Concurrency spelling.** `spawn`/`scope`/`await`/`loop` as keywords vs library forms
-  over an `Async` effect.
 - **Module system** in full (§10).
 - **Surface `Int` semantics.** Sprint 06 gives `Nat` subtraction monus semantics; signed
   `Int` arithmetic remains future work.

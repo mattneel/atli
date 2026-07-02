@@ -29,11 +29,12 @@ core in `docs/calculus.md §10`.
   maps that to `(f x) a`. Sprint 12 also threads pipes into prefix forms: `x |> inplace f(args)`
   elaborates as `inplace f(x, args)`, while `x |> freeze` and `x |> move` elaborate as
   `freeze x` and `move x`.
-- Unsupported settled-but-out-of-reduced-core constructs (records, variants, `spawn`,
-  `scope`, `if`, type parameters, strings/chars/floats, `use`/modules, and `^u`) diagnose
+- Unsupported settled-but-out-of-reduced-core constructs (`if`, type parameters,
+  strings/chars/floats, `use`/modules, and `^u`) diagnose
   as "not yet in the reduced surface" rather than silently elaborating. Multiple effect
   labels are no longer unsupported as of Sprint 08; `^`, arrays, `move`, `inplace`, and
-  `freeze` are implemented as of Sprint 11.
+  `freeze` are implemented as of Sprint 11; records/variants are implemented as of Sprint
+  12; `scope`/`spawn`/`await` are implemented as of Sprint 13.
 
 ## Arithmetic prelude (Sprint 06)
 
@@ -150,3 +151,13 @@ Structural recursion over declared recursive variants is accepted by the source 
 the recursive argument is a constructor-pattern payload bound from the current parameter. The
 current core encoding reuses array handles, so the checker recognizes the pattern-bound payload
 as the strict descent witness while preserving the existing β/frame solver.
+
+## Tasks and scopes (Sprint 13)
+
+`scope { ... }`, `spawn f(args)`, and `await h` elaborate to the task forms in
+`docs/calculus.md §3/§4.5.3`. A spawned callee must be a declared top-level `fn`; tier 1
+does not synthesize closure captures. Spawn arguments are elaborated and evaluated at the
+spawn site, so ordinary uniqueness consumption and `move` happen in the parent before the
+child is created. The surface `Task` type is opaque: internally the checker records each
+handle binding's result type so `await h` can recover the result while keeping task handles
+local to the enclosing scope.

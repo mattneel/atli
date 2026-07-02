@@ -23,10 +23,12 @@ without Iris; see `docs/decisions/0002-mechanization-toolchain.md`.
 | L7 | Boundedness soundness (§8.4), frame-count metric | Stated-Pending-Infrastructure | Future boundedness sprint |
 | L8 | Solver/certificate soundness (§7.2/§7.3) | Admitted with sketch | Future solver-proof sprint |
 | L9 | Uniqueness soundness: `inplace set` and in-place record replacement observationally equal their functional-copy counterparts under affine data usage | Stated-Pending-Infrastructure | Future heap/graded-context sprint |
+| L10 | Schedule independence for well-typed task programs (§5/§9.3) | Stated-Pending-Infrastructure | Future concurrent-semantics sprint |
 | Aux | Step determinism | Qed | Sprint 04 |
 
 Current admitted theorem count: 3 (`progress`, `preservation`,
 `solver_certificate_soundness`). L6/L7 are not counted as admitted theorems because the
 resource model and instrumented frame-counting step relation they quantify over do not yet
 exist. L9 is likewise not counted: the Rocq scaffold currently has no heap semantics or
-graded data-affinity context to state the theorem honestly.
+graded data-affinity context to state the theorem honestly. L10 is not counted because
+the scaffold has no concurrent small-step relation over task pools or region tree yet.

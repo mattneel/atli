@@ -4,7 +4,7 @@
 - **RC / early reclamation** — v0.2.0 data regions free at program exit; Perceus-style reuse/RC is the next memory-lifetime refinement.
 - **Capture-rule relaxation** — unique captures are banned in tier 1; once-called closures would allow a more precise rule.
 - **k/data-affinity unification** — continuation one-shot and data uniqueness are parallel 1-grading implementations today; the research endgame is one kinded row for effects, β-constraints, and uniqueness.
-- **`scope` / `spawn` concurrency** — spawn = arena = cancellation; depends on uniqueness and a richer region story.
+- **M:N scheduler and cooperative cancellation** — v0.4.0 uses one OS thread per task and process-fatal traps; work stealing and structured failure propagation are next runtime refinements.
 - **WASM backend** — stack-switching where available, trampoline fallback otherwise; depends on the current split-frame representation stabilizing.
 - **Byte-accurate frame refinement** — §9.1 pins slot units; variable-size activation backends still need the byte refinement.
 - **Evidence passing / handler inlining** — tier-3 optimization replacing the runtime handler-scope stack where static evidence is profitable.
@@ -15,7 +15,9 @@
 
 ## After v0.3.0
 
-- `spawn` / `scope`: the `mailbox.atli` record-carrying-buffer shape is now expressible; next step is moving it across task boundaries.
+- Zero-copy task result transfer: v0.4.0 copies heap results at `await`; region promotion would remove that copy.
+- Cross-task effect handlers: spawned functions must handle their own effects today; inherited handlers across task stacks need new continuation semantics.
+- Closures in `spawn` and task handles in data structures: both require extending the scope-locality rules.
 - Generics: required for `Option[A]`, `Map[K,V]`, and uniqueness polymorphism `^u`.
 - Path `inplace` / borrow splitting: allow safe mutation through aggregate paths (`r.buf`) without destructuring the whole aggregate.
 - Aggregate layout optimization: unbox small records/variants when it preserves the data-region and uniqueness contracts.

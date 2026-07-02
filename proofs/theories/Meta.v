@@ -71,3 +71,10 @@ Admitted.
    Q-graded data contexts. The intended theorem states that, under the affine discipline,
    [inplace set] is observationally equivalent to functional [set]. It is not represented
    as an [Admitted] theorem until those missing definitions exist. *)
+
+(* L10 status: Stated-Pending-Infrastructure, owner: future concurrent-semantics sprint.
+   Sprint 13 extends the executable compiler with docs/calculus.md §5 task oracle semantics
+   and §9.3 region-tree native tasks. The intended theorem states schedule independence:
+   every fair native task interleaving of a well-typed program has the same observables as
+   the deterministic sequential oracle. It needs a concurrent small-step relation over task
+   pools and region-tree ownership, so it is not represented as an [Admitted] theorem yet. *)

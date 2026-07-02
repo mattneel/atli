@@ -144,6 +144,7 @@ value type      τ ::= Unit | Bool | Nat | Array
                     | (T →[σ] T)               function; latent row σ fires on apply
                     | ⟨ ℓ:T, … ⟩               record
                     | [ ℓ:T | … ]              variant
+                    | Task                     opaque task handle (surface-only)
                     | Cont[σ] T T              one-shot continuation (resume-type, answer-type)
                     | μα. τ  |  α              (structurally-bounded) recursive type
 
@@ -184,6 +185,9 @@ e ::= x
     | move e                          transfer unique ownership (consumes e)
     | inplace e                       destructive update; operand is a set(...)
     | freeze e                        explicit unique-to-shared coercion sugar
+    | scope { e }                     structured task group and region
+    | spawn f(e₁, …, eₙ)              start top-level function f in nearest scope
+    | await e                         consume a task handle and produce its result
 
 H ::= { return x → e_ret ; (ℓᵢ pᵢ kᵢ → eᵢ)ᵢ∈I }
 ```
@@ -201,6 +205,16 @@ Fields and payloads may be `Nat`, `Unit`, `Array`, or declared aggregate types. 
 parameters remain out of scope. Recursive declarations are allowed only through variants:
 `type NatList = Nil | Cons(Nat, NatList)` is valid, while a pure record cycle is rejected
 by the occurs-check because it has no base constructor.
+
+**Tasks and scopes.** `scope { e }` owns a task group and a region. Every `spawn` inside
+attaches to the nearest enclosing scope, and scope exit joins all children before freeing
+the scope region wholesale. `spawn f(v⃗)` requires `f` to be a declared top-level function:
+there is no closure capture in this tier. Arguments are evaluated at the spawn site in the
+parent, and grade consumption for those arguments happens there; `spawn process(move m)` is
+the idiomatic ownership-transfer point. `spawn` yields an opaque task handle, and `await h`
+consumes that handle and yields the task's result. Task handles bind to locals only, may not
+be stored in arrays or aggregates, may not escape their scope by return, and may not be
+passed to `spawn`.
 
 ---
 
@@ -389,6 +403,37 @@ pattern payloads are also the strict subterms used by structural recursion (§4.
 recursive call at the free rung may pass a payload bound by a constructor or record pattern
 of the current parameter's scrutinee.
 
+### 4.5.3 Tasks
+
+Task handles are affine: `await h` consumes `h`, and a second `await` is the same
+two-location use-after-consume error as `move` or `inplace`. Dropping a handle is legal
+because `scope` joins outstanding children at exit and discards their results.
+
+```
+Γ ⊢ e : T ! σ
+──────────────────────────  (Scope)
+Γ ⊢ scope { e } : T ! σ
+
+f : (T₁ → … → Tₙ →[σ_f] U)      ε_f = ∅
+Γᵢ ⊢ eᵢ : Tᵢ ! σᵢ
+────────────────────────────────────────────  (Spawn)
+Σᵢ Γᵢ ⊢ spawn f(e₁,…,eₙ) : Task[U] @ 1 ! (▷ᵢ σᵢ)
+
+Γ ⊢ h : Task[U] @ 1 ! σ
+──────────────────────────  (Await)
+Γ ⊢ await h : U ! σ
+```
+
+`Task[U]` is internal checker notation; the surface type is the opaque `Task`. `spawn`
+requires the callee row to be effect-closed (`ε_f = ∅`): a spawned task must handle its
+own effects. Cross-task handler inheritance would require continuations spanning a child
+stack and is future research, not an implicit tier-1 feature. `Div` callees are spawnable;
+their handles obey the same affine await/drop rule, while bounded test runs use §5's
+budget outcome. Unique arguments are consumed at the spawn site exactly as ordinary
+arguments are, so passing one `^` value to two spawns is the standard double-use error
+blamed across both spawn sites. Task handles are scope-local and may not be stored in data
+structures, returned, or passed to another task.
+
 ### 4.6 Effects
 
 ```
@@ -530,6 +575,7 @@ E ::= [·] | succ E | case E { zero => e₀ ; succ x => e₁ }
     | set(E, e, e) | set(v, E, e) | set(v, v, E) | len(E)
     | ⟨…, ℓ = E, …⟩ | E.ℓ | ⟨E | ℓ = e⟩ | ⟨v | ℓ = E⟩ | C(v⃗, E, e⃗)
     | move E | inplace E | freeze E
+    | scope { E } | spawn f(v⃗, E, e⃗) | await E
 ```
 
 Core reductions:
@@ -559,6 +605,12 @@ inplace set(A, i, v)           →   A                                    (array
 len(A)                         →   |A|                                  (array-len)
 move v                         →   v                                    (move)
 freeze v                       →   v                                    (freeze)
+spawn f(v⃗)                    →   h                                    (spawn-oracle)
+     where the oracle evaluates f(v⃗) to completion immediately and stores its outcome in h.
+await h                        →   v                                    (await-oracle)
+     when h stores value v; an exhausted divergent child stores the budget outcome.
+scope { v }                    →   v                                    (scope-return)
+     after every child attached to the scope has joined.
 ```
 
 Out-of-bounds `array-get`, `array-set`, and `array-inplace` step to a distinguished
@@ -597,6 +649,21 @@ The one-shot marking on materialized `κ` is the operational witness of the `[1]
 Preservation (§8.2) guarantees the stuck case is unreachable in well-typed programs;
 it is retained so the reference interpreter can *detect* a violation during testing
 (Layer‑1 property: "no well-typed program reaches `resume`-after-use").
+
+**Sequential oracle for tasks.** The reference oracle is deterministic: `spawn f(v⃗)` runs
+`f(v⃗)` to completion immediately in depth-first order and records the result in the task
+handle; `await` reads and consumes that result; scope exit has no remaining work because all
+children are already complete. Under an `ATLI_MAX_ITERS`-style budget, a `Div` child that
+exhausts its budget stores the exhaustion outcome, and joining/awaiting it reports that
+outcome consistently with the top-level divergent oracle path.
+
+**L10 schedule-independence claim.** For well-typed programs, every fair interleaving of
+native task steps yields the same observable final value and per-task trap outcomes as the
+sequential oracle. Sketch: mutation requires a `^` handle; `^` handles are affine; spawn
+arguments are consumed at the spawn site; task handles cannot leak or be duplicated; therefore
+no mutable heap object is reachable from two simultaneously running tasks. The race falsifier
+for this claim is the ill-typed program that hands one array handle to two spawned tasks and
+mutates through both handles.
 
 ---
 
@@ -820,6 +887,28 @@ update site and therefore do not increment the count. Out-of-bounds compiled agg
 access traps with exit 88 and message `ATLI BOUNDS`, matching the oracle's bounds-error
 outcome.
 
+### 9.3 Tasks and the region tree
+
+`scope` creates a region node and a task group; `spawn` creates a child task node. The
+task tree, region tree, and structured-join tree are the same tree. A spawned task gets
+its own control arena sized from the callee's certified `β`; if the callee is `Div`, it
+uses the growable segment. Thus the allocation thesis is per task: the type computes each
+task's stack budget before the OS thread exists.
+
+Task data allocations live in the child data region nested under the enclosing scope's
+region. Move-in is zero-copy: arguments are evaluated in the parent and a unique handle may
+be transferred into the child without copying because the parent scope outlives all of its
+children. Heap results cross back at `await` by a boundary copy into the awaiting scope's
+region, counted in `ATLI_DATA_ALLOCS`; primitive results return directly. Zero-copy result
+promotion is a future region-optimization, not the tier-1 rule.
+
+Tier-1 cancellation is honest and simple: traps remain process-fatal (86/87/88), so
+failure cancellation degenerates to "everything dies." The normative shape is still the
+scope/task/region tree; cooperative cancellation will refine the behavior without changing
+the ownership and outlives rules. Native execution reports `ATLI_TASKS_SPAWNED=n`, and
+high-water reporting is the maximum across finite task arenas (debug builds may also report
+per-task highs).
+
 **No LLVM coroutines.** Atli owns the continuation split in its own mid-end (Zig's hard-
 won lesson: LLVM couples frame alloc/dealloc to execution, forcing heap-allocated self-
 destroying frames — fatal to arena placement, and its splitting pass is slow and buggy).
@@ -849,12 +938,17 @@ Mechanize in Rocq (Iris for the substructural/linearity reasoning). Prove soundn
 - Drop for now in Rocq: records/variants, aggregate heap semantics, regions beyond a single
   arena, arrays, `move`, `inplace`, and `freeze`.
 
-Arrays, records, variants, and data-affinity are now part of the executable compiler but remain outside the
-Rocq scaffold. The proof ladder therefore adds L9 as
+Arrays, records, variants, data-affinity, and tasks are now part of the executable compiler
+but remain outside the Rocq scaffold. The proof ladder therefore adds L9 as
 `Stated-Pending-Infrastructure`: **uniqueness soundness**, the observational
 equivalence of `inplace set` / in-place record replacement and their functional-copy counterparts under §4's affine discipline. Stating
 and proving L9 requires graded contexts and a heap in the step relation; it is not an
 `Admitted` theorem in the current scaffold and does not change `proofs/ADMITTED_COUNT`.
+Sprint 13 adds L10 as `Stated-Pending-Infrastructure`: **schedule independence**, the
+claim that well-typed task programs have the same observables under every fair native
+interleaving and under the deterministic sequential oracle. Stating and proving L10
+requires a concurrent small-step relation over task pools plus the region tree; it is not
+an `Admitted` theorem and does not change `proofs/ADMITTED_COUNT`.
 
 Prove, in order of pain:
 1. **8.6 principality** for this core (the mixed order; the crux).
