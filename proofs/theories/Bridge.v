@@ -252,3 +252,26 @@ Proof. reflexivity. Qed.
 Example grade_anchor_omega_not_le_finite_zero :
   ~ bound_le BOmega (BFinite 0).
 Proof. simpl. exact (fun x => x). Qed.
+
+(** Capture decomposition anchors, Sprint 16 A2: falsifiability witnesses for
+    docs/calculus.md §5 handler-free lazy capture. *)
+
+Example capture_anchor_finding21_body :
+  capture (TLet "x" (TPerform L TZero) (TVar "x"))
+  = Some ([FLet "x" (TVar "x")], TZero).
+Proof. reflexivity. Qed.
+
+Example capture_anchor_nested_handler_stops :
+  capture (THandle (TPerform L TZero) (Handler "r" (TVar "r") L "p" "k" TZero)) = None.
+Proof. reflexivity. Qed.
+
+Example capture_anchor_innermost_perform_wins :
+  capture (TPerform L (TPerform L TZero)) = Some ([FPerformArg L], TZero).
+Proof. reflexivity. Qed.
+
+Example capture_anchor_value_is_none : capture TZero = None.
+Proof. reflexivity. Qed.
+
+Example capture_anchor_direct_perform_empty_ctx :
+  capture (TPerform L TZero) = Some ([], TZero).
+Proof. reflexivity. Qed.
