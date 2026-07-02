@@ -9,7 +9,7 @@ Require Import Atli.Grade.
 Inductive ty : Type :=
 | TyUnit
 | TyNat
-| TyArrow (a b : ty)
+| TyArrow (a : ty) (lat_eps : eff) (lat_beta : bound) (b : ty)
 | TyCont (a b : ty).
 
 Inductive rec_tag : Type := Structural | Measure | Div.
