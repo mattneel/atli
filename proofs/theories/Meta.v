@@ -1452,6 +1452,323 @@ Proof.
   reflexivity.
 Qed.
 
+(** Sprint 16 C1: closed substitution preserves typing (docs/calculus.md §8.2 infrastructure; ADR 0002 named binders). *)
+
+Lemma lookup_char_cons : forall gfull g x a y ty0,
+  (forall z, lookup z gfull = lookup z ((x, a) :: g)) ->
+  String.eqb x y = false ->
+  (forall z, lookup z ((y, ty0) :: gfull) = lookup z ((x, a) :: (y, ty0) :: g)).
+Proof.
+  intros gfull g x a y ty0 Hchar Hxy z.
+  simpl.
+  destruct (String.eqb z y) eqn:Hzy.
+  - apply String.eqb_eq in Hzy. subst z.
+    rewrite String.eqb_sym. rewrite Hxy. reflexivity.
+  - rewrite Hchar. simpl.
+    destruct (String.eqb z x); [reflexivity|].
+    reflexivity.
+Qed.
+
+Lemma lookup_char_shadow_cons : forall gfull g x a y ty0,
+  (forall z, lookup z gfull = lookup z ((x, a) :: g)) ->
+  String.eqb x y = true ->
+  (forall z, lookup z ((y, ty0) :: gfull) = lookup z ((y, ty0) :: g)).
+Proof.
+  intros gfull g x a y ty0 Hchar Hxy z.
+  simpl.
+  destruct (String.eqb z y) eqn:Hzy; [reflexivity|].
+  rewrite Hchar.
+  apply String.eqb_eq in Hxy. subst x.
+  simpl. rewrite Hzy. reflexivity.
+Qed.
+
+Lemma lookup_char_shadow_two : forall gfull g x a y1 ty1 y2 ty2,
+  (forall z, lookup z gfull = lookup z ((x, a) :: g)) ->
+  (String.eqb x y1 = true \/ String.eqb x y2 = true) ->
+  (forall z,
+    lookup z ((y1, ty1) :: (y2, ty2) :: gfull) =
+    lookup z ((y1, ty1) :: (y2, ty2) :: g)).
+Proof.
+  intros gfull g x a y1 ty1 y2 ty2 Hchar Hshadow z.
+  simpl.
+  destruct (String.eqb z y1) eqn:Hz1; [reflexivity|].
+  destruct (String.eqb z y2) eqn:Hz2; [reflexivity|].
+  rewrite Hchar.
+  simpl.
+  destruct Hshadow as [Hx|Hx].
+  - apply String.eqb_eq in Hx. subst x. rewrite Hz1. reflexivity.
+  - apply String.eqb_eq in Hx. subst x. rewrite Hz2. reflexivity.
+Qed.
+
+Lemma substitution_preserves_typing_general : forall gfull body ty eps beta,
+  has_type gfull body ty eps beta ->
+  forall x a g v,
+  (forall z, lookup z gfull = lookup z ((x, a) :: g)) ->
+  has_type [] v a EffEmpty (BFinite 0) ->
+  has_type g (subst x v body) ty eps beta.
+Proof.
+  intros gfull body ty eps beta Hty.
+  induction Hty; intros sx sa sg sv Hchar Hv; simpl.
+  - destruct (String.eqb sx x) eqn:Hsxx.
+    + apply String.eqb_eq in Hsxx. subst sx.
+      specialize (Hchar x). rewrite H in Hchar.
+      simpl in Hchar. rewrite String.eqb_refl in Hchar.
+      inversion Hchar; subst.
+      apply closed_typing_weakening. exact Hv.
+    + apply Ty_Var.
+      specialize (Hchar x). rewrite H in Hchar.
+      simpl in Hchar. rewrite String.eqb_sym in Hchar. rewrite Hsxx in Hchar.
+      symmetry. exact Hchar.
+  - apply Ty_Unit.
+  - apply Ty_Zero.
+  - apply Ty_Succ. eapply IHHty; eauto.
+  - destruct (String.eqb sx x) eqn:Hshadow.
+    + eapply Ty_CaseNat.
+      * eapply IHHty1; eauto.
+      * eapply IHHty2; eauto.
+      * eapply typing_context_ext.
+        -- exact Hty3.
+        -- eapply lookup_char_shadow_cons; eauto.
+    + eapply Ty_CaseNat.
+      * eapply IHHty1; eauto.
+      * eapply IHHty2; eauto.
+      * eapply IHHty3; [eapply lookup_char_cons; eauto|eauto].
+  - destruct (String.eqb sx x) eqn:Hshadow.
+    + apply Ty_Lam.
+      eapply typing_context_ext.
+      * exact Hty.
+      * eapply lookup_char_shadow_cons; eauto.
+    + apply Ty_Lam.
+      eapply IHHty; [eapply lookup_char_cons; eauto|eauto].
+  - eapply Ty_App.
+    + eapply IHHty1; eauto.
+    + eapply IHHty2; eauto.
+  - destruct (String.eqb sx x) eqn:Hshadow.
+    + eapply Ty_Let.
+      * eapply IHHty1; eauto.
+      * eapply typing_context_ext.
+        -- exact Hty2.
+        -- eapply lookup_char_shadow_cons; eauto.
+    + eapply Ty_Let.
+      * eapply IHHty1; eauto.
+      * eapply IHHty2; [eapply lookup_char_cons; eauto|eauto].
+  - destruct (String.eqb sx f) eqn:Hsxf;
+      destruct (String.eqb sx x) eqn:Hsxparam.
+    + apply Ty_FixStructural; [assumption|].
+      eapply typing_context_ext.
+      * exact Hty.
+      * eapply lookup_char_shadow_two; [exact Hchar|left; exact Hsxparam].
+    + apply Ty_FixStructural; [assumption|].
+      eapply typing_context_ext.
+      * exact Hty.
+      * eapply lookup_char_shadow_two; [exact Hchar|right; exact Hsxf].
+    + apply Ty_FixStructural; [assumption|].
+      eapply typing_context_ext.
+      * exact Hty.
+      * eapply lookup_char_shadow_two; [exact Hchar|left; exact Hsxparam].
+    + apply Ty_FixStructural; [assumption|].
+      eapply IHHty.
+      * eapply lookup_char_cons; [eapply lookup_char_cons; eauto|eauto].
+      * assumption.
+  - destruct (String.eqb sx f) eqn:Hsxf;
+      destruct (String.eqb sx x) eqn:Hsxparam.
+    + apply Ty_FixMeasure; [assumption|].
+      eapply typing_context_ext.
+      * exact Hty.
+      * eapply lookup_char_shadow_two; [exact Hchar|left; exact Hsxparam].
+    + apply Ty_FixMeasure; [assumption|].
+      eapply typing_context_ext.
+      * exact Hty.
+      * eapply lookup_char_shadow_two; [exact Hchar|right; exact Hsxf].
+    + apply Ty_FixMeasure; [assumption|].
+      eapply typing_context_ext.
+      * exact Hty.
+      * eapply lookup_char_shadow_two; [exact Hchar|left; exact Hsxparam].
+    + apply Ty_FixMeasure; [assumption|].
+      eapply IHHty.
+      * eapply lookup_char_cons; [eapply lookup_char_cons; eauto|eauto].
+      * assumption.
+  - destruct (String.eqb sx f) eqn:Hsxf;
+      destruct (String.eqb sx x) eqn:Hsxparam.
+    + eapply Ty_FixDiv; [assumption|].
+      eapply typing_context_ext.
+      * exact Hty.
+      * eapply lookup_char_shadow_two; [exact Hchar|left; exact Hsxparam].
+    + eapply Ty_FixDiv; [assumption|].
+      eapply typing_context_ext.
+      * exact Hty.
+      * eapply lookup_char_shadow_two; [exact Hchar|right; exact Hsxf].
+    + eapply Ty_FixDiv; [assumption|].
+      eapply typing_context_ext.
+      * exact Hty.
+      * eapply lookup_char_shadow_two; [exact Hchar|left; exact Hsxparam].
+    + eapply Ty_FixDiv; [assumption|].
+      eapply IHHty.
+      * eapply lookup_char_cons; [eapply lookup_char_cons; eauto|eauto].
+      * assumption.
+  - apply Ty_Perform. eapply IHHty; eauto.
+  - destruct (String.eqb sx rv) eqn:Hrv;
+      destruct (String.eqb sx op_param || String.eqb sx op_k) eqn:Hop_shadow.
+    + eapply Ty_HandleDrop.
+      * eapply IHHty1; eauto.
+      * eapply typing_context_ext.
+        -- exact Hty2.
+        -- eapply lookup_char_shadow_cons; eauto.
+      * eapply typing_context_ext.
+        -- exact Hty3.
+        -- eapply lookup_char_shadow_two; [exact Hchar|].
+           apply orb_true_iff in Hop_shadow as [Hop_param|Hop_k].
+           right. exact Hop_param.
+           left. exact Hop_k.
+      * exact H.
+      * exact H0.
+    + eapply Ty_HandleDrop.
+      * eapply IHHty1; eauto.
+      * eapply typing_context_ext.
+        -- exact Hty2.
+        -- eapply lookup_char_shadow_cons; eauto.
+      * eapply IHHty3.
+        -- apply orb_false_iff in Hop_shadow as [Hop_param Hop_k].
+           eapply lookup_char_cons; [eapply lookup_char_cons; eauto|eauto].
+        -- assumption.
+      * rewrite handler_clause_ok_subst_stable; [exact H| |].
+        -- eapply typed_empty_closed; exact Hv.
+        -- apply orb_false_iff in Hop_shadow as [_ Hop_k].
+           apply String.eqb_neq in Hop_k.
+           intro Heq. apply Hop_k. subst. reflexivity.
+      * rewrite subst_mentions_other; [exact H0| |].
+        -- eapply typed_empty_closed; exact Hv.
+        -- apply orb_false_iff in Hop_shadow as [_ Hop_k].
+           apply String.eqb_neq in Hop_k.
+           intro Heq. apply Hop_k. subst. reflexivity.
+    + eapply Ty_HandleDrop.
+      * eapply IHHty1; eauto.
+      * eapply IHHty2; [eapply lookup_char_cons; eauto|eauto].
+      * eapply typing_context_ext.
+        -- exact Hty3.
+        -- eapply lookup_char_shadow_two; [exact Hchar|].
+           apply orb_true_iff in Hop_shadow as [Hop_param|Hop_k].
+           right. exact Hop_param.
+           left. exact Hop_k.
+      * exact H.
+      * exact H0.
+    + eapply Ty_HandleDrop.
+      * eapply IHHty1; eauto.
+      * eapply IHHty2; [eapply lookup_char_cons; eauto|eauto].
+      * eapply IHHty3.
+        -- apply orb_false_iff in Hop_shadow as [Hop_param Hop_k].
+           eapply lookup_char_cons; [eapply lookup_char_cons; eauto|eauto].
+        -- assumption.
+      * rewrite handler_clause_ok_subst_stable; [exact H| |].
+        -- eapply typed_empty_closed; exact Hv.
+        -- apply orb_false_iff in Hop_shadow as [_ Hop_k].
+           apply String.eqb_neq in Hop_k.
+           intro Heq. apply Hop_k. subst. reflexivity.
+      * rewrite subst_mentions_other; [exact H0| |].
+        -- eapply typed_empty_closed; exact Hv.
+        -- apply orb_false_iff in Hop_shadow as [_ Hop_k].
+           apply String.eqb_neq in Hop_k.
+           intro Heq. apply Hop_k. subst. reflexivity.
+  - destruct (String.eqb sx rv) eqn:Hrv;
+      destruct (String.eqb sx op_param || String.eqb sx op_k) eqn:Hop_shadow.
+    + eapply Ty_HandleResume.
+      * eapply IHHty1; eauto.
+      * eapply typing_context_ext.
+        -- exact Hty2.
+        -- eapply lookup_char_shadow_cons; eauto.
+      * eapply typing_context_ext.
+        -- exact Hty3.
+        -- eapply lookup_char_shadow_two; [exact Hchar|].
+           apply orb_true_iff in Hop_shadow as [Hop_param|Hop_k].
+           right. exact Hop_param.
+           left. exact Hop_k.
+      * exact H.
+      * exact H0.
+      * exact H1.
+      * exact H2.
+    + eapply Ty_HandleResume.
+      * eapply IHHty1; eauto.
+      * eapply typing_context_ext.
+        -- exact Hty2.
+        -- eapply lookup_char_shadow_cons; eauto.
+      * eapply IHHty3.
+        -- apply orb_false_iff in Hop_shadow as [Hop_param Hop_k].
+           eapply lookup_char_cons; [eapply lookup_char_cons; eauto|eauto].
+        -- assumption.
+      * rewrite handler_clause_ok_subst_stable; [exact H| |].
+        -- eapply typed_empty_closed; exact Hv.
+        -- apply orb_false_iff in Hop_shadow as [_ Hop_k].
+           apply String.eqb_neq in Hop_k.
+           intro Heq. apply Hop_k. subst. reflexivity.
+      * rewrite subst_mentions_other; [exact H0| |].
+        -- eapply typed_empty_closed; exact Hv.
+        -- apply orb_false_iff in Hop_shadow as [_ Hop_k].
+           apply String.eqb_neq in Hop_k.
+           intro Heq. apply Hop_k. subst. reflexivity.
+      * exact H1.
+      * exact H2.
+    + eapply Ty_HandleResume.
+      * eapply IHHty1; eauto.
+      * eapply IHHty2; [eapply lookup_char_cons; eauto|eauto].
+      * eapply typing_context_ext.
+        -- exact Hty3.
+        -- eapply lookup_char_shadow_two; [exact Hchar|].
+           apply orb_true_iff in Hop_shadow as [Hop_param|Hop_k].
+           right. exact Hop_param.
+           left. exact Hop_k.
+      * exact H.
+      * exact H0.
+      * exact H1.
+      * exact H2.
+    + eapply Ty_HandleResume.
+      * eapply IHHty1; eauto.
+      * eapply IHHty2; [eapply lookup_char_cons; eauto|eauto].
+      * eapply IHHty3.
+        -- apply orb_false_iff in Hop_shadow as [Hop_param Hop_k].
+           eapply lookup_char_cons; [eapply lookup_char_cons; eauto|eauto].
+        -- assumption.
+      * rewrite handler_clause_ok_subst_stable; [exact H| |].
+        -- eapply typed_empty_closed; exact Hv.
+        -- apply orb_false_iff in Hop_shadow as [_ Hop_k].
+           apply String.eqb_neq in Hop_k.
+           intro Heq. apply Hop_k. subst. reflexivity.
+      * rewrite subst_mentions_other; [exact H0| |].
+        -- eapply typed_empty_closed; exact Hv.
+        -- apply orb_false_iff in Hop_shadow as [_ Hop_k].
+           apply String.eqb_neq in Hop_k.
+           intro Heq. apply Hop_k. subst. reflexivity.
+      * exact H1.
+      * exact H2.
+  - eapply Ty_Resume.
+    + eapply IHHty1; eauto.
+    + eapply IHHty2; eauto.
+  - eapply Ty_ContVal; eauto.
+Qed.
+
+Theorem substitution_preserves_typing_closed : forall g x a body ty eps beta v,
+  has_type ((x, a) :: g) body ty eps beta ->
+  has_type [] v a EffEmpty (BFinite 0) ->
+  has_type g (subst x v body) ty eps beta.
+Proof.
+  intros g x a body ty eps beta v Hbody Hv.
+  eapply substitution_preserves_typing_general with (gfull := ((x, a) :: g)).
+  - exact Hbody.
+  - intro z. reflexivity.
+  - exact Hv.
+Qed.
+
+Theorem substitution_preserves_typing_closed_value : forall g x a body ty eps beta v,
+  has_type ((x, a) :: g) body ty eps beta ->
+  has_type [] v a EffEmpty (BFinite 0) ->
+  is_value v = true ->
+  has_type g (subst x v body) ty eps beta.
+Proof.
+  intros g x a body ty eps beta v Hbody Hv _.
+  (* The sprint acceptance row keeps this value premise, but C1 deliberately
+     permits closed pure non-values for C4's fix-unfold substitution case. *)
+  eapply substitution_preserves_typing_closed; eauto.
+Qed.
+
 (** Proof ladder for [docs/calculus.md §8] and mechanization target §10. *)
 
 Theorem L2_substitution_nonhandler_min : forall g t ty eps beta x replacement,
