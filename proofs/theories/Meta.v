@@ -1101,6 +1101,357 @@ Proof.
   intros x tx Hlookup. discriminate Hlookup.
 Qed.
 
+(** Sprint 16 C1a: counting-function stability under closed substitution. *)
+
+Lemma mentions_false_free_var_count_mut :
+  (forall t y,
+    mentions_var y t = false -> free_var_count y t = 0) /\
+  (forall h y,
+    match h with
+    | Handler return_var return_body _ op_param op_k op_body =>
+        ((if String.eqb y return_var then false else mentions_var y return_body) ||
+         (if String.eqb y op_param || String.eqb y op_k
+          then false
+          else mentions_var y op_body)) = false ->
+        (if String.eqb y return_var then 0 else free_var_count y return_body) +
+        (if String.eqb y op_param || String.eqb y op_k
+         then 0
+         else free_var_count y op_body) = 0
+    end) /\
+  (forall f : eframe, True).
+Proof.
+  apply syntax_ind; simpl; intros; try exact I; try reflexivity.
+  - rewrite H. reflexivity.
+  - apply H. exact H0.
+  - apply orb_false_iff in H2 as [Hleft Hsucc].
+    apply orb_false_iff in Hleft as [Hscrut Hzero].
+    rewrite (H y Hscrut), (H0 y Hzero).
+    destruct (String.eqb y succ_var) eqn:?; [reflexivity|].
+    rewrite (H1 y Hsucc). reflexivity.
+  - destruct (String.eqb y param); [reflexivity|].
+    apply H. exact H0.
+  - apply orb_false_iff in H1 as [Hf Ha].
+    rewrite (H y Hf), (H0 y Ha). reflexivity.
+  - apply orb_false_iff in H1 as [Hexpr Hbody].
+    rewrite (H y Hexpr).
+    destruct (String.eqb y x); [reflexivity|].
+    rewrite (H0 y Hbody). reflexivity.
+  - destruct (String.eqb y func || String.eqb y param); [reflexivity|].
+    apply H. exact H0.
+  - apply H. exact H0.
+  - pose proof (H0 y) as Hh.
+    destruct h; simpl in Hh |- *.
+    apply orb_false_iff in H1 as [Hleft Hop].
+    apply orb_false_iff in Hleft as [Hbody Hreturn].
+    assert (Hhandler :
+      (if y =? return_var then false else mentions_var y return_body) ||
+      (if (y =? op_param) || (y =? op_k)
+       then false
+       else mentions_var y op_body) = false).
+    { apply orb_false_iff. split; assumption. }
+    rewrite (H y Hbody). simpl.
+    exact (Hh Hhandler).
+  - apply orb_false_iff in H1 as [Hkont Harg].
+    rewrite (H y Hkont), (H0 y Harg). reflexivity.
+  - apply orb_false_iff in H1 as [Hreturn Hop].
+    destruct (String.eqb y return_var) eqn:?; simpl.
+    + destruct (String.eqb y op_param || String.eqb y op_k) eqn:?; simpl;
+        [reflexivity|rewrite (H0 y Hop); reflexivity].
+    + rewrite (H y Hreturn).
+      destruct (String.eqb y op_param || String.eqb y op_k) eqn:?; simpl;
+        [reflexivity|rewrite (H0 y Hop); reflexivity].
+Qed.
+
+Lemma mentions_false_free_var_count : forall t y,
+  mentions_var y t = false -> free_var_count y t = 0.
+Proof. exact (proj1 mentions_false_free_var_count_mut). Qed.
+
+Lemma mentions_false_direct_resume_count_mut :
+  (forall t y,
+    mentions_var y t = false -> direct_resume_count y t = 0) /\
+  (forall h y,
+    match h with
+    | Handler return_var return_body _ op_param op_k op_body =>
+        ((if String.eqb y return_var then false else mentions_var y return_body) ||
+         (if String.eqb y op_param || String.eqb y op_k
+          then false
+          else mentions_var y op_body)) = false ->
+        (if String.eqb y return_var then 0 else direct_resume_count y return_body) +
+        (if String.eqb y op_param || String.eqb y op_k
+         then 0
+         else direct_resume_count y op_body) = 0
+    end) /\
+  (forall f : eframe, True).
+Proof.
+  apply syntax_ind; simpl; intros; try exact I; try reflexivity.
+  - apply H. exact H0.
+  - apply orb_false_iff in H2 as [Hleft Hsucc].
+    apply orb_false_iff in Hleft as [Hscrut Hzero].
+    rewrite (H y Hscrut), (H0 y Hzero).
+    destruct (String.eqb y succ_var) eqn:?; [reflexivity|].
+    rewrite (H1 y Hsucc). reflexivity.
+  - destruct (String.eqb y param); [reflexivity|].
+    apply H. exact H0.
+  - apply orb_false_iff in H1 as [Hf Ha].
+    rewrite (H y Hf), (H0 y Ha). reflexivity.
+  - apply orb_false_iff in H1 as [Hexpr Hbody].
+    rewrite (H y Hexpr).
+    destruct (String.eqb y x); [reflexivity|].
+    rewrite (H0 y Hbody). reflexivity.
+  - destruct (String.eqb y func || String.eqb y param); [reflexivity|].
+    apply H. exact H0.
+  - apply H. exact H0.
+  - pose proof (H0 y) as Hh.
+    destruct h; simpl in Hh |- *.
+    apply orb_false_iff in H1 as [Hleft Hop].
+    apply orb_false_iff in Hleft as [Hbody Hreturn].
+    assert (Hhandler :
+      (if y =? return_var then false else mentions_var y return_body) ||
+      (if (y =? op_param) || (y =? op_k)
+       then false
+       else mentions_var y op_body) = false).
+    { apply orb_false_iff. split; assumption. }
+    rewrite (H y Hbody). simpl.
+    exact (Hh Hhandler).
+  - apply orb_false_iff in H1 as [Hkont Harg].
+    pose proof (H y Hkont) as Hkont_count.
+    rewrite (H0 y Harg).
+    destruct kont; simpl in Hkont, Hkont_count |- *;
+      try (rewrite Hkont_count; reflexivity); try reflexivity.
+    rewrite Hkont. reflexivity.
+  - apply orb_false_iff in H1 as [Hreturn Hop].
+    destruct (String.eqb y return_var) eqn:?; simpl.
+    + destruct (String.eqb y op_param || String.eqb y op_k) eqn:?; simpl;
+        [reflexivity|rewrite (H0 y Hop); reflexivity].
+    + rewrite (H y Hreturn).
+      destruct (String.eqb y op_param || String.eqb y op_k) eqn:?; simpl;
+        [reflexivity|rewrite (H0 y Hop); reflexivity].
+Qed.
+
+Lemma mentions_false_direct_resume_count : forall t y,
+  mentions_var y t = false -> direct_resume_count y t = 0.
+Proof. exact (proj1 mentions_false_direct_resume_count_mut). Qed.
+
+Lemma direct_resume_head_plus_mentions_false : forall v y n,
+  mentions_var y v = false ->
+  match v with
+  | TVar z => (if String.eqb y z then 1 else 0) + n
+  | _ => direct_resume_count y v + n
+  end = n.
+Proof.
+  intros v y n Hmentions.
+  pose proof (mentions_false_direct_resume_count v y Hmentions) as Hcount.
+  destruct v; simpl in Hmentions, Hcount |- *;
+    try (rewrite Hcount; reflexivity); try reflexivity.
+  rewrite Hmentions. reflexivity.
+Qed.
+
+Lemma subst_free_var_count_other_mut :
+  (forall e x v y,
+    mentions_var y v = false -> y <> x ->
+    free_var_count y (subst x v e) = free_var_count y e) /\
+  (forall h x v y base,
+    mentions_var y v = false -> y <> x ->
+    match h with
+    | Handler return_var return_body _ op_param op_k op_body =>
+        base +
+        (if String.eqb y return_var
+         then 0
+         else free_var_count y
+           (if String.eqb x return_var then return_body else subst x v return_body)) +
+        (if String.eqb y op_param || String.eqb y op_k
+         then 0
+         else free_var_count y
+           (if String.eqb x op_param || String.eqb x op_k
+            then op_body
+            else subst x v op_body)) =
+        base +
+        (if String.eqb y return_var then 0 else free_var_count y return_body) +
+        (if String.eqb y op_param || String.eqb y op_k
+         then 0
+         else free_var_count y op_body)
+    end) /\
+  (forall f : eframe, True).
+Proof.
+  apply syntax_ind; simpl; intros; try exact I; try reflexivity.
+  - destruct (String.eqb x0 x) eqn:Heq.
+    + apply String.eqb_eq in Heq. subst x0.
+      assert (Hyx : (y =? x) = false) by (apply String.eqb_neq; exact H0).
+      rewrite Hyx.
+      apply mentions_false_free_var_count. exact H.
+    + reflexivity.
+  - rewrite (H x v y H0 H1). reflexivity.
+  - rewrite (H x v y H2 H3).
+    rewrite (H0 x v y H2 H3).
+    destruct (String.eqb y succ_var); [reflexivity|].
+    destruct (String.eqb x succ_var); [reflexivity|].
+    rewrite (H1 x v y H2 H3). reflexivity.
+  - destruct (String.eqb y param); [reflexivity|].
+    destruct (String.eqb x param); [reflexivity|].
+    rewrite (H x v y H0 H1). reflexivity.
+  - rewrite (H x v y H1 H2).
+    rewrite (H0 x v y H1 H2). reflexivity.
+  - rewrite (H x0 v y H1 H2).
+    destruct (String.eqb y x); [reflexivity|].
+    destruct (String.eqb x0 x); [reflexivity|].
+    rewrite (H0 x0 v y H1 H2). reflexivity.
+  - destruct (String.eqb y func || String.eqb y param); [reflexivity|].
+    destruct (String.eqb x func || String.eqb x param); [reflexivity|].
+    rewrite (H x v y H0 H1). reflexivity.
+  - rewrite (H x v y H0 H1). reflexivity.
+  - pose proof (H0 x v y (free_var_count y body) H1 H2) as Hh.
+    destruct h; simpl in Hh |- *.
+    rewrite (H x v y H1 H2). exact Hh.
+  - rewrite (H x v y H1 H2).
+    rewrite (H0 x v y H1 H2). reflexivity.
+  - destruct (String.eqb y return_var) eqn:?; simpl.
+    + destruct (String.eqb y op_param || String.eqb y op_k) eqn:?; simpl; [reflexivity|].
+      destruct (String.eqb x op_param || String.eqb x op_k) eqn:?; simpl; [reflexivity|].
+      rewrite (H0 x v y H1 H2). reflexivity.
+    + destruct (String.eqb x return_var) eqn:?; simpl.
+      * destruct (String.eqb y op_param || String.eqb y op_k) eqn:?; simpl; [reflexivity|].
+        destruct (String.eqb x op_param || String.eqb x op_k) eqn:?; simpl; [reflexivity|].
+        rewrite (H0 x v y H1 H2). reflexivity.
+      * rewrite (H x v y H1 H2).
+        destruct (String.eqb y op_param || String.eqb y op_k) eqn:?; simpl; [reflexivity|].
+        destruct (String.eqb x op_param || String.eqb x op_k) eqn:?; simpl; [reflexivity|].
+        rewrite (H0 x v y H1 H2). reflexivity.
+Qed.
+
+Lemma subst_free_var_count_other : forall e x v y,
+  mentions_var y v = false -> y <> x ->
+  free_var_count y (subst x v e) = free_var_count y e.
+Proof. exact (proj1 subst_free_var_count_other_mut). Qed.
+
+Lemma subst_direct_resume_count_other_mut :
+  (forall e x v y,
+    mentions_var y v = false -> y <> x ->
+    direct_resume_count y (subst x v e) = direct_resume_count y e) /\
+  (forall h x v y base,
+    mentions_var y v = false -> y <> x ->
+    match h with
+    | Handler return_var return_body _ op_param op_k op_body =>
+        base +
+        (if String.eqb y return_var
+         then 0
+         else direct_resume_count y
+           (if String.eqb x return_var then return_body else subst x v return_body)) +
+        (if String.eqb y op_param || String.eqb y op_k
+         then 0
+         else direct_resume_count y
+           (if String.eqb x op_param || String.eqb x op_k
+            then op_body
+            else subst x v op_body)) =
+        base +
+        (if String.eqb y return_var then 0 else direct_resume_count y return_body) +
+        (if String.eqb y op_param || String.eqb y op_k
+         then 0
+         else direct_resume_count y op_body)
+    end) /\
+  (forall f : eframe, True).
+Proof.
+  apply syntax_ind; simpl; intros; try exact I; try reflexivity.
+  - destruct (String.eqb x0 x).
+    + apply mentions_false_direct_resume_count. exact H.
+    + reflexivity.
+  - rewrite (H x v y H0 H1). reflexivity.
+  - rewrite (H x v y H2 H3).
+    rewrite (H0 x v y H2 H3).
+    destruct (String.eqb y succ_var); [reflexivity|].
+    destruct (String.eqb x succ_var); [reflexivity|].
+    rewrite (H1 x v y H2 H3). reflexivity.
+  - destruct (String.eqb y param); [reflexivity|].
+    destruct (String.eqb x param); [reflexivity|].
+    rewrite (H x v y H0 H1). reflexivity.
+  - rewrite (H x v y H1 H2).
+    rewrite (H0 x v y H1 H2). reflexivity.
+  - rewrite (H x0 v y H1 H2).
+    destruct (String.eqb y x); [reflexivity|].
+    destruct (String.eqb x0 x); [reflexivity|].
+    rewrite (H0 x0 v y H1 H2). reflexivity.
+  - destruct (String.eqb y func || String.eqb y param); [reflexivity|].
+    destruct (String.eqb x func || String.eqb x param); [reflexivity|].
+    rewrite (H x v y H0 H1). reflexivity.
+  - rewrite (H x v y H0 H1). reflexivity.
+  - pose proof (H0 x v y (direct_resume_count y body) H1 H2) as Hh.
+    destruct h; simpl in Hh |- *.
+    rewrite (H x v y H1 H2). exact Hh.
+  - destruct kont as
+      [z| | |kinner|kscrut kzero ksucc_var ksucc_body
+      |kparam kty kbody|kf ka|klet kexpr kbody
+      |kfunc kparam kty kbody ktag|kop karg|kbody kh
+      |kkont karg|kh kctx|kh kctx].
+    + cbn [subst].
+    destruct (String.eqb x z) eqn:Hxz.
+	      * apply String.eqb_eq in Hxz. subst z.
+	        assert (Hyx : (y =? x) = false) by (apply String.eqb_neq; exact H2).
+	        rewrite Hyx.
+	        rewrite (H0 x v y H1 H2).
+	        apply direct_resume_head_plus_mentions_false. exact H1.
+      * simpl. rewrite (H0 x v y H1 H2). reflexivity.
+    + simpl. rewrite (H0 x v y H1 H2). reflexivity.
+    + simpl. rewrite (H0 x v y H1 H2). reflexivity.
+    + pose proof (H x v y H1 H2) as Hkont.
+      simpl in Hkont |- *.
+      rewrite Hkont. rewrite (H0 x v y H1 H2). reflexivity.
+    + pose proof (H x v y H1 H2) as Hkont.
+      simpl in Hkont |- *.
+      rewrite Hkont. rewrite (H0 x v y H1 H2). reflexivity.
+    + pose proof (H x v y H1 H2) as Hkont.
+      simpl in Hkont |- *.
+      rewrite Hkont. rewrite (H0 x v y H1 H2). reflexivity.
+    + pose proof (H x v y H1 H2) as Hkont.
+      simpl in Hkont |- *.
+      rewrite Hkont. rewrite (H0 x v y H1 H2). reflexivity.
+    + pose proof (H x v y H1 H2) as Hkont.
+      simpl in Hkont |- *.
+      rewrite Hkont. rewrite (H0 x v y H1 H2). reflexivity.
+    + pose proof (H x v y H1 H2) as Hkont.
+      simpl in Hkont |- *.
+      rewrite Hkont. rewrite (H0 x v y H1 H2). reflexivity.
+    + pose proof (H x v y H1 H2) as Hkont.
+      simpl in Hkont |- *.
+      rewrite Hkont. rewrite (H0 x v y H1 H2). reflexivity.
+    + destruct kh.
+      pose proof (H x v y H1 H2) as Hkont.
+      simpl in Hkont |- *.
+      rewrite Hkont. rewrite (H0 x v y H1 H2). reflexivity.
+    + pose proof (H x v y H1 H2) as Hkont.
+      simpl in Hkont |- *.
+      rewrite Hkont. rewrite (H0 x v y H1 H2). reflexivity.
+    + simpl. rewrite (H0 x v y H1 H2). reflexivity.
+    + simpl. rewrite (H0 x v y H1 H2). reflexivity.
+  - destruct (String.eqb y return_var) eqn:?; simpl.
+    + destruct (String.eqb y op_param || String.eqb y op_k) eqn:?; simpl; [reflexivity|].
+      destruct (String.eqb x op_param || String.eqb x op_k) eqn:?; simpl; [reflexivity|].
+      rewrite (H0 x v y H1 H2). reflexivity.
+    + destruct (String.eqb x return_var) eqn:?; simpl.
+      * destruct (String.eqb y op_param || String.eqb y op_k) eqn:?; simpl; [reflexivity|].
+        destruct (String.eqb x op_param || String.eqb x op_k) eqn:?; simpl; [reflexivity|].
+        rewrite (H0 x v y H1 H2). reflexivity.
+      * rewrite (H x v y H1 H2).
+        destruct (String.eqb y op_param || String.eqb y op_k) eqn:?; simpl; [reflexivity|].
+        destruct (String.eqb x op_param || String.eqb x op_k) eqn:?; simpl; [reflexivity|].
+        rewrite (H0 x v y H1 H2). reflexivity.
+Qed.
+
+Lemma subst_direct_resume_count_other : forall e x v y,
+  mentions_var y v = false -> y <> x ->
+  direct_resume_count y (subst x v e) = direct_resume_count y e.
+Proof. exact (proj1 subst_direct_resume_count_other_mut). Qed.
+
+Lemma handler_clause_ok_subst_stable : forall k ob x v,
+  mentions_var k v = false -> k <> x ->
+  handler_clause_ok k (subst x v ob) = handler_clause_ok k ob.
+Proof.
+  intros k ob x v Hmentions Hneq.
+  unfold handler_clause_ok.
+  rewrite (subst_mentions_other ob x v k Hmentions Hneq).
+  rewrite (subst_direct_resume_count_other ob x v k Hmentions Hneq).
+  rewrite (subst_free_var_count_other ob x v k Hmentions Hneq).
+  reflexivity.
+Qed.
+
 (** Proof ladder for [docs/calculus.md §8] and mechanization target §10. *)
 
 Theorem L2_substitution_nonhandler_min : forall g t ty eps beta x replacement,
