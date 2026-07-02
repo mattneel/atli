@@ -5,16 +5,23 @@ previously false proof-ledger claim: the semantic `step` relation is restored to
 honest `stepf t = Some u -> step t u` relation, and bridge anchors now make self-loop
 degeneracy uncompilable.
 
-`proofs/ADMITTED_COUNT` pins the current `Admitted.` count at 4: `progress`,
-`preservation`, `boundedness_soundness`, and `solver_certificate_soundness`. The
-effect-closed progress corollary, step determinism, relation anchors, and frame-step
-erasure are `Qed`.
+v0.5.4 pins `proofs/ADMITTED_COUNT` at 1: `boundedness_soundness` (L7) is the sole
+`Admitted`. `progress` (L3), `preservation` (L4), and `solver_certificate_soundness` (L8)
+are `Qed` over the deep continuation semantics: captured contexts, `capture`/`plug`,
+`ctx_types`, and latent `Cont` bounds are all load-bearing.
 
-L6, L9, and L10 remain Stated-Pending-Infrastructure. The recommended next proof
-increment is still graded contexts + heap infrastructure, because it supports both L9 and
-the resource accounting needed for L6.
+L8's honesty note matters. The record-level `solver_certificate` statement is
+ω-degenerate by `solver_certificate_only_omega` because the record is not parameterized by
+its solved constraint system. The real content is the §7.2 functional-model surface:
+`solve_model_postfix`, `converged_least`, `pass_extensive`, `wpass_extensive`,
+`beval_monotone`, and `certified_read_is_evaluation`.
 
-## Coverage boundary after v0.5.3
+The recommended next proof increment is L7: prove the frame metric invariant that a finite
+certified β bounds every `frame_max_run` prefix. After that, graded contexts plus heap
+infrastructure unlock the L9/L6 work.
+
+## Coverage boundary after v0.5.4
 
 The Rocq scaffold still covers the reduced core. Generics, aggregates, uniqueness, and
-tasks are explicitly outside the mechanized fragment until a future proofs expansion.
+tasks remain outside the mechanized fragment until a future proofs expansion; this is the
+coverage line carried from the proof ledger, not an `Admitted` theorem.

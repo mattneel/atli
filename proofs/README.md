@@ -20,7 +20,7 @@ without Iris; see `docs/decisions/0002-mechanization-toolchain.md`.
 | L4 | Preservation (§8.2) with row/bound order components | Qed | Sprint 16 |
 | L5 | Handler mention iff direct resume (§6.2) | Qed | Sprint 04 |
 | L6 | One-shot soundness (§8.3) | Stated-Pending-Infrastructure | Future Iris/resource sprint |
-| L7 | Boundedness soundness (§8.4), frame-count metric | Admitted with pinned frame-step runway | Future boundedness sprint |
+| L7 | Boundedness soundness (§8.4), frame-count metric | Admitted — the sole runway; next proofs sprint's headline | Next proofs sprint |
 | L8 | Solver/certificate soundness (§7.2/§7.3) | Qed (assembled from the §7.2 functional model; certificate record ω-degeneracy documented as finding twenty-seven) | Sprint 16 |
 | L9 | Uniqueness soundness: `inplace set` and in-place record replacement observationally equal their functional-copy counterparts under affine data usage | Stated-Pending-Infrastructure | Future heap/graded-context sprint |
 | L10 | Schedule independence for well-typed task programs (§5/§9.3) | Stated-Pending-Infrastructure | Future concurrent-semantics sprint |
@@ -28,6 +28,9 @@ without Iris; see `docs/decisions/0002-mechanization-toolchain.md`.
 | Aux | Step determinism; frame-step erasure | Qed | Sprint 15 |
 
 Current admitted theorem count: 1 (`boundedness_soundness`). L7 is the sole honest runway
-for the next proofs sprint. v0.5.3 supersedes v0.5.2: the prior L3/L4/L8 Qed claims were
-previously false because `step` had been degenerated. L6/L9/L10 remain SPI, not
-`Admitted`, because their resource/heap/concurrent relations are not yet in the scaffold.
+for the next proofs sprint. The recommended next proof increment is the L7 boundedness
+invariant over the Sprint 16 frame metric: finite certified β bounds every
+`frame_max_run` prefix, ahead of the graded-context/heap infrastructure for L9/L6.
+v0.5.3 supersedes v0.5.2: the prior L3/L4/L8 Qed claims were previously false because
+`step` had been degenerated. L6/L9/L10 remain SPI, not `Admitted`, because their
+resource/heap/concurrent relations are not yet in the scaffold.

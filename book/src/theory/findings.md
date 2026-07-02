@@ -35,3 +35,22 @@ Structured concurrency is load-bearing in v0.4.1. The scheduler-independence cla
 ## v0.5.0 generics
 
 No new finding is introduced by Sprint 14. The release extends the differential chain with generic examples, an erasure golden, fixed-seed coverage tags for generic instantiation and both `^u` grades, and a provenance-pinned `^u` privilege falsifier.
+
+
+## v0.5.4 the induction, decomposed
+
+Sprint 16 split the proof summit into small rungs and let each rung test the semantic
+substrate before the headline theorems were attempted.
+
+- Finding 21: continuation payload erasure hid the real handler and captured context; `TContVal h ctx`, `capture`, `plug`, and deep resume repaired §5.
+- Finding 22: handler `p`/`k` aliasing split static lookup from dynamic substitution; the mechanized resuming rule now has an explicit freshness premise.
+- Finding 23: `stepf` pattern absorption dropped beta/case-succ congruences and used off-grammar fallbacks; value-guarded dispatch now matches `interp.rs`.
+- Finding 24: fix `f`/`x` aliasing replayed the handler binder bug at §4.8; fix rules now require distinct binders.
+- Finding 25: fix typing bound `f` at the wrong arrow; the mechanized core takes the equality slice of `β ⊒ Fix_β`.
+- Finding 26: Rust solver widening escaped a partial SCC iterate; the corrected solver iterates widened passes to a post-fixpoint.
+- Finding 27: `solver_certificate` is system-unparameterized and therefore ω-degenerate; the real L8 content lives in the §7.2 functional-model lemmas.
+- Finding 28: the proof bridge transcribed the frame metric as a flat charge; `frame_max_run` now matches the Rust `max_frame` captured-depth metric.
+
+Five of the eight were live counterexamples to the very theorems being proven, surfaced by
+decomposition before the summit was attempted — the induction was never impossible, it was
+undecomposed.
