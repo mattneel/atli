@@ -425,6 +425,10 @@ fn task_examples_report_spawn_counts_and_are_deterministic() {
         outputs.insert(String::from_utf8(out.stdout).unwrap());
         let stderr = String::from_utf8(out.stderr).unwrap();
         assert_eq!(parse_tasks_spawned(&stderr), 3, "{stderr}");
+        assert!(
+            parse_task_tids(&stderr).len() >= 2,
+            "fanout must witness real parallel runtime thread ids: {stderr}"
+        );
     }
     assert_eq!(outputs.len(), 1, "fanout must be schedule-independent");
     assert_eq!(outputs.iter().next().unwrap(), "9\n");
@@ -590,63 +594,107 @@ fn forced_dynamic_dispatch_matches_handler_fast_path() {
 #[test]
 fn bypassed_unique_to_two_spawns_race_is_falsifiable() {
     let _guard = CODEGEN_LOCK.lock().unwrap();
-    let clang = if Command::new("clang-22")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
-    {
-        "clang-22"
-    } else if Command::new("clang")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
-    {
-        "clang"
-    } else {
-        eprintln!("skipping task race falsifier: clang not found");
+    if !has_codegen_toolchain() {
+        eprintln!("skipping task race falsifier: LLVM/MLIR toolchain not found");
         return;
-    };
+    }
     fs::create_dir_all("target/codegen_cases").unwrap();
-    let c = r#"
-#include <pthread.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
-#include <unistd.h>
-static volatile int64_t cell = 0;
-static void spin(long salt) {
-  struct timespec ts;
-  clock_gettime(CLOCK_REALTIME, &ts);
-  long n = (ts.tv_nsec ^ getpid() ^ salt) & 0x3fff;
-  for (long i = 0; i < n; ++i) sched_yield();
+    let src = r#"
+fn touch_one(a: ^Array) -> Nat = {
+  done = inplace set(a, 0, 1)
+  0
 }
-static void *write_one(void *arg) { (void)arg; spin(1); cell = 1; return 0; }
-static void *write_two(void *arg) { (void)arg; spin(2); cell = 2; return 0; }
-int main(void) {
-  pthread_t a, b;
-  pthread_create(&a, 0, write_one, 0);
-  pthread_create(&b, 0, write_two, 0);
-  pthread_join(a, 0);
-  pthread_join(b, 0);
-  printf("%lld\n", (long long)cell);
-  return 0;
+
+fn touch_two(a: ^Array) -> Nat = {
+  done = inplace set(a, 0, 2)
+  0
+}
+
+fn main() -> Nat = 0
+"#;
+    let source_path = "target/codegen_cases/unique_to_two_spawns_twin.atli";
+    fs::write(source_path, src).unwrap();
+    let (code, _stdout, stderr) = run_cli(&["build", source_path]);
+    assert_eq!(code, 0, "{stderr}");
+
+    let mlir = r#"// checker-bypass twin of examples/unique_to_two_spawns.atli; linked against the actual Atli shim
+module attributes {atli.certified_beta_slots = 0 : i64, atli.arena_overhead_slots = 0 : i64, atli.growable = false} {
+  llvm.func @atli_entry_touch_one(i64) -> i64
+  llvm.func @atli_entry_touch_two(i64) -> i64
+  func.func private @atli_spawn(%fn: !llvm.ptr, %arg: i64, %beta: i64, %growable: i64) -> i64
+  func.func private @atli_await(%handle: i64) -> i64
+  func.func private @atli_scope_enter() -> ()
+  func.func private @atli_scope_exit() -> ()
+  func.func private @atli_array_new(%len: i64, %fill: i64) -> i64
+  func.func private @atli_array_get(%handle: i64, %idx: i64) -> i64
+  func.func private @atli_array_inplace_set(%handle: i64, %idx: i64, %value: i64) -> i64
+  func.func private @atli_race_perturb(%salt: i64) -> ()
+  func.func @atli_beta_slots() -> i64 {
+    %c0 = arith.constant 0 : i64
+    return %c0 : i64
+  }
+  func.func @atli_fn_touch_one(%a: i64) -> i64 {
+    %salt = arith.constant 1 : i64
+    func.call @atli_race_perturb(%salt) : (i64) -> ()
+    %idx = arith.constant 0 : i64
+    %one = arith.constant 1 : i64
+    %_mut = func.call @atli_array_inplace_set(%a, %idx, %one) : (i64, i64, i64) -> i64
+    %z = arith.constant 0 : i64
+    return %z : i64
+  }
+  func.func @atli_fn_touch_two(%a: i64) -> i64 {
+    %salt = arith.constant 2 : i64
+    func.call @atli_race_perturb(%salt) : (i64) -> ()
+    %idx = arith.constant 0 : i64
+    %two = arith.constant 2 : i64
+    %_mut = func.call @atli_array_inplace_set(%a, %idx, %two) : (i64, i64, i64) -> i64
+    %z = arith.constant 0 : i64
+    return %z : i64
+  }
+  func.func @atli_program_main() -> i64 {
+    func.call @atli_scope_enter() : () -> ()
+    %len = arith.constant 1 : i64
+    %fill = arith.constant 0 : i64
+    %a = func.call @atli_array_new(%len, %fill) : (i64, i64) -> i64
+    %beta = arith.constant 0 : i64
+    %grow = arith.constant 0 : i64
+    %f1 = llvm.mlir.addressof @atli_entry_touch_one : !llvm.ptr
+    %h1 = func.call @atli_spawn(%f1, %a, %beta, %grow) : (!llvm.ptr, i64, i64, i64) -> i64
+    %f2 = llvm.mlir.addressof @atli_entry_touch_two : !llvm.ptr
+    %h2 = func.call @atli_spawn(%f2, %a, %beta, %grow) : (!llvm.ptr, i64, i64, i64) -> i64
+    %_a1 = func.call @atli_await(%h1) : (i64) -> i64
+    %_a2 = func.call @atli_await(%h2) : (i64) -> i64
+    func.call @atli_scope_exit() : () -> ()
+    %idx = arith.constant 0 : i64
+    %read = func.call @atli_array_get(%a, %idx) : (i64, i64) -> i64
+    return %read : i64
+  }
 }
 "#;
-    let c_path = "target/codegen_cases/race_falsifier.c";
-    let exe = "target/codegen_cases/race_falsifier";
-    fs::write(c_path, c).unwrap();
-    let status = Command::new(clang)
-        .args([c_path, "-pthread", "-O0", "-o", exe])
-        .status()
-        .expect("compile race falsifier");
-    assert!(status.success());
+    let mlir_path = "target/codegen_cases/unique_to_two_spawns_bypass.mlir";
+    let llvm_mlir_path = "target/codegen_cases/unique_to_two_spawns_bypass.llvm.mlir";
+    let llvm_ir_path = "target/codegen_cases/unique_to_two_spawns_bypass.ll";
+    let exe = "target/codegen_cases/unique_to_two_spawns_bypass";
+    fs::write(mlir_path, mlir).unwrap();
+    compile_mlir_with_runtime(
+        mlir_path,
+        llvm_mlir_path,
+        llvm_ir_path,
+        "target/atli/runtime.c",
+        exe,
+    );
 
     let oracle = "0\n";
     let mut outputs = std::collections::BTreeSet::new();
-    for _ in 0..30 {
-        let out = Command::new(exe).output().expect("run race falsifier");
-        assert!(out.status.success());
+    for _ in 0..40 {
+        let out = Command::new(exe)
+            .output()
+            .expect("run pipeline race falsifier");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let stdout = String::from_utf8(out.stdout).unwrap();
         assert_ne!(
             stdout, oracle,
@@ -656,7 +704,7 @@ int main(void) {
     }
     assert!(
         outputs.len() >= 2,
-        "bypassed native race should be nondeterministic across runs: {outputs:?}"
+        "bypassed native race should be nondeterministic across real Atli runtime runs: {outputs:?}"
     );
 }
 
@@ -688,6 +736,80 @@ fn main() -> Nat = even(4)
         stderr.contains("cyclic groups require `measure` or `div`"),
         "{stderr}"
     );
+}
+
+fn tool_path(env_var: &str, names: &[&str]) -> String {
+    if let Ok(path) = std::env::var(env_var) {
+        return path;
+    }
+    for name in names {
+        if Command::new(name)
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+            || std::path::Path::new(name).exists()
+        {
+            return (*name).to_string();
+        }
+    }
+    panic!("missing tool {env_var}");
+}
+
+fn compile_mlir_with_runtime(
+    mlir: &str,
+    llvm_mlir: &str,
+    llvm_ir: &str,
+    runtime_c: &str,
+    exe: &str,
+) {
+    let mlir_opt = tool_path(
+        "ATLI_MLIR_OPT",
+        &["mlir-opt", "/usr/lib/llvm-22/bin/mlir-opt"],
+    );
+    let mlir_translate = tool_path(
+        "ATLI_MLIR_TRANSLATE",
+        &["mlir-translate", "/usr/lib/llvm-22/bin/mlir-translate"],
+    );
+    let clang = tool_path("ATLI_CLANG", &["clang-22", "clang"]);
+    let status = Command::new(&mlir_opt)
+        .args([
+            mlir,
+            "--convert-scf-to-cf",
+            "--convert-cf-to-llvm",
+            "--convert-func-to-llvm",
+            "--convert-arith-to-llvm",
+            "--finalize-memref-to-llvm",
+            "--reconcile-unrealized-casts",
+            "-o",
+            llvm_mlir,
+        ])
+        .status()
+        .expect("mlir-opt");
+    assert!(status.success());
+    let status = Command::new(&mlir_translate)
+        .args(["--mlir-to-llvmir", llvm_mlir, "-o", llvm_ir])
+        .status()
+        .expect("mlir-translate");
+    assert!(status.success());
+    let status = Command::new(&clang)
+        .args([llvm_ir, runtime_c, "-pthread", "-O0", "-o", exe])
+        .status()
+        .expect("clang");
+    assert!(status.success());
+}
+
+fn parse_task_tids(stderr: &str) -> std::collections::BTreeSet<String> {
+    for part in stderr.split_whitespace() {
+        if let Some(value) = part.strip_prefix("ATLI_TASK_TIDS=") {
+            return value
+                .split(',')
+                .filter(|tid| !tid.is_empty())
+                .map(ToString::to_string)
+                .collect();
+        }
+    }
+    panic!("missing ATLI_TASK_TIDS in {stderr}");
 }
 
 fn parse_data_allocs(stderr: &str) -> u64 {

@@ -1,17 +1,23 @@
 // Atli tier-1 MLIR lowering. docs/calculus.md §9.1
 // arena_slots = certified_beta + C = 0 + 0
 module attributes {atli.certified_beta_slots = 0 : i64, atli.arena_overhead_slots = 0 : i64, atli.growable = false} {
-  memref.global "private" @atli_high_water : memref<1xi64> = dense<0>
+  llvm.func @atli_entry_ask(i64) -> i64
+  llvm.func @atli_entry_choose(i64) -> i64
   func.func private @atli_trap_overflow() -> ()
   func.func private @atli_trap_one_shot() -> ()
   func.func private @atli_trap_bounds() -> ()
+  func.func private @atli_touch_frame(%slots: i64) -> ()
+  func.func private @atli_high_water_value() -> i64
   func.func private @atli_array_new(%len: i64, %fill: i64) -> i64
   func.func private @atli_array_get(%handle: i64, %idx: i64) -> i64
   func.func private @atli_array_copy_set(%handle: i64, %idx: i64, %value: i64) -> i64
   func.func private @atli_array_inplace_set(%handle: i64, %idx: i64, %value: i64) -> i64
   func.func private @atli_array_len(%handle: i64) -> i64
   func.func private @atli_data_allocs() -> i64
-  func.func private @atli_task_spawned() -> ()
+  func.func private @atli_spawn(%fn: !llvm.ptr, %arg: i64, %beta: i64, %growable: i64) -> i64
+  func.func private @atli_await(%handle: i64) -> i64
+  func.func private @atli_scope_enter() -> ()
+  func.func private @atli_scope_exit() -> ()
   func.func private @atli_tick() -> ()
   func.func private @atli_scope_push(%label: i64, %mode: i64, %value: i64, %watermark: i64) -> ()
   func.func private @atli_scope_pop() -> ()
@@ -20,32 +26,11 @@ module attributes {atli.certified_beta_slots = 0 : i64, atli.arena_overhead_slot
     %beta = arith.constant 0 : i64
     return %beta : i64
   }
-  func.func @atli_high_water_value() -> i64 {
-    %g = memref.get_global @atli_high_water : memref<1xi64>
-    %c0 = arith.constant 0 : index
-    %v = memref.load %g[%c0] : memref<1xi64>
-    return %v : i64
-  }
   func.func @atli_debug_resume_once(%uses: i64) -> () {
     %one = arith.constant 1 : i64
     %bad = arith.cmpi sgt, %uses, %one : i64
     scf.if %bad {
       func.call @atli_trap_one_shot() : () -> ()
-    }
-    return
-  }
-  func.func @atli_touch_frame(%slots: i64) -> () {
-    %beta = arith.constant 0 : i64
-    %over = arith.cmpi sgt, %slots, %beta : i64
-    scf.if %over {
-      func.call @atli_trap_overflow() : () -> ()
-    }
-    %g = memref.get_global @atli_high_water : memref<1xi64>
-    %c0 = arith.constant 0 : index
-    %old = memref.load %g[%c0] : memref<1xi64>
-    %gt = arith.cmpi sgt, %slots, %old : i64
-    scf.if %gt {
-      memref.store %slots, %g[%c0] : memref<1xi64>
     }
     return
   }

@@ -16,7 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::check::{CertifiedGrade, CheckedWitness};
+use crate::check::{check, CertifiedGrade, CheckedWitness};
 use crate::core::{Divergence, Term};
 use crate::elaborate::ElaboratedProgram;
 use crate::grade::Bound;
@@ -143,6 +143,69 @@ impl CertifiedArena {
     }
 }
 
+/// Certified child-task arena budget (`docs/calculus.md §7.3`, §9.3). The only values
+/// carried here come from checker-produced `CertifiedGrade`s for top-level callee terms;
+/// child arenas cannot be sized from raw integers.
+///
+/// ```compile_fail
+/// use atli::codegen::CertifiedTaskBudget;
+/// use atli::check::CertifiedGrade;
+/// let _ = CertifiedTaskBudget { certified: unsafe { std::mem::zeroed::<CertifiedGrade>() } };
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CertifiedTaskBudget {
+    certified: CertifiedGrade,
+}
+
+impl CertifiedTaskBudget {
+    fn from_checked(checked: &CheckedWitness) -> Self {
+        Self {
+            certified: checked.certified_bound(),
+        }
+    }
+
+    #[must_use]
+    fn slots(self) -> u32 {
+        match self.certified.get() {
+            Bound::Finite(slots) => slots,
+            Bound::Omega => GROWABLE_INITIAL_SLOTS,
+        }
+    }
+
+    #[must_use]
+    fn growable(self) -> bool {
+        matches!(self.certified.get(), Bound::Omega)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct CertifiedTaskBudgets {
+    by_name: BTreeMap<String, CertifiedTaskBudget>,
+}
+
+impl CertifiedTaskBudgets {
+    fn from_elaborated(elaborated: &ElaboratedProgram) -> Self {
+        let mut by_name = BTreeMap::new();
+        let mut cursor = &elaborated.term;
+        while let Term::Let { var, expr, body } = cursor {
+            if let Ok(checked) = check(expr) {
+                by_name.insert(var.clone(), CertifiedTaskBudget::from_checked(&checked));
+            }
+            cursor = body;
+        }
+        Self { by_name }
+    }
+
+    fn for_function(&self, name: &str, root: CertifiedArena) -> CertifiedTaskBudget {
+        self.by_name
+            .get(name)
+            .copied()
+            .unwrap_or(CertifiedTaskBudget {
+                certified: root.certified,
+            })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Emission {
     pub mlir: String,
@@ -174,11 +237,12 @@ pub fn emit(input: EmitInput<'_>) -> Result<Emission, CodegenError> {
     let arena_slots = input.arena.slots();
     let growable = matches!(input.checked.witness().bound, Bound::Omega)
         || input.checked.witness().divergence == Divergence::Div;
-    let mut module = MlirModule::new(input.program, arena_slots, growable);
+    let budgets = CertifiedTaskBudgets::from_elaborated(input.elaborated);
+    let mut module = MlirModule::new(input.program, input.arena, budgets, arena_slots, growable);
     let mlir = module.emit_module()?;
     Ok(Emission {
         mlir,
-        runtime_c: runtime_shim(),
+        runtime_c: runtime_shim(input.program),
         arena_slots,
     })
 }
@@ -347,22 +411,100 @@ fn find_tool(env_var: &str, names: &[&str]) -> Option<PathBuf> {
     None
 }
 
-fn runtime_shim() -> String {
-    "#include <stdint.h>\n\
+fn runtime_shim(program: &Program) -> String {
+    let mut wrappers = String::new();
+    for decl in &program.decls {
+        let Decl::Fn(func) = decl else {
+            continue;
+        };
+        if func.params.len() == 1 {
+            let symbol = c_func_name(&func.name.node);
+            let entry = c_task_entry_name(&func.name.node);
+            wrappers.push_str(&format!(
+                "extern int64_t {symbol}(int64_t);\nint64_t {entry}(int64_t arg) {{ return {symbol}(arg); }}\n"
+            ));
+        }
+    }
+    format!(
+        "{}{}",
+        "#include <stdint.h>\n\
      #include <stdio.h>\n\
      #include <stdlib.h>\n\
      #include <pthread.h>\n\
+     #include <string.h>\n\
+     #include <time.h>\n\
+     #include <unistd.h>\n\
+     #include <sched.h>\n\
      extern int64_t atli_program_main(void);\n\
-     extern int64_t atli_high_water_value(void);\n\
      extern int64_t atli_beta_slots(void);\n\
+     typedef int64_t (*AtliTaskFn)(int64_t);\n\
+     typedef struct { AtliTaskFn fn; int64_t arg; int64_t result; int64_t beta_slots; int64_t growable; pthread_t thread; int joined; void *arena; } AtliTask;\n\
+     static pthread_mutex_t atli_mu = PTHREAD_MUTEX_INITIALIZER;\n\
+     static AtliTask atli_tasks[1024];\n\
+     static int64_t atli_task_count = 1;\n\
+     static int64_t atli_tasks_spawned_count = 0;\n\
+     static unsigned long long atli_tids[2048];\n\
+     static int atli_tid_count = 0;\n\
+     static int64_t atli_global_high_water = 0;\n\
+     static __thread int64_t atli_tls_beta_slots = 0;\n\
+     static __thread int64_t atli_tls_growable = 0;\n\
+     static __thread int64_t atli_tls_high_water = 0;\n\
+     static __thread void *atli_tls_arena = 0;\n\
+     static __thread int64_t atli_scope_stack[64];\n\
+     static __thread int atli_scope_depth = 0;\n\
+     static void atli_record_tid(void) {\n\
+       unsigned long long tid = (unsigned long long)pthread_self();\n\
+       pthread_mutex_lock(&atli_mu);\n\
+       int seen = 0;\n\
+       for (int i = 0; i < atli_tid_count; ++i) if (atli_tids[i] == tid) seen = 1;\n\
+       if (!seen && atli_tid_count < 2048) atli_tids[atli_tid_count++] = tid;\n\
+       pthread_mutex_unlock(&atli_mu);\n\
+     }\n\
+     static void atli_publish_high_water(void) {\n\
+       pthread_mutex_lock(&atli_mu);\n\
+       if (atli_tls_high_water > atli_global_high_water) atli_global_high_water = atli_tls_high_water;\n\
+       pthread_mutex_unlock(&atli_mu);\n\
+     }\n\
+     static void atli_enter_task_arena(int64_t beta_slots, int64_t growable, void *arena) {\n\
+       atli_tls_beta_slots = beta_slots;\n\
+       atli_tls_growable = growable;\n\
+       atli_tls_high_water = 0;\n\
+       atli_tls_arena = arena;\n\
+       atli_record_tid();\n\
+     }\n\
+     void atli_touch_frame(int64_t slots) {\n\
+       if (!atli_tls_growable && slots > atli_tls_beta_slots) {\n\
+         fprintf(stderr, \"ATLI ARENA OVERFLOW: certified beta violated\\n\");\n\
+         exit(86);\n\
+       }\n\
+       if (slots > atli_tls_high_water) atli_tls_high_water = slots;\n\
+       atli_publish_high_water();\n\
+     }\n\
+     int64_t atli_high_water_value(void) { atli_publish_high_water(); return atli_global_high_water; }\n\
+     void atli_race_perturb(int64_t salt) {
+\
+       struct timespec ts;
+\
+       clock_gettime(CLOCK_REALTIME, &ts);
+\
+       long spins = (long)((ts.tv_nsec ^ (long)getpid() ^ (long)pthread_self() ^ (long)salt) & 0x7fff);
+\
+       for (long i = 0; i < spins; ++i) sched_yield();
+\
+     }
+\
      void atli_tick(void) {\n\
        const char *limit_s = getenv(\"ATLI_MAX_ITERS\");\n\
        if (!limit_s || !*limit_s) return;\n\
+       static pthread_mutex_t tick_mu = PTHREAD_MUTEX_INITIALIZER;\n\
        static long long ticks = 0;\n\
        long long limit = atoll(limit_s);\n\
+       pthread_mutex_lock(&tick_mu);\n\
        ticks++;\n\
-       if (limit >= 0 && ticks >= limit) {\n\
-         fprintf(stderr, \"ATLI_MAX_ITERS exhausted after %lld iterations; ATLI_GROWABLE_SEGMENT=64\\n\", ticks);\n\
+       long long now = ticks;\n\
+       pthread_mutex_unlock(&tick_mu);\n\
+       if (limit >= 0 && now >= limit) {\n\
+         fprintf(stderr, \"ATLI_MAX_ITERS exhausted after %lld iterations; ATLI_GROWABLE_SEGMENT=64\\n\", now);\n\
          exit(0);\n\
        }\n\
      }\n\
@@ -382,23 +524,68 @@ fn runtime_shim() -> String {
      static AtliArray atli_arrays[4096];\n\
      static int64_t atli_array_count = 1;\n\
      static int64_t atli_data_alloc_count = 0;\n\
-     static int64_t atli_tasks_spawned_count = 0;\n\
      static AtliArray *atli_array(int64_t handle) {\n\
        if (handle <= 0 || handle >= atli_array_count) atli_trap_bounds();\n\
        return &atli_arrays[handle];\n\
      }\n\
-     int64_t atli_data_allocs(void) { return atli_data_alloc_count; }\n\
-     static void *atli_noop_task(void *arg) { (void)arg; return 0; }\n\
-     void atli_task_spawned(void) { pthread_t t; atli_tasks_spawned_count++; if (pthread_create(&t, 0, atli_noop_task, 0) == 0) pthread_join(t, 0); }\n\
-     int64_t atli_tasks_spawned(void) { return atli_tasks_spawned_count; }\n\
+     int64_t atli_data_allocs(void) { pthread_mutex_lock(&atli_mu); int64_t n = atli_data_alloc_count; pthread_mutex_unlock(&atli_mu); return n; }\n\
+     static void *atli_task_main(void *arg) {\n\
+       AtliTask *task = (AtliTask *)arg;\n\
+       atli_enter_task_arena(task->beta_slots, task->growable, task->arena);\n\
+       task->result = task->fn(task->arg);\n\
+       atli_publish_high_water();\n\
+       return 0;\n\
+     }\n\
+     int64_t atli_spawn(void *fn_ptr, int64_t arg, int64_t beta_slots, int64_t growable) {\n\
+       pthread_mutex_lock(&atli_mu);\n\
+       if (atli_task_count >= 1024) { pthread_mutex_unlock(&atli_mu); atli_trap_bounds(); }\n\
+       int64_t handle = atli_task_count++;\n\
+       AtliTask *task = &atli_tasks[handle];\n\
+       memset(task, 0, sizeof(*task));\n\
+       task->fn = (AtliTaskFn)fn_ptr;\n\
+       task->arg = arg;\n\
+       task->beta_slots = beta_slots;\n\
+       task->growable = growable;\n\
+       size_t slots = (size_t)(beta_slots > 0 ? beta_slots : 1);\n\
+       task->arena = calloc(slots, sizeof(int64_t));\n\
+       if (!task->arena) { pthread_mutex_unlock(&atli_mu); fprintf(stderr, \"ATLI OOM\\n\"); exit(90); }\n\
+       atli_tasks_spawned_count++;\n\
+       pthread_mutex_unlock(&atli_mu);\n\
+       if (pthread_create(&task->thread, 0, atli_task_main, task) != 0) { fprintf(stderr, \"ATLI TASK SPAWN FAILED\\n\"); exit(91); }\n\
+       return handle;\n\
+     }\n\
+     int64_t atli_await(int64_t handle) {\n\
+       if (handle <= 0 || handle >= atli_task_count) atli_trap_bounds();\n\
+       AtliTask *task = &atli_tasks[handle];\n\
+       if (!task->joined) { pthread_join(task->thread, 0); task->joined = 1; free(task->arena); task->arena = 0; }\n\
+       return task->result;\n\
+     }\n\
+     void atli_scope_enter(void) {\n\
+       if (atli_scope_depth >= 64) atli_trap_bounds();\n\
+       pthread_mutex_lock(&atli_mu);\n\
+       atli_scope_stack[atli_scope_depth++] = atli_task_count;\n\
+       pthread_mutex_unlock(&atli_mu);\n\
+     }\n\
+     void atli_scope_exit(void) {\n\
+       if (atli_scope_depth <= 0) atli_trap_bounds();\n\
+       int64_t start = atli_scope_stack[--atli_scope_depth];\n\
+       pthread_mutex_lock(&atli_mu);\n\
+       int64_t end = atli_task_count;\n\
+       pthread_mutex_unlock(&atli_mu);\n\
+       for (int64_t h = start; h < end; ++h) atli_await(h);\n\
+     }\n\
+     int64_t atli_tasks_spawned(void) { pthread_mutex_lock(&atli_mu); int64_t n = atli_tasks_spawned_count; pthread_mutex_unlock(&atli_mu); return n; }\n\
+     void atli_print_task_tids(FILE *out) { pthread_mutex_lock(&atli_mu); for (int i = 0; i < atli_tid_count; ++i) { if (i) fputc(',', out); fprintf(out, \"%llu\", atli_tids[i]); } pthread_mutex_unlock(&atli_mu); }\n\
      int64_t atli_array_new(int64_t len, int64_t fill) {\n\
        if (len < 0 || atli_array_count >= 4096) atli_trap_bounds();\n\
+       pthread_mutex_lock(&atli_mu);\n\
        int64_t handle = atli_array_count++;\n\
        atli_arrays[handle].len = len;\n\
        atli_arrays[handle].data = calloc((size_t)(len ? len : 1), sizeof(int64_t));\n\
        if (!atli_arrays[handle].data) { fprintf(stderr, \"ATLI OOM\\n\"); exit(90); }\n\
        for (int64_t i = 0; i < len; ++i) atli_arrays[handle].data[i] = fill;\n\
        atli_data_alloc_count++;\n\
+       pthread_mutex_unlock(&atli_mu);\n\
        return handle;\n\
      }\n\
      int64_t atli_array_len(int64_t handle) { return atli_array(handle)->len; }\n\
@@ -423,17 +610,17 @@ fn runtime_shim() -> String {
      }\n\
      typedef struct { int64_t label; int64_t mode; int64_t value; int64_t watermark; } AtliScope;\n\
      static AtliScope atli_scopes[256];\n\
-     static int atli_scope_depth = 0;\n\
+     static int atli_handler_scope_depth = 0;\n\
      void atli_scope_push(int64_t label, int64_t mode, int64_t value, int64_t watermark) {\n\
-       if (atli_scope_depth >= 256) { fprintf(stderr, \"ATLI HANDLER SCOPE OVERFLOW\\n\"); exit(88); }\n\
-       atli_scopes[atli_scope_depth++] = (AtliScope){label, mode, value, watermark};\n\
+       if (atli_handler_scope_depth >= 256) { fprintf(stderr, \"ATLI HANDLER SCOPE OVERFLOW\\n\"); exit(88); }\n\
+       atli_scopes[atli_handler_scope_depth++] = (AtliScope){label, mode, value, watermark};\n\
      }\n\
      void atli_scope_pop(void) {\n\
-       if (atli_scope_depth <= 0) { fprintf(stderr, \"ATLI HANDLER SCOPE UNDERFLOW\\n\"); exit(88); }\n\
-       atli_scope_depth--;\n\
+       if (atli_handler_scope_depth <= 0) { fprintf(stderr, \"ATLI HANDLER SCOPE UNDERFLOW\\n\"); exit(88); }\n\
+       atli_handler_scope_depth--;\n\
      }\n\
      int64_t atli_scope_perform(int64_t label, int64_t arg) {\n\
-       for (int i = atli_scope_depth - 1; i >= 0; --i) {\n\
+       for (int i = atli_handler_scope_depth - 1; i >= 0; --i) {\n\
          if (atli_scopes[i].label == label) {\n\
            if (atli_scopes[i].mode == 0) return atli_scopes[i].value;\n\
            if (atli_scopes[i].mode == 2) return arg + atli_scopes[i].value;\n\
@@ -444,18 +631,26 @@ fn runtime_shim() -> String {
        exit(89);\n\
      }\n\
      int main(void) {\n\
+       atli_enter_task_arena(atli_beta_slots(), 0, 0);\n\
        int64_t result = atli_program_main();\n\
+       atli_publish_high_water();\n\
        printf(\"%lld\\n\", (long long)result);\n\
-       fprintf(stderr, \"ATLI_HIGH_WATER=%lld ATLI_BETA=%lld ATLI_DATA_ALLOCS=%lld ATLI_TASKS_SPAWNED=%lld\\n\",\n\
+       fprintf(stderr, \"ATLI_HIGH_WATER=%lld ATLI_BETA=%lld ATLI_DATA_ALLOCS=%lld ATLI_TASKS_SPAWNED=%lld ATLI_TASK_TIDS=\",\n\
                (long long)atli_high_water_value(), (long long)atli_beta_slots(),\n\
                (long long)atli_data_allocs(), (long long)atli_tasks_spawned());\n\
+       atli_print_task_tids(stderr);\n\
+       fprintf(stderr, \"\\n\");\n\
        return 0;\n\
      }\n"
-    .into()
+        ,
+        wrappers
+    )
 }
 
 struct MlirModule<'a> {
     program: &'a Program,
+    root_arena: CertifiedArena,
+    task_budgets: CertifiedTaskBudgets,
     arena_slots: u32,
     growable: bool,
     functions: BTreeMap<String, usize>,
@@ -464,7 +659,13 @@ struct MlirModule<'a> {
 }
 
 impl<'a> MlirModule<'a> {
-    fn new(program: &'a Program, arena_slots: u32, growable: bool) -> Self {
+    fn new(
+        program: &'a Program,
+        root_arena: CertifiedArena,
+        task_budgets: CertifiedTaskBudgets,
+        arena_slots: u32,
+        growable: bool,
+    ) -> Self {
         let functions = program
             .decls
             .iter()
@@ -476,6 +677,8 @@ impl<'a> MlirModule<'a> {
         let aggregates = CodegenAggregates::from_program(program);
         Self {
             program,
+            root_arena,
+            task_budgets,
             arena_slots,
             growable,
             functions,
@@ -498,10 +701,21 @@ impl<'a> MlirModule<'a> {
             self.arena_slots, if self.growable { "true" } else { "false" }
         ));
         out.push_str("} {\n");
-        out.push_str("  memref.global \"private\" @atli_high_water : memref<1xi64> = dense<0>\n");
+        for decl in &self.program.decls {
+            if let Decl::Fn(func) = decl {
+                if func.params.len() == 1 {
+                    out.push_str(&format!(
+                        "  llvm.func {}(i64) -> i64\n",
+                        mlir_task_entry_name(&func.name.node)
+                    ));
+                }
+            }
+        }
         out.push_str("  func.func private @atli_trap_overflow() -> ()\n");
         out.push_str("  func.func private @atli_trap_one_shot() -> ()\n");
         out.push_str("  func.func private @atli_trap_bounds() -> ()\n");
+        out.push_str("  func.func private @atli_touch_frame(%slots: i64) -> ()\n");
+        out.push_str("  func.func private @atli_high_water_value() -> i64\n");
         out.push_str("  func.func private @atli_array_new(%len: i64, %fill: i64) -> i64\n");
         out.push_str("  func.func private @atli_array_get(%handle: i64, %idx: i64) -> i64\n");
         out.push_str(
@@ -512,7 +726,12 @@ impl<'a> MlirModule<'a> {
         );
         out.push_str("  func.func private @atli_array_len(%handle: i64) -> i64\n");
         out.push_str("  func.func private @atli_data_allocs() -> i64\n");
-        out.push_str("  func.func private @atli_task_spawned() -> ()\n");
+        out.push_str(
+            "  func.func private @atli_spawn(%fn: !llvm.ptr, %arg: i64, %beta: i64, %growable: i64) -> i64\n",
+        );
+        out.push_str("  func.func private @atli_await(%handle: i64) -> i64\n");
+        out.push_str("  func.func private @atli_scope_enter() -> ()\n");
+        out.push_str("  func.func private @atli_scope_exit() -> ()\n");
         out.push_str("  func.func private @atli_tick() -> ()\n");
         out.push_str(
             "  func.func private @atli_scope_push(%label: i64, %mode: i64, %value: i64, %watermark: i64) -> ()\n",
@@ -542,35 +761,11 @@ impl<'a> MlirModule<'a> {
         ));
         out.push_str("    return %beta : i64\n");
         out.push_str("  }\n");
-        out.push_str("  func.func @atli_high_water_value() -> i64 {\n");
-        out.push_str("    %g = memref.get_global @atli_high_water : memref<1xi64>\n");
-        out.push_str("    %c0 = arith.constant 0 : index\n");
-        out.push_str("    %v = memref.load %g[%c0] : memref<1xi64>\n");
-        out.push_str("    return %v : i64\n");
-        out.push_str("  }\n");
         out.push_str("  func.func @atli_debug_resume_once(%uses: i64) -> () {\n");
         out.push_str("    %one = arith.constant 1 : i64\n");
         out.push_str("    %bad = arith.cmpi sgt, %uses, %one : i64\n");
         out.push_str("    scf.if %bad {\n");
         out.push_str("      func.call @atli_trap_one_shot() : () -> ()\n");
-        out.push_str("    }\n");
-        out.push_str("    return\n");
-        out.push_str("  }\n");
-        out.push_str("  func.func @atli_touch_frame(%slots: i64) -> () {\n");
-        out.push_str(&format!(
-            "    %beta = arith.constant {} : i64\n",
-            self.arena_slots
-        ));
-        out.push_str("    %over = arith.cmpi sgt, %slots, %beta : i64\n");
-        out.push_str("    scf.if %over {\n");
-        out.push_str("      func.call @atli_trap_overflow() : () -> ()\n");
-        out.push_str("    }\n");
-        out.push_str("    %g = memref.get_global @atli_high_water : memref<1xi64>\n");
-        out.push_str("    %c0 = arith.constant 0 : index\n");
-        out.push_str("    %old = memref.load %g[%c0] : memref<1xi64>\n");
-        out.push_str("    %gt = arith.cmpi sgt, %slots, %old : i64\n");
-        out.push_str("    scf.if %gt {\n");
-        out.push_str("      memref.store %slots, %g[%c0] : memref<1xi64>\n");
         out.push_str("    }\n");
         out.push_str("    return\n");
         out.push_str("  }\n");
@@ -581,6 +776,8 @@ impl<'a> MlirModule<'a> {
         let mut builder = Builder::new(
             &self.functions,
             &self.aggregates,
+            &self.task_budgets,
+            self.root_arena,
             self.force_dynamic_dispatch,
         );
         let mut params = Vec::new();
@@ -629,6 +826,8 @@ struct Builder<'a> {
     next: usize,
     functions: &'a BTreeMap<String, usize>,
     aggregates: &'a CodegenAggregates,
+    task_budgets: &'a CertifiedTaskBudgets,
+    root_arena: CertifiedArena,
     force_dynamic_dispatch: bool,
 }
 
@@ -636,6 +835,8 @@ impl<'a> Builder<'a> {
     fn new(
         functions: &'a BTreeMap<String, usize>,
         aggregates: &'a CodegenAggregates,
+        task_budgets: &'a CertifiedTaskBudgets,
+        root_arena: CertifiedArena,
         force_dynamic_dispatch: bool,
     ) -> Self {
         Self {
@@ -643,6 +844,8 @@ impl<'a> Builder<'a> {
             next: 0,
             functions,
             aggregates,
+            task_budgets,
+            root_arena,
             force_dynamic_dispatch,
         }
     }
@@ -685,23 +888,62 @@ impl<'a> Builder<'a> {
                 let desugared = pipe_to_call((**lhs).clone(), (**rhs).clone())?;
                 self.expr(&desugared, env, indent)
             }
-            ExprKind::Scope { body } => self.expr(body, env, indent),
-            ExprKind::Spawn { callee, args } => {
-                self.line(indent, "// spawn, calculus.md §9.3: child arena budget is certified by callee; tier-1 shim records task creation");
-                self.line(indent, "func.call @atli_task_spawned() : () -> ()");
-                let call = Expr {
-                    kind: ExprKind::Call {
-                        callee: Box::new(Expr {
-                            kind: ExprKind::Var(callee.node.clone()),
-                            span: callee.span,
-                        }),
-                        args: args.clone(),
-                    },
-                    span: expr.span,
-                };
-                self.expr(&call, env, indent)
+            ExprKind::Scope { body } => {
+                self.line(
+                    indent,
+                    "// scope, calculus.md §9.3: enter task group and join children on exit",
+                );
+                self.line(indent, "func.call @atli_scope_enter() : () -> ()");
+                let value = self.expr(body, env, indent)?;
+                self.line(indent, "func.call @atli_scope_exit() : () -> ()");
+                Ok(value)
             }
-            ExprKind::Await { handle } => self.expr(handle, env, indent),
+            ExprKind::Spawn { callee, args } => {
+                if args.len() != 1 || self.functions.get(&callee.node).copied() != Some(1) {
+                    return Err(CodegenError::new(
+                        "tier-1 `spawn` lowers one-argument top-level functions",
+                    ));
+                }
+                let arg = self.expr(&args[0], env, indent)?;
+                let budget = self
+                    .task_budgets
+                    .for_function(&callee.node, self.root_arena);
+                let beta = self.constant(u64::from(budget.slots()), indent);
+                let growable = self.constant(if budget.growable() { 1 } else { 0 }, indent);
+                let fptr = self.fresh("task_fn");
+                self.line(
+                    indent,
+                    &format!(
+                        "{fptr} = llvm.mlir.addressof {} : !llvm.ptr",
+                        mlir_task_entry_name(&callee.node)
+                    ),
+                );
+                let handle = self.fresh("task");
+                self.line(
+                    indent,
+                    "// spawn, calculus.md §9.3: child arena sized from callee CertifiedGrade",
+                );
+                self.line(
+                    indent,
+                    &format!(
+                        "{handle} = func.call @atli_spawn({fptr}, {}, {}, {}) : (!llvm.ptr, i64, i64, i64) -> i64",
+                        arg.name, beta.name, growable.name
+                    ),
+                );
+                Ok(Value { name: handle })
+            }
+            ExprKind::Await { handle } => {
+                let handle = self.expr(handle, env, indent)?;
+                let out = self.fresh("await");
+                self.line(
+                    indent,
+                    &format!(
+                        "{out} = func.call @atli_await({}) : (i64) -> i64",
+                        handle.name
+                    ),
+                );
+                Ok(Value { name: out })
+            }
             ExprKind::Block { bindings, result } => {
                 let mut local = env.clone();
                 for binding in bindings {
@@ -1931,8 +2173,16 @@ fn mlir_func_name(name: &str) -> String {
     format!("@{}", c_func_name(name))
 }
 
+fn mlir_task_entry_name(name: &str) -> String {
+    format!("@{}", c_task_entry_name(name))
+}
+
 fn c_func_name(name: &str) -> String {
     format!("atli_fn_{}", c_ident(name))
+}
+
+fn c_task_entry_name(name: &str) -> String {
+    format!("atli_entry_{}", c_ident(name))
 }
 
 fn c_ident(name: &str) -> String {
@@ -2114,10 +2364,6 @@ mod tests {
     %c0 = arith.constant 0 : i64
     return %c0 : i64
   }
-  func.func @atli_high_water_value() -> i64 {
-    %c0 = arith.constant 0 : i64
-    return %c0 : i64
-  }
   func.func @atli_program_main() -> i64 {
     %len = arith.constant 1 : i64
     %fill = arith.constant 0 : i64
@@ -2137,7 +2383,8 @@ mod tests {
         let llvm_ir_path = Path::new(BUILD_DIR).join("uniqueness_falsifier.ll");
         let exe = Path::new(BUILD_DIR).join("uniqueness_falsifier");
         fs::write(&mlir_path, mlir).unwrap();
-        fs::write(&runtime_path, runtime_shim()).unwrap();
+        let shim_program = parse_program("fn main() -> Nat = 0\n").unwrap();
+        fs::write(&runtime_path, runtime_shim(&shim_program)).unwrap();
         run_tool(
             find_tool(
                 "ATLI_MLIR_OPT",
@@ -2272,10 +2519,6 @@ mod tests {
     %c0 = arith.constant 0 : i64
     return %c0 : i64
   }
-  func.func @atli_high_water_value() -> i64 {
-    %c0 = arith.constant 0 : i64
-    return %c0 : i64
-  }
   func.func @atli_program_main() -> i64 {
     %c0 = arith.constant 0 : i64
     %c1 = arith.constant 1 : i64
@@ -2300,7 +2543,8 @@ mod tests {
         let llvm_ir_path = Path::new(BUILD_DIR).join("record_uniqueness_falsifier.ll");
         let exe = Path::new(BUILD_DIR).join("record_uniqueness_falsifier");
         fs::write(&mlir_path, mlir).unwrap();
-        fs::write(&runtime_path, runtime_shim()).unwrap();
+        let shim_program = parse_program("fn main() -> Nat = 0\n").unwrap();
+        fs::write(&runtime_path, runtime_shim(&shim_program)).unwrap();
         run_tool(
             find_tool(
                 "ATLI_MLIR_OPT",
