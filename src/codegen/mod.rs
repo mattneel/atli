@@ -1370,10 +1370,22 @@ fn pattern_name(pattern: &Pattern) -> Option<&str> {
 }
 
 fn pipe_to_call(lhs: Expr, rhs: Expr) -> Result<Expr, CodegenError> {
+    let rhs_span = rhs.span;
     match rhs.kind {
+        ExprKind::Prefix { op, expr } => {
+            // Pipe into prefix forms, `docs/syntax.md §5` / `docs/elaboration.md`.
+            let inner = pipe_to_call(lhs, *expr)?;
+            Ok(Expr::new(
+                ExprKind::Prefix {
+                    op,
+                    expr: Box::new(inner),
+                },
+                rhs_span,
+            ))
+        }
         ExprKind::Call { callee, mut args } => {
             args.insert(0, lhs);
-            Ok(Expr::new(ExprKind::Call { callee, args }, rhs.span))
+            Ok(Expr::new(ExprKind::Call { callee, args }, rhs_span))
         }
         ExprKind::Var(_) => {
             let span = lhs.span;
@@ -1386,7 +1398,7 @@ fn pipe_to_call(lhs: Expr, rhs: Expr) -> Result<Expr, CodegenError> {
             ))
         }
         _ => Err(CodegenError::new(
-            "pipe RHS must be a function call in tier-1 lowering",
+            "pipe RHS must be a function call or prefix form in tier-1 lowering",
         )),
     }
 }

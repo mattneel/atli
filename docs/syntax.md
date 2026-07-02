@@ -243,7 +243,9 @@ parse(File.read(path))
 File.read(path) |> parse |> validate         // left-to-right; x |> f(a) == f(x, a)
 ```
 
-`x |> f(a, b)` threads `x` as the *first* argument: `f(x, a, b)`.
+`x |> f(a, b)` threads `x` as the *first* argument: `f(x, a, b)`. Prefix forms thread
+into the prefixed expression: `x |> inplace set(i, v)` is `inplace set(x, i, v)`, and
+`x |> freeze` / `x |> move` are `freeze x` / `move x`.
 
 ### `if`
 

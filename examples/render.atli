@@ -1,7 +1,7 @@
 // expect: 42
 fn main() -> Nat = {
-  buf = mkarray(4, 0)
-  next = inplace set(buf, 0, 42)
-  frozen = freeze next
-  get(frozen, 0)
+  mkarray(4, 0)
+    |> inplace set(0, 42)
+    |> freeze
+    |> get(0)
 }

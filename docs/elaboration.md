@@ -26,7 +26,9 @@ core in `docs/calculus.md §10`.
   intentionally allowed through parsing/elaboration and rejected by `check::check` under
   `docs/calculus.md §4.7`.
 - Pipe desugaring follows `syntax.md §5`: `x |> f(a)` becomes `f(x, a)`, then currying
-  maps that to `(f x) a`.
+  maps that to `(f x) a`. Sprint 12 also threads pipes into prefix forms: `x |> inplace f(args)`
+  elaborates as `inplace f(x, args)`, while `x |> freeze` and `x |> move` elaborate as
+  `freeze x` and `move x`.
 - Unsupported settled-but-out-of-reduced-core constructs (records, variants, `spawn`,
   `scope`, `if`, type parameters, strings/chars/floats, `use`/modules, and `^u`) diagnose
   as "not yet in the reduced surface" rather than silently elaborating. Multiple effect

@@ -759,6 +759,18 @@ fn pattern_binder(pattern: &Pattern, fallback: &str) -> Result<String, Elaborate
 
 fn desugar_pipe(lhs: Expr, rhs: Expr, span: Span) -> Result<Expr, ElaborateError> {
     match rhs.kind {
+        ExprKind::Prefix { op, expr } => {
+            // Pipe into prefix forms, `docs/syntax.md §5` / `docs/elaboration.md`:
+            // `x |> inplace f(args)` becomes `inplace f(x, args)`; likewise freeze/move.
+            let inner = desugar_pipe(lhs, *expr, span)?;
+            Ok(Expr::new(
+                ExprKind::Prefix {
+                    op,
+                    expr: Box::new(inner),
+                },
+                span,
+            ))
+        }
         ExprKind::Call { callee, mut args } => {
             args.insert(0, lhs);
             Ok(Expr::new(ExprKind::Call { callee, args }, span))
@@ -772,7 +784,7 @@ fn desugar_pipe(lhs: Expr, rhs: Expr, span: Span) -> Result<Expr, ElaborateError
         )),
         _ => Err(ElaborateError {
             span: rhs.span,
-            message: "pipe RHS must be a function call or function name in the reduced surface"
+            message: "pipe RHS must be a function call, function name, or prefix form in the reduced surface"
                 .into(),
         }),
     }
@@ -848,16 +860,20 @@ impl UniqueEnv {
         Ok(())
     }
 
-    fn require_unique(&mut self, expr: &Expr, what: &str) -> Result<(), ElaborateError> {
+    fn require_unique(
+        &mut self,
+        expr: &Expr,
+        what: &str,
+        signatures: &BTreeMap<String, (Vec<bool>, bool)>,
+    ) -> Result<(), ElaborateError> {
         match &expr.kind {
             ExprKind::Var(name) if self.bindings.contains_key(name) => {
                 self.consume(name, expr.span)
             }
-            ExprKind::Call { callee, .. } if is_unique_builtin_result(callee) => Ok(()),
-            ExprKind::Prefix {
-                op: PrefixOp::Move | PrefixOp::Inplace,
-                ..
-            } => Ok(()),
+            ExprKind::Var(name) => Err(ElaborateError {
+                span: expr.span,
+                message: format!("{what} requires unique `{name}`, but it is shared"),
+            }),
             ExprKind::Prefix {
                 op: PrefixOp::Freeze,
                 ..
@@ -865,14 +881,17 @@ impl UniqueEnv {
                 span: expr.span,
                 message: format!("{what} requires a unique value, but `freeze` returns shared"),
             }),
-            ExprKind::Var(name) => Err(ElaborateError {
-                span: expr.span,
-                message: format!("{what} requires unique `{name}`, but it is shared"),
-            }),
-            _ => Err(ElaborateError {
-                span: expr.span,
-                message: format!("{what} requires a unique array target"),
-            }),
+            _ => {
+                let unique = check_unique_expr(expr, self, signatures)?;
+                if unique {
+                    Ok(())
+                } else {
+                    Err(ElaborateError {
+                        span: expr.span,
+                        message: format!("{what} requires a unique array target"),
+                    })
+                }
+            }
         }
     }
 
@@ -929,10 +948,14 @@ fn check_unique_expr(
             env.consume(name, expr.span)?;
             Ok(false)
         }
-        ExprKind::Binary { lhs, rhs, .. } | ExprKind::Pipe { lhs, rhs } => {
+        ExprKind::Binary { lhs, rhs, .. } => {
             check_unique_expr(lhs, env, signatures)?;
             check_unique_expr(rhs, env, signatures)?;
             Ok(false)
+        }
+        ExprKind::Pipe { lhs, rhs } => {
+            let desugared = desugar_pipe((**lhs).clone(), (**rhs).clone(), expr.span)?;
+            check_unique_expr(&desugared, env, signatures)
         }
         ExprKind::QualifiedCall { args, .. } => {
             for arg in args {
@@ -954,14 +977,14 @@ fn check_unique_expr(
             op: PrefixOp::Move,
             expr: inner,
         } => {
-            env.require_unique(inner, "move")?;
+            env.require_unique(inner, "move", signatures)?;
             Ok(true)
         }
         ExprKind::Prefix {
             op: PrefixOp::Freeze,
             expr: inner,
         } => {
-            env.require_unique(inner, "freeze")?;
+            env.require_unique(inner, "freeze", signatures)?;
             Ok(false)
         }
         ExprKind::Prefix {
@@ -980,7 +1003,7 @@ fn check_unique_expr(
                     message: "inplace operand must be `set(array, index, value)`".into(),
                 });
             }
-            env.require_unique(&args[0], "inplace")?;
+            env.require_unique(&args[0], "inplace", signatures)?;
             check_unique_expr(&args[1], env, signatures)?;
             check_unique_expr(&args[2], env, signatures)?;
             Ok(true)
@@ -1071,7 +1094,7 @@ fn check_unique_call(
             if let Some((unique_params, unique_ret)) = signatures.get(name) {
                 for (idx, arg) in args.iter().enumerate() {
                     if unique_params.get(idx).copied().unwrap_or(false) {
-                        env.require_unique(arg, "unique parameter")?;
+                        env.require_unique(arg, "unique parameter", signatures)?;
                     } else {
                         check_unique_expr(arg, env, signatures)?;
                     }
@@ -1089,10 +1112,6 @@ fn check_unique_call(
 
 fn type_is_unique(ty: &TypeExpr) -> bool {
     matches!(ty, TypeExpr::Unique(_, _))
-}
-
-fn is_unique_builtin_result(callee: &Expr) -> bool {
-    matches!(&callee.kind, ExprKind::Var(name) if name == "mkarray" || name == "set")
 }
 
 fn declaration_scc_order(functions: &[FnDecl]) -> Vec<Vec<usize>> {

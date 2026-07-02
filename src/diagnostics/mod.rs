@@ -37,7 +37,7 @@ impl SourceError for ElaborateError {
     }
 
     fn message(&self) -> String {
-        self.message.clone()
+        sanitize_consumption_message(&self.message)
     }
 
     fn secondary_span(&self) -> Option<(Span, String)> {
@@ -91,6 +91,17 @@ fn render_note(path: &str, src: &str, span: Span, message: &str) -> String {
         " ".repeat(caret_start),
         "^".repeat(caret_len)
     )
+}
+
+fn sanitize_consumption_message(message: &str) -> String {
+    if let Some(before_bytes) = message.split(" -> bytes ").next() {
+        if message.contains("consumed here -> bytes ")
+            && message.contains("; used again here -> bytes ")
+        {
+            return before_bytes.replace("consumed here", "consumed here; used again here");
+        }
+    }
+    message.to_string()
 }
 
 fn consumed_span_from_message(message: &str) -> Option<Span> {

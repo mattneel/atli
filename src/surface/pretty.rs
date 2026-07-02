@@ -102,7 +102,13 @@ fn pretty_expr(expr: &Expr) -> String {
                 PrefixOp::Inplace => "inplace",
                 PrefixOp::Freeze => "freeze",
             };
-            format!("{op} {}", pretty_expr(expr))
+            let inner = match expr.kind {
+                ExprKind::Pipe { .. } | ExprKind::Binary { .. } => {
+                    format!("({})", pretty_expr(expr))
+                }
+                _ => pretty_expr(expr),
+            };
+            format!("{op} {inner}")
         }
     }
 }

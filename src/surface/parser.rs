@@ -225,6 +225,20 @@ impl Parser {
     fn pipe_expr(&mut self) -> Result<Expr, ParseError> {
         let mut lhs = self.add_expr()?;
         while self.eat(&TokenKind::PipeGt).is_some() {
+            // Pipe into prefix forms, `docs/syntax.md §5`: `x |> freeze` / `x |> move`
+            // are operand-less RHS shorthands for `freeze x` / `move x`.
+            if let Some(op) = self.operandless_pipe_prefix() {
+                let tok = self.advance().clone();
+                let span = lhs.span.join(tok.span);
+                lhs = Expr::new(
+                    ExprKind::Prefix {
+                        op,
+                        expr: Box::new(lhs),
+                    },
+                    span,
+                );
+                continue;
+            }
             let rhs = self.add_expr()?;
             let span = lhs.span.join(rhs.span);
             lhs = Expr::new(
@@ -236,6 +250,26 @@ impl Parser {
             );
         }
         Ok(lhs)
+    }
+
+    fn operandless_pipe_prefix(&self) -> Option<PrefixOp> {
+        let op = match self.peek().kind {
+            TokenKind::Move => PrefixOp::Move,
+            TokenKind::Freeze => PrefixOp::Freeze,
+            TokenKind::Inplace => return None,
+            _ => return None,
+        };
+        let Some(next) = self.tokens.get(self.idx + 1) else {
+            return Some(op);
+        };
+        if matches!(
+            next.kind,
+            TokenKind::PipeGt | TokenKind::RBrace | TokenKind::Semi | TokenKind::Eof
+        ) {
+            Some(op)
+        } else {
+            None
+        }
     }
 
     fn add_expr(&mut self) -> Result<Expr, ParseError> {

@@ -33,6 +33,14 @@ semantics.
 
 ## Resolved gaps
 
+
+- RESOLVED(pipe-inplace-composition): Sprint 12 fixes the Sprint 11 surface mismatch where
+  the pitch form `buf |> inplace set(i, v)` rejected and `render.atli` used let-chaining
+  instead. Pipe desugaring now threads the left-hand expression into the application inside
+  prefix forms: `x |> inplace f(args)` becomes `inplace f(x, args)`, and `x |> freeze` /
+  `x |> move` become `freeze x` / `move x` per `docs/syntax.md §5` and
+  `docs/elaboration.md`.
+
 - RESOLVED(runtime-handler-scope-stack-codegen): Sprint 09 replaces the compiled
   unhandled-perform path with a runtime handler-scope stack. Entering a native `handle`
   emits scope records keyed by interned label id with clause mode and entry watermark;
