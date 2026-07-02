@@ -170,7 +170,12 @@ Definition frame_succ_drop : term := TSucc frame_drop_direct.
 Example frame_bridge_drop_is_zero : frame_max_one frame_drop_direct = 0.
 Proof. reflexivity. Qed.
 
-Example frame_bridge_resume_is_one : frame_max_one frame_resume_direct = 1.
+(* Finding twenty-eight: Sprint 15 pinned 1 here, a flat per-capture charge that
+   diverged from interp.rs's captured-depth metric (a direct perform captures zero
+   frames). Provenance: the Rust golden this claimed to cross-cite
+   (handler_op_resume_is_deep_and_reinstalls_handler, max_frame 1) captures through
+   a LET frame -- a different term. *)
+Example frame_bridge_resume_direct_is_zero : frame_max_one frame_resume_direct = 0.
 Proof. reflexivity. Qed.
 
 Example frame_bridge_return_is_zero : frame_max_one frame_pure_return = 0.
@@ -398,6 +403,57 @@ Proof. apply StepByFunction. reflexivity. Qed.
 Example finding21_completes :
   step (THandle TZero resuming_handler) TZero.
 Proof. apply StepByFunction. reflexivity. Qed.
+
+(** Frame bridge, Sprint 16 E1: real frame_step successors with captured-depth
+    charges equal to interp.rs max_frame (cross-cites named per anchor). *)
+
+(* Resuming capture through one let frame: charge 1 -- Rust golden
+   handler_op_resume_is_deep_and_reinstalls_handler (max_frame 1). *)
+Example frame_golden_resume_through_let :
+  frame_step finding21_term 1
+    (TResume (TContVal resuming_handler [FLet "x" (TVar "x")]) TZero).
+Proof. apply FrameStep. reflexivity. Qed.
+
+(* The deep rebuild re-charges the stored context depth -- Rust
+   resume_continuation maxes cont.frame_size. *)
+Example frame_golden_rebuild_recharges :
+  frame_step (TResume (TContVal resuming_handler [FLet "x" (TVar "x")]) TZero) 1
+    (THandle (TLet "x" TZero (TVar "x")) resuming_handler).
+Proof. apply FrameStep. reflexivity. Qed.
+
+(* THE zero-frame dropped-handler term -- exact shape of Rust golden
+   dropped_handler_does_not_capture_context_frame (max_frame 0). *)
+Example frame_golden_dropped_handler_zero :
+  frame_step (THandle (TLet "x" (TPerform L TZero) (TVar "x")) dropping_handler) 0 TZero.
+Proof. apply FrameStep. reflexivity. Qed.
+
+(* Direct-perform resume captures zero frames (finding twenty-eight). *)
+Example frame_golden_resume_direct_zero :
+  frame_step frame_resume_direct 0
+    (TResume (TContVal resuming_handler []) TZero).
+Proof. apply FrameStep. reflexivity. Qed.
+
+(* Two-frame capture charges 2 (metric-level; no single Rust golden pins
+   depth 2 -- noted, not silently claimed). *)
+Example frame_golden_two_frames :
+  frame_step (THandle (TSucc (TLet "x" (TPerform L TZero) (TVar "x"))) resuming_handler) 2
+    (TResume (TContVal resuming_handler [FSucc; FLet "x" (TVar "x")]) TZero).
+Proof. apply FrameStep. reflexivity. Qed.
+
+(* H-return is frame-free. *)
+Example frame_golden_pure_return :
+  frame_step frame_pure_return 0 TZero.
+Proof. apply FrameStep. reflexivity. Qed.
+
+Example frame_run_finding21_is_one : frame_max_run 16 finding21_term = 1.
+Proof. vm_compute. reflexivity. Qed.
+
+Example frame_run_dropped_is_zero :
+  frame_max_run 16 (THandle (TLet "x" (TPerform L TZero) (TVar "x")) dropping_handler) = 0.
+Proof. vm_compute. reflexivity. Qed.
+
+Example frame_run_pure_return_is_zero : frame_max_run 16 frame_pure_return = 0.
+Proof. vm_compute. reflexivity. Qed.
 
 (** Finding twenty-three anchors, Sprint 16: value-guarded congruence restored.
     App, case, and resume dispatch now mirrors docs/calculus.md §5 and the Rust

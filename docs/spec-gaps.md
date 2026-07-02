@@ -90,6 +90,16 @@ semantics.
 
 ## Resolved gaps
 
+- RESOLVED(frame-charge-metric-transcription-divergence): Sprint 15's
+  `frame_charge` charged a flat 1 per direct-perform resuming capture; `interp.rs`'s
+  `max_frame` is the captured-context depth recorded at capture AND resume. The Sprint
+  15 anchor value 1 for the direct-perform resume matched a Rust golden that captures
+  through a let frame -- different terms, coincidental equality (finding twenty-eight).
+  Sprint 16 E1 transcribes the oracle metric (length of the captured ctx; rebuild
+  re-charges the stored depth), replaces the mis-pinned anchor with provenance, and
+  bridges run-maxima through `frame_max_run`. The frame-metric-recursion-blindspot gap
+  remains open and unchanged.
+
 - RESOLVED(solver-widening-partial-iterate-escape): `docs/calculus.md §7.2` step 3
   promises widening over-approximates upward, and §7.3 promises no partial iterate
   reaches consumers. The implementation's single widen pass could leave an SCC partner at

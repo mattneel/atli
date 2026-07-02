@@ -50,6 +50,16 @@ per rung as each lands. Ledger notes are recorded in the same commit as every
   record-level statement is degenerately true. Sprint 16 D2 keeps the record untouched,
   proves the algorithmic §7.2 conjuncts over the explicit-system D1 model, and carries the
   record refactor forward as an open spec gap.
+- Finding twenty-eight: component ownership is proof-bridge transcription, not a Rust
+  bug. Sprint 15's `frame_charge` charged a flat 1 for a direct-perform resuming handler,
+  while `src/interp.rs` records `max_frame` as captured-context depth at capture and
+  again at resume. The changed anchor is explicit under the found-a-bug rule:
+  `frame_bridge_resume_is_one` is replaced by `frame_bridge_resume_direct_is_zero`, with
+  provenance noting that the Rust golden previously cross-cited
+  (`handler_op_resume_is_deep_and_reinstalls_handler`, `max_frame 1`) captures through a
+  let frame, not a direct perform. Sprint 16 E1 transcribes the §9.1 slot metric as
+  context length, re-charges stored continuation depth on rebuild, and bridges real
+  `frame_step` successors plus run maxima.
 
 ## Acceptance table (in progress; one row per rung, completed at E2)
 
@@ -62,3 +72,5 @@ per rung as each lands. Ledger notes are recorded in the same commit as every
 | C4 | Pass | `preservation` Qed in `proofs/theories/Meta.v`; ledger 3 → 2 this commit. |
 | D1 | Pass | §7.2 functional solver model landed in `proofs/theories/Solve.v` with threshold iteration, widened stability, sealed read, and model anchors for the solver fixture classes. |
 | D2 | Pass | `solve_model_postfix`, `converged_least`, `pass_extensive`, `wpass_extensive`, `beval_monotone`, `certified_read_is_evaluation`, and `solver_certificate_only_omega` Qed; `solver_certificate_soundness` Qed in `proofs/theories/Meta.v`; ledger 2 → 1. |
+| D3 | Pass | `Bridge.v` solver model anchors cross-cite the Rust solver fixture classes through `solver_model_bridge_two_node`, `solver_model_bridge_widening`, and `solver_model_bridge_chain`. |
+| E1 | Pass | `StepFrames.v` now transcribes the captured-depth `max_frame` metric; `Bridge.v` replaces the mis-pinned direct-resume anchor, adds real `frame_step` goldens, and proves `frame_max_run` anchors for let-capture, drop, and return paths. |

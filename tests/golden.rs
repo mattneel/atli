@@ -159,6 +159,7 @@ fn handler_op_resume_is_deep_and_reinstalls_handler() {
             Rule::HReturn
         ]
     );
+    // Proof bridge: Bridge.v frame_golden_resume_through_let / frame_run_finding21_is_one.
     assert_eq!(report.max_frame, 1);
 }
 
@@ -189,6 +190,7 @@ fn dropped_handler_does_not_capture_context_frame() {
     assert_eq!(report.outcome, Outcome::Value);
     assert_eq!(report.final_term, Term::nat(9));
     assert_eq!(report.trace, vec![Rule::HOp]);
+    // Proof bridge: Bridge.v frame_golden_dropped_handler_zero / frame_run_dropped_is_zero.
     assert_eq!(report.max_frame, 0);
 }
 
