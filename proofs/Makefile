@@ -1,6 +1,6 @@
 COQC ?= coqc
 COQFLAGS ?= -Q theories Atli
-VFILES := theories/Grade.v theories/Syntax.v theories/Typing.v theories/Step.v theories/Solve.v theories/Meta.v theories/Bridge.v
+VFILES := theories/Grade.v theories/Syntax.v theories/Typing.v theories/Step.v theories/Solve.v theories/StepFrames.v theories/Meta.v theories/Bridge.v
 VOFILES := $(VFILES:.v=.vo)
 
 .PHONY: all clean

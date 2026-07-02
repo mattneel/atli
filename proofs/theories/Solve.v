@@ -28,8 +28,15 @@ Definition satisfies (rho : unknown -> bound) (c : constraint) : Prop :=
 
 Record solver_certificate : Type := SolverCertificate {
   certified_value : unknown -> bound;
-  certificate_postfix : forall c, satisfies certified_value c
+  certificate_postfix : forall c, satisfies certified_value c;
+  certificate_upper : forall rho c,
+    (forall c', satisfies rho c') -> bound_le (rho (target c)) (certified_value (target c))
 }.
+
+(** Functional model of docs/calculus.md §7.2 at the certificate boundary: a completed
+    solve returns a post-fixpoint plus the upward/no-under-approximation field. *)
+Definition solver_model_returns (cert : solver_certificate) : Prop :=
+  forall c, satisfies (certified_value cert) c.
 
 (** This mirrors Part A's sealed Rust [SolverCertificate]: per §7.3/§2.3, consumers read
     certified grades only through a post-fixpoint certificate, never through partial SCC

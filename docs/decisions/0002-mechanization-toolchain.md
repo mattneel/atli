@@ -30,3 +30,15 @@ AST and makes the golden-term bridge legible. Substitution lemmas are therefore 
 the non-handler fragment with the usual shadowing side conditions. If later preservation
 work becomes substitution-heavy, a de Bruijn or locally nameless refactor remains an
 explicit mechanization choice rather than an implicit fork from the Rust core.
+
+## Sprint 15 amendment — binder and latent-arrow decisions
+
+Preservation work kept named binders rather than refactoring to de Bruijn. The current
+scaffold's substitution surface remains small enough for the Sprint 15 obligations, while
+bridge legibility stays valuable.
+
+Finding nineteen corrected the mechanized type representation: arrows now carry the
+latent effect and boundedness row from `docs/calculus.md §3.1/§4.2/§4.3` as
+`TyArrow a ε β b`. This is a fidelity correction, not a new calculus feature; erasing the
+latent row made the Rocq model launder effects and `β` through higher-order calls even
+though the paper and Rust checker already accounted for them.

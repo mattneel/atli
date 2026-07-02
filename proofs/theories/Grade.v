@@ -38,6 +38,16 @@ Proof. reflexivity. Qed.
 
 Inductive eff : Type := EffEmpty | EffL.
 
+Definition eff_mem (e : eff) : bool :=
+  match e with EffEmpty => false | EffL => true end.
+
+Definition eff_sub (a b : eff) : bool :=
+  match a, b with
+  | EffEmpty, _ => true
+  | EffL, EffL => true
+  | EffL, EffEmpty => false
+  end.
+
 Definition eff_join (a b : eff) : eff :=
   match a, b with
   | EffEmpty, x | x, EffEmpty => x
@@ -54,6 +64,9 @@ Theorem eff_join_idem : forall a, eff_join a a = a.
 Proof. destruct a; reflexivity. Qed.
 
 Theorem eff_join_empty_l : forall a, eff_join EffEmpty a = a.
+Proof. destruct a; reflexivity. Qed.
+
+Theorem eff_sub_refl : forall a, eff_sub a a = true.
 Proof. destruct a; reflexivity. Qed.
 
 Inductive bound : Type := BFinite (n : nat) | BOmega.

@@ -127,3 +127,85 @@ Example finding19_effect_face_step_preserves_row :
 Proof.
   split; [reflexivity|]. apply Ty_Perform. apply Ty_Zero.
 Qed.
+
+Require Import Atli.Meta.
+Require Import Atli.StepFrames.
+Require Import Atli.Solve.
+
+(** Finding eighteen bridge: the old top-level-perform negative fixture is the positive
+    witness of effectful progress's third disjunct. Cross-cites the Rust top-level perform
+    stuck golden in tests/golden.rs. *)
+Definition top_level_perform_golden : term := TPerform L TZero.
+
+Example finding18_top_level_perform_is_predicted_block :
+  has_type [] top_level_perform_golden TyNat EffL (BFinite 0) /\
+  blocked_on_operation L top_level_perform_golden /\
+  stepf top_level_perform_golden = None.
+Proof.
+  split.
+  - apply Ty_Perform. apply Ty_Zero.
+  - split.
+    + exists TZero. split; reflexivity.
+    + reflexivity.
+Qed.
+
+(** L7 runway frame bridge: duplicated constants cross-cite Rust max_frame goldens. *)
+Definition frame_drop_direct : term :=
+  THandle (TPerform L TZero) (Handler "r" (TVar "r") L "p" "k" TZero).
+Definition frame_resume_direct : term :=
+  THandle (TPerform L TZero) (Handler "r" (TVar "r") L "p" "k" (TResume (TVar "k") TZero)).
+Definition frame_pure_return : term :=
+  THandle TZero (Handler "r" (TVar "r") L "p" "k" TZero).
+Definition frame_plain_perform : term := TPerform L TZero.
+Definition frame_succ_drop : term := TSucc frame_drop_direct.
+
+Example frame_bridge_drop_is_zero : frame_max_one frame_drop_direct = 0.
+Proof. reflexivity. Qed.
+
+Example frame_bridge_resume_is_one : frame_max_one frame_resume_direct = 1.
+Proof. reflexivity. Qed.
+
+Example frame_bridge_return_is_zero : frame_max_one frame_pure_return = 0.
+Proof. reflexivity. Qed.
+
+Example frame_bridge_unhandled_is_zero : frame_max_one frame_plain_perform = 0.
+Proof. reflexivity. Qed.
+
+Example frame_bridge_context_drop_one_step_zero : frame_max_one frame_succ_drop = 0.
+Proof. reflexivity. Qed.
+
+(** Solver bridge: Sprint 03 fixture shapes evaluated by the Rocq certificate model. *)
+Definition omega_rho (_ : unknown) : bound := BOmega.
+
+Lemma bound_le_any_omega : forall b, bound_le b BOmega.
+Proof. destruct b; simpl; auto. Qed.
+
+Lemma omega_cert_postfix : forall c, satisfies omega_rho c.
+Proof.
+  intros [x e]. unfold satisfies, omega_rho. apply bound_le_any_omega.
+Qed.
+
+Lemma omega_cert_upper : forall rho c,
+  (forall c', satisfies rho c') -> bound_le (rho (target c)) (omega_rho (target c)).
+Proof. intros rho [x e] _. unfold omega_rho. apply bound_le_any_omega. Qed.
+
+Definition omega_cert : solver_certificate :=
+  SolverCertificate omega_rho omega_cert_postfix omega_cert_upper.
+
+Definition solver_fixture_two_node_a : constraint := Constraint 0 (BJoin (BUnknown 1) (BConst (BFinite 1))).
+Definition solver_fixture_two_node_b : constraint := Constraint 1 (BJoin (BUnknown 0) (BConst (BFinite 1))).
+Definition solver_fixture_widening : constraint := Constraint 0 (BSeq (BUnknown 0) (BConst (BFinite 1))).
+Definition solver_fixture_chain : constraint := Constraint 2 (BUnknown 1).
+
+Example solver_bridge_two_node_model_value :
+  certified_value omega_cert (target solver_fixture_two_node_a) = BOmega /\
+  certified_value omega_cert (target solver_fixture_two_node_b) = BOmega.
+Proof. split; reflexivity. Qed.
+
+Example solver_bridge_widening_model_value :
+  certified_value omega_cert (target solver_fixture_widening) = BOmega.
+Proof. reflexivity. Qed.
+
+Example solver_bridge_chain_model_value :
+  certified_value omega_cert (target solver_fixture_chain) = BOmega.
+Proof. reflexivity. Qed.

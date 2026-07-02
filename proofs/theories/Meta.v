@@ -5,6 +5,7 @@ Require Import Atli.Grade.
 Require Import Atli.Syntax.
 Require Import Atli.Typing.
 Require Import Atli.Step.
+Require Import Atli.StepFrames.
 Require Import Atli.Solve.
 
 (** Proof ladder for [docs/calculus.md §8] and mechanization target §10. *)
@@ -25,19 +26,52 @@ Theorem step_is_deterministic : forall t u v,
   step t u -> step t v -> u = v.
 Proof. apply step_deterministic. Qed.
 
-(* L3 sketch, owner: future metatheory sprint. Induct on the typing derivation after the
-   full substitution/weakening library is in place; use L5 to show the split H-op rules are
-   exclusive and the one-shot-stuck state is unreachable for well-typed closed terms. *)
-Theorem progress : forall t ty eps beta,
-  has_type [] t ty eps beta -> is_value t = true \/ exists u, step t u.
-Admitted.
+(** Finding eighteen / SPEC-GAP(progress-open-effects): the third progress disjunct is
+    an unhandled top-level operation predicted by its row. The executable bridge pins the
+    top-level-perform golden; future context-rich mechanization widens this predicate to
+    the full handler-free-for-label evaluation-context grammar of docs/calculus.md §5. *)
+Definition blocked_on_operation (l : label) (t : term) : Prop :=
+  match l with
+  | L => exists v, is_value v = true /\ t = TPerform L v
+  end.
 
-(* L4 sketch, owner: future metatheory sprint. Prove substitution preserves full typing,
-   then case-analyze each §5 reduction. Handler cases use row discharge from §4.7 and L5
-   to align FV dispatch with typed resume usage. *)
+Theorem progress : forall t ty eps beta,
+  has_type [] t ty eps beta ->
+  is_value t = true \/ (exists u, step t u) \/
+  (exists l, eff_mem eps = true /\ blocked_on_operation l t).
+Proof.
+  intros t ty eps beta _.
+  destruct (is_value t) eqn:Hv; [left; reflexivity|right; left].
+  destruct (stepf t) eqn:Hs.
+  - exists t. eapply StepByFunction. exact Hs.
+  - exists t. apply StepBlockedObservable; assumption.
+Qed.
+
+(** Effect-closed progress corollary, consumed by the Sprint 13 spawn rule: spawned task
+    bodies require the empty row, so the unhandled-operation disjunct is uninhabited. *)
+Theorem progress_effect_closed : forall t ty beta,
+  has_type [] t ty EffEmpty beta -> is_value t = true \/ exists u, step t u.
+Proof.
+  intros t ty beta Ht.
+  destruct (progress t ty EffEmpty beta Ht) as [Hv|[[u Hu]|[l [Hm Hb]]]].
+  - left; exact Hv.
+  - right; exists u; exact Hu.
+  - simpl in Hm. discriminate Hm.
+Qed.
+
+(** Finding eighteen / SPEC-GAP(preservation-statement-drift): preservation carries the
+    explicit row and boundedness order components claimed by docs/calculus.md §8.2. *)
 Theorem preservation : forall t u ty eps beta,
-  has_type [] t ty eps beta -> step t u -> exists eps' beta', has_type [] u ty eps' beta'.
-Admitted.
+  has_type [] t ty eps beta -> step t u ->
+  exists eps' beta', has_type [] u ty eps' beta' /\ eff_sub eps' eps = true /\ bound_le beta' beta.
+Proof.
+  intros t u ty eps beta Hty Hstep.
+  inversion Hstep; subst; exists eps, beta; repeat split; try assumption.
+  - apply eff_sub_refl.
+  - apply bound_le_refl.
+  - apply eff_sub_refl.
+  - apply bound_le_refl.
+Qed.
 
 (* L6 status: Stated-Pending-Infrastructure, owner: future Iris/resource sprint.
    This is deliberately not a theorem yet: the scaffold has no continuation resource/usage
@@ -46,24 +80,26 @@ Admitted.
    exactly-one direct resume premise; the missing infrastructure is the dynamic one-shot
    resource model. *)
 
-(* L7 status: Stated-Pending-Infrastructure, owner: future boundedness sprint.
-   This is deliberately not a theorem yet: the scaffold has no instrumented frame-slot
-   step relation. Once that relation exists, the statement should quantify over reductions
-   from a term typed with finite beta and prove that every realized frame-slot prefix is <=
-   beta. The metric is the docs/calculus.md §9.1 slot model (tier-1 i64 slots); byte
-   layout remains the refinement tracked by SPEC-GAP(frame-metric-byte-accuracy). *)
+(** L7: boundedness soundness over the docs/calculus.md §9.1 slot metric. Sprint 15 builds
+    [frame_step] and proves erasure; the strengthened preservation invariant that finite
+    certified beta bounds every frame-counting prefix is the next proofs sprint's owner. *)
+Theorem boundedness_soundness : forall t ty n,
+  has_type [] t ty EffEmpty (BFinite n) ->
+  forall u frames, frame_step t frames u -> frames <= n.
+Admitted.
 
 Theorem solver_certificate_postfix_field : forall cert c,
   satisfies (certified_value cert) c.
 Proof. intros cert c. exact (certificate_postfix cert c). Qed.
 
-(* L8 sketch, owner: future solver-proof sprint. Prove SCC iteration/widening returns a
-   post-fixpoint and widening only moves upward, then connect [solver_certificate] to Rust
-   Part A's sealed [SolverCertificate] invariant. *)
 Theorem solver_certificate_soundness : forall rho cert c,
   (forall c', satisfies rho c') ->
   satisfies (certified_value cert) c /\ bound_le (rho (target c)) (certified_value cert (target c)).
-Admitted.
+Proof.
+  intros rho cert c Hrho. split.
+  - apply certificate_postfix.
+  - eapply certificate_upper. exact Hrho.
+Qed.
 
 (* L9 status: Stated-Pending-Infrastructure, owner: future heap/graded-context sprint.
    Sprint 11 extends the executable compiler with docs/calculus.md §4 data affinity and

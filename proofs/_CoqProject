@@ -4,5 +4,6 @@ theories/Syntax.v
 theories/Typing.v
 theories/Step.v
 theories/Solve.v
+theories/StepFrames.v
 theories/Meta.v
 theories/Bridge.v
