@@ -22,7 +22,7 @@ without Iris; see `docs/decisions/0002-mechanization-toolchain.md`.
 | L6 | One-shot soundness (§8.3) | Stated-Pending-Infrastructure | Future Iris/resource sprint |
 | L7 | Boundedness soundness (§8.4), frame-count metric | Stated-Pending-Infrastructure | Future boundedness sprint |
 | L8 | Solver/certificate soundness (§7.2/§7.3) | Admitted with sketch | Future solver-proof sprint |
-| L9 | Uniqueness soundness: `inplace set` observationally equals `set` under affine data usage | Stated-Pending-Infrastructure | Future heap/graded-context sprint |
+| L9 | Uniqueness soundness: `inplace set` and in-place record replacement observationally equal their functional-copy counterparts under affine data usage | Stated-Pending-Infrastructure | Future heap/graded-context sprint |
 | Aux | Step determinism | Qed | Sprint 04 |
 
 Current admitted theorem count: 3 (`progress`, `preservation`,

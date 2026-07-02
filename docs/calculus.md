@@ -174,6 +174,10 @@ e ::= x
     | fix f:(T →[σ] T). λ x. e         recursion  (induces the β-constraint, §7)
     | fix* { fᵢ:(Tᵢ →[σᵢ] Uᵢ) = λ xᵢ. eᵢ }ᵢ  mutual recursive binding group
     | ⟨ ℓ = e, … ⟩ | e.ℓ              record intro / proj
+    | ⟨ e | ℓ = e' ⟩                  functional record update: shallow-copy, replace ℓ
+    | C(e₁, …, eₙ)                    nominal variant constructor application
+    | case e { Cᵢ(p⃗ᵢ) => eᵢ ; … ; _ => e? }
+                                       variant/record eliminator with exhaustive patterns
     | perform ℓᵢ e                    invoke effect operation ℓᵢ
     | handle e with H                 effect handler (deep)
     | resume k e                      invoke a captured continuation (consumes k)
@@ -189,6 +193,14 @@ Handler `H` has one return clause and a finite clause set over handled labels
 `kᵢ : Cont[…] Aᵢ R @ 1` names the **one-shot** delimited continuation up to the enclosing
 `handle` for that label. The continuation is materialized lazily: a clause that does not
 use its own `kᵢ` does not allocate or carry the delimited frame.
+
+
+**Nominal aggregate declarations.** Records and variants are monomorphic declarations:
+`type Point = { x: Nat, y: Nat }` and `type Shape = Circle(Nat) | Rect(Nat, Nat)`.
+Fields and payloads may be `Nat`, `Unit`, `Array`, or declared aggregate types. Type
+parameters remain out of scope. Recursive declarations are allowed only through variants:
+`type NatList = Nil | Cons(Nat, NatList)` is valid, while a pure record cycle is rejected
+by the occurs-check because it has no base constructor.
 
 ---
 
@@ -345,6 +357,38 @@ yields the same unique handle after mutation. Out-of-bounds `get`/`set` is defin
 behavior: the oracle reaches a bounds-error outcome and compiled code traps with exit 88
 and message `ATLI BOUNDS`.
 
+
+### 4.5.2 Records, variants, and aggregate uniqueness
+
+Aggregate construction is **born unique**: a record literal or variant constructor yields
+`^T` (`T @ 1`) and may be immediately forgotten by subsumption. If an initializer is
+itself `1`-graded, construction consumes it: ownership moves into the aggregate.
+
+Projection distinguishes copied scalars from heap aliases. Projecting a `Nat` or `Unit`
+field from a unique record is a non-consuming read because it copies an unboxed value.
+Projecting a heap-typed field (`Array`, record, or variant) from a unique record is a type
+error: freeze the record to share it, or destructure it to take ownership. Projection from
+a shared record is unrestricted at every field type.
+
+Tier 1 has **no path-inplace**. `inplace set(r.buf, i, v)` is rejected because it would
+borrow through a path. The licensed record mutation is in-place field replacement:
+`inplace ⟨ r | ℓ = e ⟩` on a unique record consumes `r`, stores the new field handle/value,
+and yields the same unique record. Functional update `⟨ r | ℓ = e ⟩` shallow-copies the
+record and replaces `ℓ`.
+
+**Destructure-consume.** A `case` over a unique aggregate consumes the aggregate handle.
+Pattern bindings inherit grade by payload type: heap-typed fields/payloads bind at `1`
+(unique ownership transferred out of the dead aggregate), while `Nat` and `Unit` bind at
+`ω`. A `case` over a shared aggregate consumes nothing and binds every payload at `ω`.
+This is sound because the aggregate handle is dead after the match; it is the aggregate
+analogue of `move` and is the way a unique buffer leaves a unique message record.
+
+Variant cases must be exhaustive over the declared constructors unless they include `_`;
+non-exhaustive cases are checker errors listing the missing constructors. Constructor
+pattern payloads are also the strict subterms used by structural recursion (§4.8/§7): a
+recursive call at the free rung may pass a payload bound by a constructor or record pattern
+of the current parameter's scrutinee.
+
 ### 4.6 Effects
 
 ```
@@ -484,6 +528,7 @@ E ::= [·] | succ E | case E { zero => e₀ ; succ x => e₁ }
     | E e | v E | let x = E in e | perform ℓ E | E.ℓ | resume E e | resume v E
     | mkarray(E, e) | mkarray(v, E) | get(E, e) | get(v, E)
     | set(E, e, e) | set(v, E, e) | set(v, v, E) | len(E)
+    | ⟨…, ℓ = E, …⟩ | E.ℓ | ⟨E | ℓ = e⟩ | ⟨v | ℓ = E⟩ | C(v⃗, E, e⃗)
     | move E | inplace E | freeze E
 ```
 
@@ -498,6 +543,12 @@ case (succ v) { zero => e₀ ; succ x => e₁ }
                                   →   e₁[x := v]                          (case-succ)
 fix f. λx. e                   →   λx. e[f := fix f. λx. e]               (unfold)
 ⟨…, ℓ = v, …⟩.ℓ                →   v                                     (proj)
+⟨R | ℓ = v⟩                    →   R'                                   (record-update)
+     where R' is a shallow copy of R with field ℓ replaced.
+inplace ⟨R | ℓ = v⟩            →   R                                    (record-inplace)
+     mutating R.ℓ := v in place.
+case Cⱼ(v⃗) { …; Cⱼ(x⃗) => eⱼ; … } → eⱼ[x⃗ := v⃗]                       (case-ctor)
+case R { ⟨ℓᵢ = xᵢ⟩ => e }       →   e[xᵢ := R.ℓᵢ]                       (case-record)
 mkarray(n, v)                  →   A                                    (array-new)
      where n is a Nat value and A is a fresh length-n heap array filled with v.
 get(A, i)                      →   A[i]                                  (array-get)
@@ -751,21 +802,23 @@ slot model.
 
 ### 9.2 Tier-1 data region
 
-Arrays allocate in a data region separate from the certified `β` arena. The `β` grade
-remains purely a control-frame slot bound: an array handle stored in a frame consumes one
-frame slot like any other machine-word value, but the array payload does **not** consume
-certified frame slots and does not affect the solver.
+Arrays, records, and variants allocate in a data region separate from the certified `β`
+arena. The `β` grade remains purely a control-frame slot bound: an aggregate handle stored
+in a frame consumes one frame slot like any other machine-word value, but the aggregate
+payload does **not** consume certified frame slots and does not affect the solver.
 
-Tier-1 array payloads are bump-allocated in a program-lifetime data region and freed
+Tier-1 aggregate payloads are bump-allocated in a program-lifetime data region and freed
 wholesale at process exit. This is leak-free by program death; reference counting,
 Perceus-style reuse analysis, and early reclamation are future data-region refinements,
 not requirements for the `q = 1` soundness claim.
 
-Native execution reports `ATLI_DATA_ALLOCS=n`, counting array creations and functional
-copies. `mkarray` increments the count; functional `set` increments the count because it
-allocates a copy; `inplace set` emits no allocation at the update site and therefore does
-not increment the count. Out-of-bounds compiled `get`/`set`/`inplace set` traps with
-exit 88 and message `ATLI BOUNDS`, matching the oracle's bounds-error outcome.
+Native execution reports `ATLI_DATA_ALLOCS=n`, counting aggregate creations and functional
+copies. `mkarray`, record construction, and variant construction increment the count;
+functional array `set` and functional record update increment the count because they
+allocate shallow copies. `inplace set` and `inplace ⟨r | ℓ = e⟩` emit no allocation at the
+update site and therefore do not increment the count. Out-of-bounds compiled aggregate
+access traps with exit 88 and message `ATLI BOUNDS`, matching the oracle's bounds-error
+outcome.
 
 **No LLVM coroutines.** Atli owns the continuation split in its own mid-end (Zig's hard-
 won lesson: LLVM couples frame alloc/dealloc to execution, forcing heap-allocated self-
@@ -793,13 +846,13 @@ Mechanize in Rocq (Iris for the substructural/linearity reasoning). Prove soundn
   continuations for resuming clauses (`H-op-resume`), and the lemma that typed clauses
   satisfy `kᵢ ∈ FV(eᵢ) ⇔ eᵢ` directly resumes `kᵢ` exactly once.
 - Boundedness: `Bound = ℕ ∪ {ω}`, `⊕`/`⊔`, `Fix`/`fix*` with recursive `β` constraints.
-- Drop for now: records/variants, regions beyond a single arena, arrays, `move`,
-  `inplace`, and `freeze`.
+- Drop for now in Rocq: records/variants, aggregate heap semantics, regions beyond a single
+  arena, arrays, `move`, `inplace`, and `freeze`.
 
-Arrays and data-affinity are now part of the executable compiler but remain outside the
+Arrays, records, variants, and data-affinity are now part of the executable compiler but remain outside the
 Rocq scaffold. The proof ladder therefore adds L9 as
 `Stated-Pending-Infrastructure`: **uniqueness soundness**, the observational
-equivalence of `inplace set` and functional `set` under §4's affine discipline. Stating
+equivalence of `inplace set` / in-place record replacement and their functional-copy counterparts under §4's affine discipline. Stating
 and proving L9 requires graded contexts and a heap in the step relation; it is not an
 `Admitted` theorem in the current scaffold and does not change `proofs/ADMITTED_COUNT`.
 
