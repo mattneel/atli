@@ -7,7 +7,7 @@ Sprint 14 adds rank-1 parametric polymorphism, generic nominal aggregates, `Arra
 The original v0.5.0 row 2 was previously false by omission: it said "generic `map`" but
 did not quote or exercise the actual higher-order signature. `SPEC-GAP(generic-arrow-
 instantiation)` records the bug: generic variables in arrow positions were not being
-bound structurally. This v0.5.1 completion commit fixes arrow unification, replaces the flagship with
+bound structurally. Completion implementation commit `c300223` fixes arrow unification, replaces the flagship with
 `fn map[A, B](xs: List[A], f: A -> B) -> List[B]`, adds `apply[A, B](f: A -> B, x: A) -> B`,
 and cuts the honest patch release as v0.5.1.
 
